@@ -1,0 +1,218 @@
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  cursor: pointer;
+  font-weight: 600;
+  white-space: nowrap;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    transform 80ms ease;
+}
+
+.button:hover {
+  background: var(--color-surface-3);
+  border-color: var(--color-border-strong);
+}
+
+.button:active {
+  transform: translateY(1px);
+}
+
+.button:focus-visible,
+.chip:focus-visible,
+.select:focus-visible {
+  outline: 2px solid var(--color-lavender);
+  outline-offset: 2px;
+}
+
+.primary {
+  background: var(--color-lavender);
+  border-color: var(--color-lavender-dim);
+  color: oklch(16% 0.025 290);
+}
+
+.primary:hover {
+  background: var(--color-lavender-dim);
+}
+
+.ghost {
+  background: transparent;
+  border-color: transparent;
+}
+
+.ghost:hover {
+  background: var(--color-surface-2);
+  border-color: var(--color-border);
+}
+
+.sm {
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 7px;
+  font-size: 12px;
+}
+
+.md {
+  height: 32px;
+}
+
+.iconOnly {
+  width: 32px;
+  padding: 0;
+}
+
+.sm.iconOnly {
+  width: 26px;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  padding: 2px 9px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-surface-2);
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-family: inherit;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+button.chip {
+  cursor: pointer;
+}
+
+.chipActive {
+  background: var(--color-lavender-soft);
+  border-color: var(--color-lavender-dim);
+  color: var(--color-lavender);
+}
+
+.good {
+  color: var(--color-good);
+  border-color: color-mix(in oklab, var(--color-good) 45%, var(--color-border));
+  background: color-mix(in oklab, var(--color-good) 12%, var(--color-surface));
+}
+
+.danger {
+  color: var(--color-danger);
+  border-color: color-mix(in oklab, var(--color-danger) 45%, var(--color-border));
+  background: color-mix(in oklab, var(--color-danger) 12%, var(--color-surface));
+}
+
+.sunset {
+  color: var(--color-sunset);
+  border-color: color-mix(in oklab, var(--color-sunset) 45%, var(--color-border));
+  background: color-mix(in oklab, var(--color-sunset) 12%, var(--color-surface));
+}
+
+.scoreBadge {
+  display: inline-flex;
+  min-width: 35px;
+  height: 23px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+}
+
+.scoreHigh {
+  color: var(--color-good);
+  background: color-mix(in oklab, var(--color-good) 18%, var(--color-surface));
+  border-color: color-mix(in oklab, var(--color-good) 42%, var(--color-border));
+}
+
+.scoreNeutral {
+  color: var(--color-text);
+}
+
+.scoreMid {
+  color: var(--color-sunset);
+  background: color-mix(in oklab, var(--color-sunset) 16%, var(--color-surface));
+  border-color: color-mix(in oklab, var(--color-sunset) 38%, var(--color-border));
+}
+
+.scoreLow {
+  color: var(--color-danger);
+  background: color-mix(in oklab, var(--color-danger) 16%, var(--color-surface));
+  border-color: color-mix(in oklab, var(--color-danger) 38%, var(--color-border));
+}
+
+.meter {
+  display: block;
+  height: 6px;
+  min-width: 32px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--color-border-soft);
+}
+
+.meter i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--color-sunset), var(--color-lavender));
+}
+
+.meter.good i {
+  background: linear-gradient(90deg, var(--color-sunset), var(--color-good));
+}
+
+.meter.danger i {
+  background: var(--color-danger);
+}
+
+.meter.sea i {
+  background: linear-gradient(90deg, var(--color-sea), var(--color-lavender));
+}
+
+.select {
+  height: 30px;
+  min-width: 0;
+  padding: 0 28px 0 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  appearance: none;
+  background:
+    linear-gradient(45deg, transparent 50%, var(--color-text-muted) 50%) calc(100% - 14px) 13px / 5px 5px no-repeat,
+    linear-gradient(135deg, var(--color-text-muted) 50%, transparent 50%) calc(100% - 9px) 13px / 5px 5px no-repeat,
+    var(--color-surface-2);
+  color: var(--color-text);
+}
+
+.fieldLabel {
+  display: inline-flex;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.emptyState {
+  display: grid;
+  place-items: center;
+  min-height: 180px;
+  border: 1px dashed var(--color-border);
+  border-radius: 8px;
+  color: var(--color-text-muted);
+}

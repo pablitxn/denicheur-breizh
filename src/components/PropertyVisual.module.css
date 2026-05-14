@@ -1,0 +1,92 @@
+.visual {
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 82% 18%, color-mix(in oklab, var(--color-sunset) 65%, white) 0 9%, transparent 10%),
+    linear-gradient(150deg, var(--color-lavender-soft), var(--color-sunset-soft));
+}
+
+.sm {
+  width: 58px;
+  height: 58px;
+  border-radius: 7px;
+}
+
+.md {
+  height: 148px;
+}
+
+.lg {
+  height: 205px;
+}
+
+.coast {
+  background:
+    radial-gradient(circle at 82% 18%, color-mix(in oklab, var(--color-sunset) 70%, white) 0 9%, transparent 10%),
+    linear-gradient(180deg, color-mix(in oklab, var(--color-sea) 36%, var(--color-surface)) 0 46%, var(--color-lavender-soft) 47% 100%);
+}
+
+.quiet {
+  background:
+    radial-gradient(circle at 82% 18%, color-mix(in oklab, var(--color-good) 70%, white) 0 9%, transparent 10%),
+    linear-gradient(180deg, color-mix(in oklab, var(--color-good) 24%, var(--color-surface)) 0 46%, var(--color-sunset-soft) 47% 100%);
+}
+
+.town {
+  background:
+    radial-gradient(circle at 82% 18%, color-mix(in oklab, var(--color-lavender) 55%, white) 0 9%, transparent 10%),
+    linear-gradient(180deg, var(--color-surface-3), var(--color-sunset-soft));
+}
+
+.horizon {
+  position: absolute;
+  right: -10%;
+  bottom: 28%;
+  left: -10%;
+  height: 36%;
+  border-radius: 50% 50% 0 0;
+  background: color-mix(in oklab, var(--color-bg) 40%, transparent);
+}
+
+.house {
+  position: absolute;
+  right: 17%;
+  bottom: 18%;
+  width: 34%;
+  height: 30%;
+  border: 1px solid color-mix(in oklab, var(--color-text) 24%, transparent);
+  border-radius: 4px 4px 2px 2px;
+  background: color-mix(in oklab, var(--color-surface) 72%, transparent);
+}
+
+.roof {
+  position: absolute;
+  right: 14%;
+  bottom: 46%;
+  width: 40%;
+  height: 26%;
+  clip-path: polygon(50% 0, 100% 100%, 0 100%);
+  background: color-mix(in oklab, var(--color-sunset) 50%, var(--color-bg));
+}
+
+.path {
+  position: absolute;
+  right: 26%;
+  bottom: -15%;
+  width: 18%;
+  height: 38%;
+  transform: rotate(14deg);
+  border-radius: 999px 999px 0 0;
+  background: color-mix(in oklab, var(--color-text) 18%, transparent);
+}
+
+.sun {
+  position: absolute;
+  top: 16%;
+  left: 18%;
+  width: 12%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: color-mix(in oklab, var(--color-sunset) 72%, white);
+  box-shadow: 0 0 28px color-mix(in oklab, var(--color-sunset) 60%, transparent);
+}
