@@ -1,0 +1,206 @@
+/**
+ * Dénicheur Breizh — Design Tokens
+ * ----------------------------------------------------------------
+ * Two layers:
+ *   (1) Primitives  — raw oklch values + type/space/radius scales
+ *   (2) Semantics   — intent-named aliases (cta, surface-selected,…)
+ *
+ * Sister apps should consume SEMANTICS in component CSS so that
+ * accent swaps (lavender / sunset / sea) cascade cleanly.
+ */
+
+:root {
+  color-scheme: dark;
+
+  /* ── 1.A · Primitive · neutral surfaces ─────────────────────── */
+  --color-bg:             oklch(20% 0.018 290);
+  --color-surface:        oklch(24% 0.020 290);
+  --color-surface-2:      oklch(28% 0.022 290);
+  --color-surface-3:      oklch(33% 0.024 290);
+  --color-elevated:       oklch(26% 0.026 290);
+  --color-border-soft:    oklch(32% 0.015 290);
+  --color-border:         oklch(38% 0.020 290);
+  --color-border-strong:  oklch(47% 0.025 290);
+
+  /* ── 1.B · Primitive · text ─────────────────────────────────── */
+  --color-text:           oklch(96% 0.010 80);
+  --color-text-muted:     oklch(73% 0.018 290);
+  --color-text-faint:     oklch(58% 0.020 290);
+  --color-on-accent:      oklch(16% 0.025 290);
+
+  /* ── 1.C · Primitive · brand & semantic hues ────────────────── */
+  --color-lavender:       oklch(78% 0.10 295);
+  --color-lavender-dim:   oklch(62% 0.08 295);
+  --color-lavender-soft:  oklch(78% 0.10 295 / 16%);
+
+  --color-sunset:         oklch(76% 0.13 50);
+  --color-sunset-soft:    oklch(76% 0.13 50 / 15%);
+
+  --color-sea:            oklch(72% 0.10 220);
+  --color-sea-soft:       oklch(72% 0.10 220 / 15%);
+
+  --color-good:           oklch(75% 0.13 155);
+  --color-good-soft:      oklch(75% 0.13 155 / 15%);
+
+  --color-danger:         oklch(70% 0.16 25);
+  --color-danger-soft:    oklch(70% 0.16 25 / 15%);
+
+  --color-warning:        oklch(80% 0.14 90);
+  --color-warning-soft:   oklch(80% 0.14 90 / 15%);
+
+  /* ── 1.D · Metric hues (the 7 scoring axes) ─────────────────── */
+  --metric-coast:    var(--color-sea);
+  --metric-quiet:    var(--color-good);
+  --metric-value:    var(--color-lavender);
+  --metric-family:   oklch(76% 0.12 340);   /* warm pink */
+  --metric-transit:  oklch(74% 0.12 260);   /* indigo */
+  --metric-dpe:      var(--color-warning);
+  --metric-flood:    var(--color-danger);
+
+  /* ── 1.E · Type scale ───────────────────────────────────────── */
+  --font-display: "Fraunces", Georgia, serif;
+  --font-sans:    "Inter Tight", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono:    "JetBrains Mono", "SF Mono", ui-monospace, monospace;
+
+  --fs-mono-xs:   10px;
+  --fs-mono-sm:   11px;
+  --fs-mono:      12px;
+  --fs-body-sm:   12px;
+  --fs-body:      14px;
+  --fs-body-lg:   16px;
+  --fs-h4:        20px;
+  --fs-h3:        24px;
+  --fs-h2:        30px;
+  --fs-h1:        64px;
+
+  /* ── 1.F · Space scale (4-pt) ───────────────────────────────── */
+  --space-1:  2px;
+  --space-2:  4px;
+  --space-3:  8px;
+  --space-4:  12px;
+  --space-5:  16px;
+  --space-6:  20px;
+  --space-7:  24px;
+  --space-8:  32px;
+  --space-9:  44px;
+  --space-10: 56px;
+
+  /* ── 1.G · Radius scale ─────────────────────────────────────── */
+  --radius-1: 5px;   /* kbd */
+  --radius-2: 7px;   /* score, sm button */
+  --radius-3: 8px;   /* button, input */
+  --radius-4: 12px;  /* card */
+  --radius-5: 14px;  /* panel */
+  --radius-pill: 999px;
+
+  /* ── 1.H · Heights (UI controls) ────────────────────────────── */
+  --h-control-sm: 26px;
+  --h-control:    32px;
+  --h-control-lg: 38px;
+  --h-topbar:     58px;
+
+  /* ── 1.I · Elevation & motion ───────────────────────────────── */
+  --shadow-flat:    none;
+  --shadow-panel:   0 18px 54px rgb(0 0 0 / 24%), 0 4px 18px rgb(0 0 0 / 18%);
+  --shadow-popover: 0 8px 32px rgb(0 0 0 / 28%), 0 2px 8px rgb(0 0 0 / 18%);
+  --shadow-toast:   0 12px 36px rgb(0 0 0 / 22%);
+  --blur-panel:     blur(18px) saturate(135%);
+
+  --ease-out:  cubic-bezier(0.22, 0.61, 0.36, 1);
+  --ease-in:   cubic-bezier(0.4, 0, 1, 1);
+  --dur-fast:  80ms;
+  --dur:       120ms;
+  --dur-slow:  220ms;
+
+  /* ── 2 · Semantic aliases (use these in component CSS) ──────── */
+  --cta:                  var(--color-lavender);
+  --cta-hover:            var(--color-lavender-dim);
+  --cta-on:               var(--color-on-accent);
+  --cta-soft:             var(--color-lavender-soft);
+
+  --surface-selected:     var(--color-lavender-soft);
+  --surface-hover:        var(--color-surface-3);
+  --focus-ring:           var(--color-lavender);
+  --link:                 var(--color-lavender);
+
+  --score-high:           var(--color-good);
+  --score-mid:            var(--color-sunset);
+  --score-low:            var(--color-danger);
+  --score-neutral:        var(--color-text);
+
+  --status-ok:            var(--color-good);
+  --status-warn:          var(--color-warning);
+  --status-error:         var(--color-danger);
+  --status-info:          var(--color-sea);
+}
+
+/* ─── Light theme overrides ────────────────────────────────────── */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --color-bg:             oklch(98% 0.006 80);
+  --color-surface:        oklch(100% 0 0);
+  --color-surface-2:      oklch(96% 0.009 80);
+  --color-surface-3:      oklch(92% 0.012 80);
+  --color-elevated:       oklch(100% 0 0);
+  --color-border-soft:    oklch(91% 0.008 80);
+  --color-border:         oklch(84% 0.010 80);
+  --color-border-strong:  oklch(74% 0.012 80);
+
+  --color-text:           oklch(22% 0.020 290);
+  --color-text-muted:     oklch(46% 0.018 290);
+  --color-text-faint:     oklch(61% 0.015 290);
+  --color-on-accent:      oklch(99% 0 0);
+
+  --color-lavender:       oklch(52% 0.14 295);
+  --color-lavender-dim:   oklch(62% 0.10 295);
+  --color-lavender-soft:  oklch(52% 0.14 295 / 9%);
+
+  --color-sunset:         oklch(62% 0.16 50);
+  --color-sunset-soft:    oklch(62% 0.16 50 / 11%);
+
+  --color-sea:            oklch(50% 0.12 220);
+  --color-sea-soft:       oklch(50% 0.12 220 / 10%);
+
+  --color-good:           oklch(55% 0.14 155);
+  --color-good-soft:      oklch(55% 0.14 155 / 10%);
+
+  --color-danger:         oklch(56% 0.18 25);
+  --color-danger-soft:    oklch(56% 0.18 25 / 11%);
+
+  --color-warning:        oklch(62% 0.16 80);
+  --color-warning-soft:   oklch(62% 0.16 80 / 11%);
+
+  --metric-family:        oklch(58% 0.16 340);
+  --metric-transit:       oklch(54% 0.14 260);
+
+  --shadow-panel:    0 18px 54px rgb(80 40 60 / 10%), 0 4px 18px rgb(80 40 60 / 8%);
+  --shadow-popover:  0 8px 32px rgb(80 40 60 / 14%), 0 2px 8px rgb(80 40 60 / 8%);
+  --shadow-toast:    0 12px 36px rgb(80 40 60 / 12%);
+}
+
+/* ─── Accent swaps remap CTA semantic only ─────────────────────── */
+:root[data-accent="sunset"] {
+  --cta:        var(--color-sunset);
+  --cta-hover:  oklch(58% 0.12 50);
+  --cta-soft:   var(--color-sunset-soft);
+  --focus-ring: var(--color-sunset);
+  --link:       var(--color-sunset);
+  --surface-selected: var(--color-sunset-soft);
+}
+:root[data-accent="sea"] {
+  --cta:        var(--color-sea);
+  --cta-hover:  oklch(58% 0.08 220);
+  --cta-soft:   var(--color-sea-soft);
+  --focus-ring: var(--color-sea);
+  --link:       var(--color-sea);
+  --surface-selected: var(--color-sea-soft);
+}
+
+/* ─── Density modes ────────────────────────────────────────────── */
+:root[data-density="compact"] {
+  --h-control-sm: 22px;
+  --h-control:    28px;
+  --h-control-lg: 32px;
+  --h-topbar:     50px;
+  --fs-body:      13px;
+}
