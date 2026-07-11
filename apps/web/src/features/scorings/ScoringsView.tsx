@@ -11,7 +11,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useScorings } from "../../api/hooks";
-import { Button, Chip, EmptyState, FieldLabel, ScoreBadge } from "@denicheur-breizh/design-system";
+import { Chip, EmptyState, SectionLabel, ScoreBadge } from "@denicheur-breizh/design-system";
 import { localizeScoring, localizeScoringGroup } from "../../intl/domain";
 import { useAppIntl } from "../../intl/IntlContext";
 import type { ScoringMetric } from "../../types";
@@ -44,7 +44,7 @@ export function ScoringsView() {
     <section className={styles.view}>
       <aside className={styles.groups}>
         <div className={styles.panelIntro}>
-          <FieldLabel>{t("scorings.library")}</FieldLabel>
+          <SectionLabel>{t("scorings.library")}</SectionLabel>
           <strong>{t("scorings.blocks", { count: scorings.length })}</strong>
         </div>
         <nav className={styles.groupList} aria-label={t("scorings.groups")}>
@@ -54,24 +54,22 @@ export function ScoringsView() {
               className={group === item ? styles.groupActive : ""}
               type="button"
               onClick={() => setGroup(item)}
+              aria-pressed={group === item}
             >
               <span>{item === "all" ? t("scorings.all") : localizeScoringGroup(item, locale)}</span>
               <b>{item === "all" ? scorings.length : scorings.filter((scoring) => scoring.group === item).length}</b>
             </button>
           ))}
         </nav>
-        <div className={styles.groupFooter}>
-          <Button size="sm">{t("scorings.new")}</Button>
-        </div>
       </aside>
 
       <div className={styles.index}>
         <header className={styles.indexHeader}>
-          <FieldLabel>{group === "all" ? t("scorings.allScorings") : localizeScoringGroup(group, locale)}</FieldLabel>
+          <SectionLabel>{group === "all" ? t("scorings.allScorings") : localizeScoringGroup(group, locale)}</SectionLabel>
           <span>{filtered.length}</span>
         </header>
-        {error && <EmptyState>{t("scorings.error")}</EmptyState>}
-        {!error && isLoading && <EmptyState>{t("scorings.loading")}</EmptyState>}
+        {error && <EmptyState role="alert">{t("scorings.error")}</EmptyState>}
+        {!error && isLoading && <EmptyState role="status">{t("scorings.loading")}</EmptyState>}
         {!error && !isLoading && (
           <div className={styles.metricList}>
             {filtered.map((scoring) => (
@@ -97,7 +95,12 @@ function MetricListItem({ scoring, active, onClick }: { scoring: ScoringMetric; 
   const Icon = iconMap[scoring.icon] ?? Sparkles;
 
   return (
-    <button type="button" className={[styles.metricItem, active ? styles.metricItemActive : ""].join(" ")} onClick={onClick}>
+    <button
+      type="button"
+      className={[styles.metricItem, active ? styles.metricItemActive : ""].join(" ")}
+      onClick={onClick}
+      aria-pressed={active}
+    >
       <span className={styles.metricIcon}>
         <Icon size={18} />
       </span>
@@ -105,7 +108,6 @@ function MetricListItem({ scoring, active, onClick }: { scoring: ScoringMetric; 
         <strong>{scoring.name}</strong>
         <small>{scoring.short}</small>
       </span>
-      <em>{scoring.group.slice(0, 3).toLowerCase()}</em>
     </button>
   );
 }
@@ -136,7 +138,7 @@ function ScoringDocs({ scoring }: { scoring: ScoringMetric }) {
 
       <section className={styles.rangeBox}>
         <div className={styles.boxHeader}>
-          <FieldLabel>{t("scorings.valueRange")}</FieldLabel>
+          <SectionLabel>{t("scorings.valueRange")}</SectionLabel>
           <span>0.0 - 10.0</span>
         </div>
         <div className={styles.rangeBar} />
@@ -167,14 +169,14 @@ function ScoringDocs({ scoring }: { scoring: ScoringMetric }) {
       <section className={styles.examples}>
         <div>
           <div className={styles.boxHeader}>
-            <FieldLabel>{t("scorings.goodScore")}</FieldLabel>
+            <SectionLabel>{t("scorings.goodScore")}</SectionLabel>
             <ScoreBadge value={8.6} />
           </div>
           <p>{scoring.sample.good}</p>
         </div>
         <div>
           <div className={styles.boxHeader}>
-            <FieldLabel>{t("scorings.weakScore")}</FieldLabel>
+            <SectionLabel>{t("scorings.weakScore")}</SectionLabel>
             <ScoreBadge value={3.2} />
           </div>
           <p>{scoring.sample.weak}</p>
@@ -183,15 +185,15 @@ function ScoringDocs({ scoring }: { scoring: ScoringMetric }) {
 
       <footer className={styles.docFooter}>
         <div>
-          <FieldLabel>{t("common.source")}</FieldLabel>
+          <SectionLabel>{t("common.source")}</SectionLabel>
           <span>{scoring.tags.join(", ")}</span>
         </div>
         <div>
-          <FieldLabel>{t("scorings.freshness")}</FieldLabel>
+          <SectionLabel>{t("scorings.freshness")}</SectionLabel>
           <span>{t("common.monthly")}</span>
         </div>
         <div>
-          <FieldLabel>{t("common.status")}</FieldLabel>
+          <SectionLabel>{t("common.status")}</SectionLabel>
           <span>{scoring.builtIn ? t("common.operational") : t("common.draft")}</span>
         </div>
       </footer>

@@ -43,13 +43,13 @@ describe("intl UI", () => {
     installLocalStorage("fr");
     renderIntlWorkspace();
 
-    expect(await screen.findByText("Ville, IRIS ou adresse")).toBeInTheDocument();
+    expect(await screen.findByRole("navigation", { name: "Vue principale" })).toHaveTextContent("Carte");
     expect((await screen.findAllByText("Maison en pierre")).length).toBeGreaterThan(0);
     expect(document.documentElement.lang).toBe("fr");
 
     fireEvent.click(screen.getByRole("button", { name: "Espagnol" }));
 
-    expect(await screen.findByText("Ciudad, IRIS o dirección")).toBeInTheDocument();
+    expect(await screen.findByRole("navigation", { name: "Vista principal" })).toHaveTextContent("Mapa");
     expect((await screen.findAllByText("Casa de piedra")).length).toBeGreaterThan(0);
     expect(screen.getByRole("navigation", { name: "Vista principal" })).toHaveTextContent("Propiedades");
     expect(document.documentElement.lang).toBe("es");

@@ -8,17 +8,13 @@
   ],
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "types": "./src/index.tsx",
+      "import": "./src/index.tsx"
     },
     "./styles.css": "./src/styles.css",
     "./tokens.css": "./src/tokens.css",
     "./components.css": "./src/components.css"
   },
-  "files": [
-    "dist",
-    "src/*.css"
-  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit"
@@ -28,7 +24,7 @@
     "react-dom": "^19.2.0"
   },
   "devDependencies": {
-    "@types/react": "^19.2.7",
+    "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "typescript": "~5.9.3"
   }

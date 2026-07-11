@@ -1,0 +1,18 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+
+trustPolicy: no-downgrade
+
+trustPolicyExclude:
+  - "semver@6.3.1"
+
+overrides:
+  "@webext-core/isolated-element": "1.1.4"
+  "node-notifier>uuid": "11.1.1"
+  "web-ext-run>tmp": "0.2.7"
+  "fx-runner>shell-quote": "1.8.4"
+
+allowBuilds:
+  esbuild: false
+  spawn-sync: false

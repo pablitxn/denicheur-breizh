@@ -15,7 +15,6 @@
   background: var(--color-surface);
 }
 
-.viewSelect,
 .toolbarRight,
 .providerFilters {
   display: flex;
@@ -24,7 +23,6 @@
   min-width: 0;
 }
 
-.viewSelect span,
 .toolbarRight span {
   color: var(--color-text-muted);
   font-size: 12px;
@@ -101,6 +99,12 @@
 
 .table tbody tr:hover {
   background: var(--color-surface);
+}
+
+.table tbody tr:focus-visible,
+.propertyCard:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
 }
 
 .selectedRow {
@@ -332,17 +336,26 @@
 
 .detailActions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr;
   gap: 9px;
 }
 
 @media (max-width: 1120px) {
   .body {
-    grid-template-columns: 1fr;
+    display: flex;
+    flex-direction: column;
+    overflow: auto;
+  }
+
+  .results,
+  .detail {
+    flex: 0 0 auto;
+    overflow: visible;
   }
 
   .detail {
-    display: none;
+    border-top: 1px solid var(--color-border);
+    border-left: 0;
   }
 }
 

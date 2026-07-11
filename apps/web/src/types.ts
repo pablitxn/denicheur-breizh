@@ -1,6 +1,7 @@
 export type ProviderName = "SeLoger" | "Bien'ici" | "Leboncoin" | "Ouest-France";
 
 export type DpeGrade = "A" | "B" | "C" | "D" | "E" | "F" | "G";
+export type PropertyType = "house" | "apartment" | "land";
 
 export type ScoreKey = "coast" | "quiet" | "value" | "family" | "transit" | "dpe" | "flood";
 
@@ -11,6 +12,7 @@ export interface PropertyScores extends Record<ScoreKey, number> {
 export interface PropertyListing {
   id: string;
   title: string;
+  propertyType: PropertyType;
   locality: string;
   address: string;
   price: number;

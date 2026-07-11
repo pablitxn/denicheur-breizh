@@ -3,20 +3,21 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "packageManager": "npm@11.13.0",
-  "workspaces": [
-    "apps/*",
-    "packages/*"
-  ],
+  "packageManager": "pnpm@11.1.3",
+  "engines": {
+    "node": ">=24 <27"
+  },
   "scripts": {
     "dev": "turbo run dev --filter=@denicheur-breizh/web",
     "build": "turbo run build",
     "preview": "turbo run preview --filter=@denicheur-breizh/web",
     "test": "turbo run test",
     "test:run": "turbo run test:run",
-    "typecheck": "turbo run typecheck"
+    "typecheck": "turbo run typecheck",
+    "check": "pnpm typecheck && pnpm test:run && pnpm build",
+    "audit:prod": "pnpm audit --prod --audit-level=high"
   },
   "devDependencies": {
-    "turbo": "^2.9.12"
+    "turbo": "^2.10.4"
   }
 }

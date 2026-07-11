@@ -1,13 +1,17 @@
 import "@denicheur-breizh/design-system/styles.css";
-import "maplibre-gl/dist/maplibre-gl.css";
-import { StrictMode } from "react";
+import { lazy, StrictMode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { ReactQueryDevtools } from "@tanstack/react-query-devtools";
 import { App } from "./App";
 import { queryClient } from "./api/queryClient";
 import { AppIntlProvider } from "./intl/IntlContext";
 import "./styles/global.css";
+
+const ReactQueryDevtools = import.meta.env.DEV
+  ? lazy(() =>
+      import("@tanstack/react-query-devtools").then(({ ReactQueryDevtools: Devtools }) => ({ default: Devtools })),
+    )
+  : null;
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
@@ -15,7 +19,11 @@ createRoot(document.getElementById("root")!).render(
       <AppIntlProvider>
         <App />
       </AppIntlProvider>
-      <ReactQueryDevtools initialIsOpen={false} buttonPosition="bottom-left" />
+      {ReactQueryDevtools && (
+        <Suspense fallback={null}>
+          <ReactQueryDevtools initialIsOpen={false} buttonPosition="bottom-left" />
+        </Suspense>
+      )}
     </QueryClientProvider>
   </StrictMode>,
 );

@@ -1,0 +1,31 @@
+{
+  "name": "@denicheur-breizh/extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wxt -b chrome",
+    "build": "wxt build -b chrome",
+    "zip": "wxt zip -b chrome",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@denicheur-breizh/design-system": "workspace:*",
+    "lucide-react": "^0.554.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.1.43",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@wxt-dev/module-react": "^1.2.2",
+    "jsdom": "^27.4.0",
+    "typescript": "~5.9.3",
+    "vitest": "^4.1.10",
+    "wxt": "^0.20.27"
+  }
+}

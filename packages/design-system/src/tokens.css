@@ -198,7 +198,7 @@
 
 /* ─── Density modes ────────────────────────────────────────────── */
 :root[data-density="compact"] {
-  --h-control-sm: 22px;
+  --h-control-sm: 24px;
   --h-control:    28px;
   --h-control-lg: 32px;
   --h-topbar:     50px;

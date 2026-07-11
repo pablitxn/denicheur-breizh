@@ -12,26 +12,26 @@
     "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.node.json --noEmit"
   },
   "dependencies": {
-    "@denicheur-breizh/design-system": "file:../../packages/design-system",
-    "@tanstack/react-query": "^5.90.12",
-    "@tanstack/react-query-devtools": "^5.90.2",
+    "@denicheur-breizh/design-system": "workspace:*",
+    "@tanstack/react-query": "^5.101.2",
     "lucide-react": "^0.554.0",
-    "maplibre-gl": "^5.12.2",
-    "react": "^19.2.0",
-    "react-dom": "^19.2.0",
-    "zustand": "^5.0.8"
+    "maplibre-gl": "^5.24.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "zustand": "^5.0.14"
   },
   "devDependencies": {
     "@testing-library/jest-dom": "^6.9.1",
-    "@testing-library/react": "^16.3.0",
+    "@testing-library/react": "^16.3.2",
+    "@tanstack/react-query-devtools": "^5.101.2",
     "@types/geojson": "^7946.0.16",
-    "@types/node": "^24.10.1",
-    "@types/react": "^19.2.7",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.1.1",
-    "jsdom": "^27.2.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "jsdom": "^27.4.0",
     "typescript": "~5.9.3",
-    "vite": "^7.2.4",
-    "vitest": "^4.0.14"
+    "vite": "^7.3.6",
+    "vitest": "^4.1.10"
   }
 }

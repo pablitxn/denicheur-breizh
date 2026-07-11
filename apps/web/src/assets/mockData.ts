@@ -6,6 +6,7 @@ export const properties: PropertyListing[] = [
   {
     id: "p1",
     title: "Maison en pierre",
+    propertyType: "house",
     locality: "Cancale",
     address: "12 rue de la Visitation, 35260 Cancale",
     price: 264000,
@@ -27,6 +28,7 @@ export const properties: PropertyListing[] = [
   {
     id: "p2",
     title: "Longere renovee",
+    propertyType: "house",
     locality: "Saint-Briac",
     address: "8 chemin du Bourg, 35800 Saint-Briac-sur-Mer",
     price: 318000,
@@ -48,6 +50,7 @@ export const properties: PropertyListing[] = [
   {
     id: "p3",
     title: "Appartement T3",
+    propertyType: "apartment",
     locality: "Rennes centre",
     address: "Rue de Nantes, 35000 Rennes",
     price: 195000,
@@ -69,6 +72,7 @@ export const properties: PropertyListing[] = [
   {
     id: "p4",
     title: "Maison de bord de mer",
+    propertyType: "house",
     locality: "Dinard",
     address: "Avenue George V, 35800 Dinard",
     price: 412000,
@@ -90,6 +94,7 @@ export const properties: PropertyListing[] = [
   {
     id: "p5",
     title: "Maison familiale",
+    propertyType: "house",
     locality: "Pleurtuit",
     address: "12 rue des Forges, 35730 Pleurtuit",
     price: 232000,
@@ -111,6 +116,7 @@ export const properties: PropertyListing[] = [
   {
     id: "p6",
     title: "Maison en pierre",
+    propertyType: "house",
     locality: "Plouer-sur-Rance",
     address: "6 ruelle Verte, 22490 Plouer-sur-Rance",
     price: 178000,
@@ -132,6 +138,7 @@ export const properties: PropertyListing[] = [
   {
     id: "p7",
     title: "Maison intra-muros",
+    propertyType: "house",
     locality: "Saint-Malo",
     address: "Rue Surcouf, 35400 Saint-Malo",
     price: 489000,
@@ -153,6 +160,7 @@ export const properties: PropertyListing[] = [
   {
     id: "p8",
     title: "Maison de bourg",
+    propertyType: "house",
     locality: "Pleslin-Trigavou",
     address: "Rue de l'Eglise, 22490 Pleslin-Trigavou",
     price: 209000,
@@ -174,6 +182,7 @@ export const properties: PropertyListing[] = [
   {
     id: "p9",
     title: "Maison contemporaine",
+    propertyType: "house",
     locality: "Dinan",
     address: "Rue de la Ferronnerie, 22100 Dinan",
     price: 287000,
@@ -195,6 +204,7 @@ export const properties: PropertyListing[] = [
   {
     id: "p10",
     title: "Penty renove",
+    propertyType: "house",
     locality: "Cancale",
     address: "Rue du Port, 35260 Cancale",
     price: 224000,
@@ -216,6 +226,7 @@ export const properties: PropertyListing[] = [
   {
     id: "p11",
     title: "Maison",
+    propertyType: "house",
     locality: "Cesson-Sevigne",
     address: "Rue de Paris, 35510 Cesson-Sevigne",
     price: 365000,
@@ -237,6 +248,7 @@ export const properties: PropertyListing[] = [
   {
     id: "p12",
     title: "Maison ancienne",
+    propertyType: "house",
     locality: "Lamballe",
     address: "Rue Saint-Martin, 22400 Lamballe",
     price: 165000,
@@ -365,7 +377,7 @@ export const recipes: ScoringRecipe[] = [
     weights: { coast: 35, quiet: 25, value: 20, transit: 10, dpe: 10, family: 0, flood: 0 },
     filters: [
       { id: "f1", field: "price", operator: "lte", value: "480000" },
-      { id: "f2", field: "type", operator: "eq", value: "Maison" },
+      { id: "f2", field: "type", operator: "eq", value: "house" },
       { id: "f3", field: "dpe", operator: "lte", value: "D" },
     ],
   },

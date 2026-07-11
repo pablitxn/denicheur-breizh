@@ -1,6 +1,8 @@
 node_modules
 dist
 .turbo
+.output
+.wxt
 .env
 .env.*
 !.env.example

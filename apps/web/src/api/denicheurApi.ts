@@ -2,20 +2,37 @@ import { properties, providers, recipes, scorings } from "../assets/mockData";
 import type { PropertyFilters, PropertyListing, ScoringMetric, ScoringRecipe } from "../types";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "");
+export const usesMockApi = !API_BASE_URL;
 
-async function waitForMock() {
-  await new Promise((resolve) => window.setTimeout(resolve, 120));
+async function waitForMock(signal?: AbortSignal) {
+  await new Promise<void>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException("Request aborted", "AbortError"));
+      return;
+    }
+
+    const timeout = window.setTimeout(() => {
+      signal?.removeEventListener("abort", handleAbort);
+      resolve();
+    }, 120);
+    const handleAbort = () => {
+      window.clearTimeout(timeout);
+      reject(new DOMException("Request aborted", "AbortError"));
+    };
+    signal?.addEventListener("abort", handleAbort, { once: true });
+  });
 }
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+async function requestJson<T>(path: string, init?: RequestInit, signal?: AbortSignal): Promise<T> {
   if (!API_BASE_URL) {
     throw new Error("No backend configured");
   }
 
-  const response = await fetch(`${API_BASE_URL}${path}`, {
-    headers: { "Content-Type": "application/json" },
-    ...init,
-  });
+  const headers = new Headers(init?.headers);
+  headers.set("Accept", "application/json");
+  if (init?.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
+
+  const response = await fetch(`${API_BASE_URL}${path}`, { ...init, headers, signal });
 
   if (!response.ok) {
     throw new Error(`API request failed: ${response.status}`);
@@ -42,7 +59,7 @@ function applyPropertyFilters(source: PropertyListing[], filters?: Partial<Prope
 }
 
 export const denicheurApi = {
-  async listProperties(filters?: Partial<PropertyFilters>): Promise<PropertyListing[]> {
+  async listProperties(filters?: Partial<PropertyFilters>, signal?: AbortSignal): Promise<PropertyListing[]> {
     if (API_BASE_URL) {
       const params = new URLSearchParams();
       filters?.providers?.forEach((provider) => params.append("provider", provider));
@@ -51,49 +68,49 @@ export const denicheurApi = {
       if (filters?.surfaceMin !== undefined) params.set("surfaceMin", String(filters.surfaceMin));
       if (filters?.dpeMax !== undefined) params.set("dpeMax", filters.dpeMax);
 
-      return requestJson<PropertyListing[]>(`/properties?${params.toString()}`);
+      return requestJson<PropertyListing[]>(`/properties?${params.toString()}`, undefined, signal);
     }
 
-    await waitForMock();
+    await waitForMock(signal);
     return applyPropertyFilters(properties, filters);
   },
 
-  async listProviders() {
+  async listProviders(signal?: AbortSignal) {
     if (API_BASE_URL) {
-      return requestJson<string[]>("/providers");
+      return requestJson<string[]>("/providers", undefined, signal);
     }
 
-    await waitForMock();
+    await waitForMock(signal);
     return [...providers];
   },
 
-  async listScorings(): Promise<ScoringMetric[]> {
+  async listScorings(signal?: AbortSignal): Promise<ScoringMetric[]> {
     if (API_BASE_URL) {
-      return requestJson<ScoringMetric[]>("/scorings");
+      return requestJson<ScoringMetric[]>("/scorings", undefined, signal);
     }
 
-    await waitForMock();
+    await waitForMock(signal);
     return scorings;
   },
 
-  async listRecipes(): Promise<ScoringRecipe[]> {
+  async listRecipes(signal?: AbortSignal): Promise<ScoringRecipe[]> {
     if (API_BASE_URL) {
-      return requestJson<ScoringRecipe[]>("/recipes");
+      return requestJson<ScoringRecipe[]>("/recipes", undefined, signal);
     }
 
-    await waitForMock();
+    await waitForMock(signal);
     return recipes;
   },
 
-  async saveRecipe(recipe: ScoringRecipe): Promise<ScoringRecipe> {
+  async saveRecipe(recipe: ScoringRecipe, signal?: AbortSignal): Promise<ScoringRecipe> {
     if (API_BASE_URL) {
       return requestJson<ScoringRecipe>(`/recipes/${recipe.id}`, {
         method: "PUT",
         body: JSON.stringify(recipe),
-      });
+      }, signal);
     }
 
-    await waitForMock();
+    await waitForMock(signal);
     return { ...recipe, status: "saved" };
   },
 };

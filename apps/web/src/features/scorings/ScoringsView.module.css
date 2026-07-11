@@ -71,15 +71,6 @@
   color: var(--cta) !important;
 }
 
-.groupFooter {
-  padding: 12px;
-  border-top: 1px solid var(--color-border-soft);
-}
-
-.groupFooter button {
-  width: 100%;
-}
-
 .indexHeader {
   position: sticky;
   top: 0;
@@ -107,7 +98,7 @@
 
 .metricItem {
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) 32px;
+  grid-template-columns: 36px minmax(0, 1fr);
   gap: 12px;
   align-items: center;
   width: 100%;
@@ -159,13 +150,6 @@
 .metricCopy small {
   color: var(--color-text-muted);
   font-size: 12px;
-}
-
-.metricItem em {
-  color: var(--color-text-muted);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-style: normal;
 }
 
 .docBody {
@@ -327,18 +311,30 @@
 
 @media (max-width: 1060px) {
   .view {
-    grid-template-columns: 220px minmax(300px, 380px);
+    grid-template-columns: 220px minmax(300px, 1fr);
+    grid-template-rows: minmax(430px, 1fr) auto;
+    overflow: auto;
   }
 
   .docs {
-    display: none;
+    grid-column: 1 / -1;
+    overflow: visible;
+    border-top: 1px solid var(--color-border);
   }
 }
 
 @media (max-width: 760px) {
   .view {
     grid-template-columns: 1fr;
+    grid-template-rows: repeat(3, max-content);
+    align-content: start;
     overflow: auto;
+  }
+
+  .groups,
+  .index,
+  .docs {
+    overflow: visible;
   }
 
   .groups {
@@ -348,5 +344,9 @@
   .index {
     min-height: 420px;
     border-right: 0;
+  }
+
+  .docs {
+    grid-column: 1;
   }
 }

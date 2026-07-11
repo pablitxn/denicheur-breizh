@@ -1,0 +1,30 @@
+{
+  "compilerOptions": {
+    "tsBuildInfoFile": "../../node_modules/.tmp/extension.tsbuildinfo",
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "allowJs": false,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"],
+      "@denicheur-breizh/design-system": ["../../packages/design-system/src/index.tsx"],
+      "@denicheur-breizh/design-system/*": ["../../packages/design-system/src/*"]
+    },
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "types": ["chrome"]
+  },
+  "include": ["entrypoints", "src", "wxt.config.ts", "vitest.config.ts"]
+}

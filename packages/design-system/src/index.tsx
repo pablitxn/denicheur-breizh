@@ -12,16 +12,22 @@ function cx(...parts: Array<string | false | null | undefined>) {
 export type ButtonVariant = "default" | "primary" | "ghost" | "danger";
 export type ButtonSize = "sm" | "md";
 
-export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
+interface ButtonBaseProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
   size?: ButtonSize;
-  iconOnly?: boolean;
 }
+
+export type ButtonProps = ButtonBaseProps &
+  (
+    | { iconOnly: true; "aria-label": string }
+    | { iconOnly?: false }
+  );
 
 export function Button({
   variant = "default",
   size = "md",
   iconOnly = false,
+  type = "button",
   className,
   ...props
 }: ButtonProps) {
@@ -34,6 +40,7 @@ export function Button({
         iconOnly && "icon",
         className,
       )}
+      type={type}
       {...props}
     />
   );
@@ -48,6 +55,7 @@ export interface ChipProps {
   onClick?: () => void;
   title?: string;
   className?: string;
+  "aria-label"?: string;
 }
 
 export function Chip({
@@ -57,12 +65,20 @@ export function Chip({
   onClick,
   title,
   className,
+  "aria-label": ariaLabel,
 }: ChipProps) {
   const chipClassName = cx("chip", active && "active", tone !== "default" && tone, className);
 
   if (onClick) {
     return (
-      <button type="button" className={chipClassName} onClick={onClick} title={title}>
+      <button
+        type="button"
+        className={chipClassName}
+        onClick={onClick}
+        title={title}
+        aria-label={ariaLabel}
+        aria-pressed={active}
+      >
         {children}
       </button>
     );
@@ -118,9 +134,9 @@ export function Select({ className, ...props }: SelectHTMLAttributes<HTMLSelectE
   return <select className={cx("select", className)} {...props} />;
 }
 
-export function FieldLabel({ children, className, ...props }: HTMLAttributes<HTMLSpanElement>) {
+export function SectionLabel({ children, className, ...props }: HTMLAttributes<HTMLSpanElement>) {
   return (
-    <span className={cx("field-label", className)} {...props}>
+    <span className={cx("section-label", className)} {...props}>
       {children}
     </span>
   );

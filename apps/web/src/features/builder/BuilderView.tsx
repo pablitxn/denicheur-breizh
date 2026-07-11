@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { Play, Plus, Save, SlidersHorizontal, Trash2 } from "lucide-react";
+import { Plus, Save, SlidersHorizontal, Trash2 } from "lucide-react";
 import { useProperties, useRecipes, useSaveRecipe, useScorings } from "../../api/hooks";
-import { Button, Chip, EmptyState, FieldLabel, Meter, ScoreBadge, Select } from "@denicheur-breizh/design-system";
+import { Button, Chip, EmptyState, SectionLabel, Meter, ScoreBadge, Select } from "@denicheur-breizh/design-system";
 import { getPropertyTitle, localizeRecipe, localizeScoring } from "../../intl/domain";
 import { useAppIntl } from "../../intl/IntlContext";
 import type { RecipeFilter, ScoreKey, ScoringRecipe } from "../../types";
 import { formatPrice } from "../../utils/format";
-import { getRecipeTotalWeight, rankPropertiesByRecipe } from "../../utils/scoring";
+import { getRecipeTotalWeight, isRecipeFilterValid, rankPropertiesByRecipe } from "../../utils/scoring";
 import styles from "./BuilderView.module.css";
 
 const scoreKeys: ScoreKey[] = ["coast", "quiet", "value", "family", "transit", "dpe", "flood"];
@@ -14,12 +14,12 @@ const scoreKeys: ScoreKey[] = ["coast", "quiet", "value", "family", "transit", "
 const fallbackRecipe: ScoringRecipe = {
   id: "draft",
   name: "Weekend retreat",
-  description: "Residence secondaire, acces mer rapide, calme la nuit, prix defendable.",
+  description: "Résidence secondaire, accès mer rapide, calme la nuit, prix défendable.",
   status: "draft",
   weights: { coast: 35, quiet: 25, value: 20, transit: 10, dpe: 10, family: 0, flood: 0 },
   filters: [
     { id: "f1", field: "price", operator: "lte", value: "480000" },
-    { id: "f2", field: "type", operator: "eq", value: "Maison" },
+    { id: "f2", field: "type", operator: "eq", value: "house" },
     { id: "f3", field: "dpe", operator: "lte", value: "D" },
   ],
 };
@@ -32,23 +32,38 @@ export function BuilderView() {
   const saveRecipe = useSaveRecipe();
   const [activeTab, setActiveTab] = useState<"weights" | "filters" | "formula" | "qa">("weights");
   const [activeRecipeId, setActiveRecipeId] = useState("weekend");
-  const [draft, setDraft] = useState<ScoringRecipe>(() => localizeRecipe(fallbackRecipe, locale));
+  const [draft, setDraft] = useState<ScoringRecipe>(() => ({
+    ...fallbackRecipe,
+    weights: { ...fallbackRecipe.weights },
+    filters: fallbackRecipe.filters.map((filter) => ({ ...filter })),
+  }));
 
   useEffect(() => {
     const recipe = recipes.find((item) => item.id === activeRecipeId);
     if (recipe) {
-      const localizedRecipe = localizeRecipe(recipe, locale);
-      setDraft({ ...localizedRecipe, weights: { ...localizedRecipe.weights }, filters: localizedRecipe.filters.map((filter) => ({ ...filter })) });
+      setDraft({ ...recipe, weights: { ...recipe.weights }, filters: recipe.filters.map((filter) => ({ ...filter })) });
     }
-  }, [activeRecipeId, locale, recipes]);
+  }, [activeRecipeId, recipes]);
 
   const totalWeight = getRecipeTotalWeight(draft);
-  const ranked = useMemo(() => rankPropertiesByRecipe(properties, draft).slice(0, 6), [draft, properties]);
+  const ranked = useMemo(() => rankPropertiesByRecipe(properties, draft), [draft, properties]);
+  const previewRanked = ranked.slice(0, 6);
   const palette = scoreKeys
     .map((key) => scorings.find((scoring) => scoring.id === key))
     .filter((scoring): scoring is NonNullable<typeof scoring> => Boolean(scoring));
   const localizedPalette = useMemo(() => palette.map((scoring) => localizeScoring(scoring, locale)), [locale, palette]);
   const localizedRecipes = useMemo(() => recipes.map((recipe) => localizeRecipe(recipe, locale)), [locale, recipes]);
+  const scoreDistribution = useMemo(() => {
+    const bins = Array.from({ length: 10 }, () => 0);
+    ranked.forEach((property) => {
+      const index = Math.min(9, Math.max(0, Math.floor(property.customScore)));
+      bins[index] += 1;
+    });
+    return bins;
+  }, [ranked]);
+  const maxDistributionCount = Math.max(...scoreDistribution, 1);
+  const filtersAreValid = draft.filters.every(isRecipeFilterValid);
+  const canSave = totalWeight === 100 && Boolean(draft.name.trim()) && filtersAreValid;
 
   const updateWeight = (key: ScoreKey, value: number) => {
     setDraft((current) => ({ ...current, weights: { ...current.weights, [key]: Math.max(0, Math.min(100, value)) } }));
@@ -70,6 +85,16 @@ export function BuilderView() {
     setDraft((current) => ({ ...current, filters: current.filters.map((filter) => (filter.id === id ? { ...filter, ...patch } : filter)) }));
   };
 
+  const updateFilterField = (id: string, field: RecipeFilter["field"]) => {
+    if (field === "type") {
+      updateFilter(id, { field, operator: "eq", value: "house" });
+    } else if (field === "dpe") {
+      updateFilter(id, { field, operator: "lte", value: "D" });
+    } else {
+      updateFilter(id, { field, operator: "lte", value: "0" });
+    }
+  };
+
   const addFilter = () => {
     setDraft((current) => ({
       ...current,
@@ -89,7 +114,7 @@ export function BuilderView() {
     <section className={styles.view}>
       <aside className={styles.palette}>
         <div className={styles.paletteIntro}>
-          <FieldLabel>{t("builder.availableBlocks")}</FieldLabel>
+          <SectionLabel>{t("builder.availableBlocks")}</SectionLabel>
           <strong>{t("builder.criteria", { count: palette.length })}</strong>
         </div>
         <div className={styles.paletteList}>
@@ -106,7 +131,7 @@ export function BuilderView() {
         </div>
 
         <div className={styles.presets}>
-          <FieldLabel>{t("builder.presets")}</FieldLabel>
+          <SectionLabel>{t("builder.presets")}</SectionLabel>
           {isLoading && <span className={styles.muted}>{t("common.loading")}</span>}
           {localizedRecipes.map((recipe) => (
             <button
@@ -122,7 +147,7 @@ export function BuilderView() {
         </div>
       </aside>
 
-      <main className={styles.editor}>
+      <section className={styles.editor}>
         <header className={styles.editorHeader}>
           <div className={styles.titleBlock}>
             <div className={styles.statusRow}>
@@ -132,46 +157,61 @@ export function BuilderView() {
             <input
               className={styles.titleInput}
               value={draft.name}
+              name="recipe-name"
+              autoComplete="off"
               onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}
               aria-label={t("builder.nameAria")}
             />
             <input
               className={styles.descriptionInput}
               value={draft.description}
+              name="recipe-description"
+              autoComplete="off"
               onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))}
               aria-label={t("builder.descriptionAria")}
             />
           </div>
           <div className={styles.headerActions}>
-            <Button>
-              <Play size={14} />
-              {t("builder.testOn", { count: properties.length })}
-            </Button>
-            <Button variant="primary" onClick={() => saveRecipe.mutate(draft)} disabled={saveRecipe.isPending}>
+            <Button
+              variant="primary"
+              onClick={() => saveRecipe.mutate(draft, { onSuccess: (savedRecipe) => setDraft(savedRecipe) })}
+              disabled={saveRecipe.isPending || !canSave}
+            >
               <Save size={14} />
               {saveRecipe.isPending ? t("builder.saving") : t("builder.save")}
             </Button>
           </div>
         </header>
 
-        <nav className={styles.tabs} aria-label={t("builder.sections")}>
+        <nav className={styles.tabs} aria-label={t("builder.sections")} role="tablist">
           {[
             ["weights", t("builder.tab.weights")],
             ["filters", t("builder.tab.filters")],
             ["formula", t("builder.tab.formula")],
             ["qa", t("builder.tab.qa")],
           ].map(([id, label]) => (
-            <button key={id} type="button" className={activeTab === id ? styles.tabActive : ""} onClick={() => setActiveTab(id as typeof activeTab)}>
+            <button
+              key={id}
+              id={`builder-tab-${id}`}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === id}
+              aria-controls={`builder-panel-${id}`}
+              className={activeTab === id ? styles.tabActive : ""}
+              onClick={() => setActiveTab(id as typeof activeTab)}
+            >
               {label}
             </button>
           ))}
         </nav>
 
         <div className={styles.content}>
+          {saveRecipe.isError && <p className={styles.saveError} role="alert">{t("builder.saveError")}</p>}
+          {!filtersAreValid && <p className={styles.saveError} role="alert">{t("builder.invalidFilters")}</p>}
           {activeTab === "weights" && (
-            <section className={styles.weights}>
+            <section className={styles.weights} id="builder-panel-weights" role="tabpanel" aria-labelledby="builder-tab-weights">
               <div className={styles.sectionTop}>
-                <FieldLabel>{t("builder.tab.weights")}</FieldLabel>
+                <SectionLabel>{t("builder.tab.weights")}</SectionLabel>
                 <div>
                   <span className={totalWeight === 100 ? styles.totalOk : styles.totalWarn}>{totalWeight} / 100</span>
                   <Button size="sm" variant="ghost" onClick={normalizeWeights}>
@@ -225,9 +265,9 @@ export function BuilderView() {
           )}
 
           {activeTab === "filters" && (
-            <section className={styles.filters}>
+            <section className={styles.filters} id="builder-panel-filters" role="tabpanel" aria-labelledby="builder-tab-filters">
               <div className={styles.sectionTop}>
-                <FieldLabel>{t("builder.exclusions")}</FieldLabel>
+                <SectionLabel>{t("builder.exclusions")}</SectionLabel>
                 <Button size="sm" onClick={addFilter}>
                   <Plus size={14} />
                   {t("builder.add")}
@@ -235,27 +275,42 @@ export function BuilderView() {
               </div>
               {draft.filters.map((filter) => (
                 <div key={filter.id} className={styles.filterRow}>
-                  <Select value={filter.field} onChange={(event) => updateFilter(filter.id, { field: event.target.value as RecipeFilter["field"] })}>
+                  <Select aria-label={t("builder.filterFieldAria")} value={filter.field} onChange={(event) => updateFilterField(filter.id, event.target.value as RecipeFilter["field"])}>
                     <option value="price">{t("filter.field.price")}</option>
+                    <option value="type">{t("filter.field.type")}</option>
                     <option value="surface">{t("filter.field.surface")}</option>
                     <option value="rooms">{t("filter.field.rooms")}</option>
                     <option value="dpe">{t("filter.field.dpe")}</option>
                     <option value="transit">{t("filter.field.transit")}</option>
                   </Select>
-                  <Select value={filter.operator} onChange={(event) => updateFilter(filter.id, { operator: event.target.value as RecipeFilter["operator"] })}>
+                  <Select aria-label={t("builder.filterOperatorAria")} value={filter.operator} onChange={(event) => updateFilter(filter.id, { operator: event.target.value as RecipeFilter["operator"] })}>
                     <option value="eq">=</option>
                     <option value="neq">!=</option>
-                    <option value="lte">&lt;=</option>
-                    <option value="gte">&gt;=</option>
-                    <option value="between">{t("filter.operator.between")}</option>
+                    {filter.field !== "type" && <option value="lte">&lt;=</option>}
+                    {filter.field !== "type" && <option value="gte">&gt;=</option>}
+                    {filter.field !== "type" && filter.field !== "dpe" && <option value="between">{t("filter.operator.between")}</option>}
                   </Select>
-                  <input
-                    value={filter.value}
-                    name={`filter-${filter.id}`}
-                    autoComplete="off"
-                    aria-label={t("builder.filterValueAria", { field: filter.field })}
-                    onChange={(event) => updateFilter(filter.id, { value: event.target.value })}
-                  />
+                  {filter.field === "type" ? (
+                    <Select value={filter.value} aria-label={t("builder.filterValueAria", { field: filter.field })} onChange={(event) => updateFilter(filter.id, { value: event.target.value })}>
+                      <option value="house">{t("property.type.house")}</option>
+                      <option value="apartment">{t("property.type.apartment")}</option>
+                      <option value="land">{t("property.type.land")}</option>
+                    </Select>
+                  ) : filter.field === "dpe" ? (
+                    <Select value={filter.value} aria-label={t("builder.filterValueAria", { field: filter.field })} onChange={(event) => updateFilter(filter.id, { value: event.target.value })}>
+                      {(["A", "B", "C", "D", "E", "F", "G"] as const).map((grade) => <option key={grade} value={grade}>{grade}</option>)}
+                    </Select>
+                  ) : (
+                    <input
+                      value={filter.value}
+                      name={`filter-${filter.id}`}
+                      autoComplete="off"
+                      inputMode="decimal"
+                      aria-invalid={!isRecipeFilterValid(filter)}
+                      aria-label={t("builder.filterValueAria", { field: filter.field })}
+                      onChange={(event) => updateFilter(filter.id, { value: event.target.value })}
+                    />
+                  )}
                   <Button variant="ghost" size="sm" iconOnly aria-label={t("builder.deleteFilter")} onClick={() => deleteFilter(filter.id)}>
                     <Trash2 size={14} />
                   </Button>
@@ -265,38 +320,42 @@ export function BuilderView() {
           )}
 
           {activeTab === "formula" && (
-            <section className={styles.formula}>
-              <FieldLabel>{t("builder.explicitFormula")}</FieldLabel>
+            <section className={styles.formula} id="builder-panel-formula" role="tabpanel" aria-labelledby="builder-tab-formula">
+              <SectionLabel>{t("builder.explicitFormula")}</SectionLabel>
               <pre>{buildFormula(draft)}</pre>
               <Chip active tone="good">{t("builder.validBlocks", { count: scoreKeys.filter((key) => draft.weights[key] > 0).length })}</Chip>
             </section>
           )}
 
           {activeTab === "qa" && (
-            <section className={styles.qa}>
+            <section className={styles.qa} id="builder-panel-qa" role="tabpanel" aria-labelledby="builder-tab-qa">
               <div className={styles.qaStats}>
-                <Stat label={t("builder.evaluatedProperties")} value={String(properties.length)} />
+                <Stat label={t("builder.evaluatedProperties")} value={String(ranked.length)} />
                 <Stat label={t("builder.averageScore")} value={(ranked.reduce((sum, item) => sum + item.customScore, 0) / Math.max(ranked.length, 1)).toFixed(2)} />
                 <Stat label={t("builder.topScore")} value={ranked[0]?.customScore.toFixed(1) ?? "0.0"} />
                 <Stat label={t("builder.activeWeights")} value={String(scoreKeys.filter((key) => draft.weights[key] > 0).length)} />
               </div>
-              <div className={styles.histogram}>
-                {[2, 4, 6, 9, 14, 22, 28, 34, 30, 22, 18, 12, 8, 5, 3, 2, 1].map((height, index) => (
-                  <span key={index} style={{ height: `${height * 3}px` }} />
+              <div className={styles.histogram} role="img" aria-label={t("builder.distributionAria")}>
+                {scoreDistribution.map((count, index) => (
+                  <span
+                    key={index}
+                    title={`${index}-${index + 1}: ${count}`}
+                    style={{ height: count === 0 ? "2px" : `${(count / maxDistributionCount) * 100}%` }}
+                  />
                 ))}
               </div>
             </section>
           )}
         </div>
-      </main>
+      </section>
 
       <aside className={styles.preview}>
         <div className={styles.previewHeader}>
-          <FieldLabel>{t("builder.previewRanking")}</FieldLabel>
-          <span>{ranked.length}</span>
+          <SectionLabel>{t("builder.previewRanking")}</SectionLabel>
+          <span>{previewRanked.length}</span>
         </div>
         <div className={styles.previewList}>
-          {ranked.map((property, index) => (
+          {previewRanked.map((property, index) => (
             <article key={property.id} className={styles.previewItem}>
               <b>{index + 1}</b>
               <div>
@@ -308,7 +367,7 @@ export function BuilderView() {
           ))}
         </div>
         <div className={styles.mixBox}>
-          <FieldLabel>{t("builder.mix")}</FieldLabel>
+          <SectionLabel>{t("builder.mix")}</SectionLabel>
           <div className={styles.mixBar}>
             {scoreKeys
               .filter((key) => draft.weights[key] > 0)
@@ -341,7 +400,7 @@ function buildFormula(recipe: ScoringRecipe) {
 function Stat({ label, value }: { label: string; value: string }) {
   return (
     <div className={styles.stat}>
-      <FieldLabel>{label}</FieldLabel>
+      <SectionLabel>{label}</SectionLabel>
       <strong>{value}</strong>
       <Meter value={Number(value) || 5} max={10} />
     </div>

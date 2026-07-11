@@ -1,12 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { GeoJSONSource, Map as MapLibreMap } from "maplibre-gl";
-import { Layers, LocateFixed, Pencil, Plus, Search } from "lucide-react";
+import "maplibre-gl/dist/maplibre-gl.css";
 import { useProperties } from "../../api/hooks";
 import { PropertyVisual } from "../../components/PropertyVisual";
-import { Button, Chip, EmptyState, FieldLabel, Meter, ScoreBadge } from "@denicheur-breizh/design-system";
+import { Button, Chip, EmptyState, SectionLabel, Meter, ScoreBadge } from "@denicheur-breizh/design-system";
 import { getPropertyTitle, scoreMessageIds } from "../../intl/domain";
 import { useAppIntl } from "../../intl/IntlContext";
-import type { MessageId } from "../../intl/messages";
 import { useWorkspaceStore } from "../../state/workspaceStore";
 import type { PropertyFilters, PropertyListing, ProviderName, ScoreKey } from "../../types";
 import { formatPostedDays, formatPrice, formatPricePerM2, formatRooms } from "../../utils/format";
@@ -14,20 +13,7 @@ import { propertiesToGeoJson, regionsGeoJson } from "../../utils/mapData";
 import styles from "./MapView.module.css";
 
 const dpeGrades = ["A", "B", "C", "D", "E", "F"] as const;
-const paintOptions: Array<{ id: ScoreKey; labelId: MessageId }> = [
-  { id: "coast", labelId: scoreMessageIds.coast },
-  { id: "value", labelId: scoreMessageIds.value },
-  { id: "quiet", labelId: scoreMessageIds.quiet },
-  { id: "family", labelId: scoreMessageIds.family },
-];
-
 const providerOptions: ProviderName[] = ["SeLoger", "Bien'ici", "Leboncoin", "Ouest-France"];
-const mapTools = [
-  { id: "select", labelId: "map.tool.select", icon: <LocateFixed size={15} /> },
-  { id: "draw", labelId: "map.tool.draw", icon: <Pencil size={15} /> },
-  { id: "point", labelId: "map.tool.point", icon: <Plus size={15} /> },
-  { id: "layers", labelId: "map.tool.layers", icon: <Layers size={15} /> },
-] satisfies Array<{ id: string; labelId: MessageId; icon: ReactNode }>;
 
 const detailScoreKeys: Array<"overall" | ScoreKey> = [
   "overall",
@@ -46,8 +32,6 @@ export function MapView() {
   const shortlisted = useWorkspaceStore((state) => state.shortlistedPropertyIds);
   const mapEl = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
-  const [paintBy, setPaintBy] = useState<ScoreKey>("coast");
-  const [activeTool, setActiveTool] = useState("select");
   const [filters, setFilters] = useState<PropertyFilters>({
     providers: providerOptions,
     priceMin: 120000,
@@ -115,7 +99,7 @@ export function MapView() {
         },
         center: [-2.05, 48.55],
         zoom: 8.75,
-        attributionControl: false,
+        attributionControl: { compact: true },
       });
 
       map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
@@ -223,7 +207,7 @@ export function MapView() {
       <aside className={styles.filterPanel}>
         <div className={styles.panelSection}>
           <div className={styles.sectionHeader}>
-            <FieldLabel>{t("map.searchActive")}</FieldLabel>
+            <SectionLabel>{t("map.searchActive")}</SectionLabel>
             <Button
               variant="ghost"
               size="sm"
@@ -248,7 +232,7 @@ export function MapView() {
         </div>
 
         <div className={styles.panelSection}>
-          <FieldLabel>{t("map.maxPrice")}</FieldLabel>
+          <SectionLabel>{t("map.maxPrice")}</SectionLabel>
           <input
             className={styles.range}
             type="range"
@@ -265,7 +249,7 @@ export function MapView() {
             <span>540 k</span>
           </div>
 
-          <FieldLabel>{t("map.minSurface")}</FieldLabel>
+          <SectionLabel>{t("map.minSurface")}</SectionLabel>
           <input
             className={styles.range}
             type="range"
@@ -282,7 +266,7 @@ export function MapView() {
             <span>140+</span>
           </div>
 
-          <FieldLabel>{t("map.acceptedDpe")}</FieldLabel>
+          <SectionLabel>{t("map.acceptedDpe")}</SectionLabel>
           <div className={styles.gradeRow}>
             {dpeGrades.map((grade) => (
               <button
@@ -290,6 +274,7 @@ export function MapView() {
                 type="button"
                 className={[styles.grade, grade <= filters.dpeMax ? styles.gradeActive : ""].join(" ")}
                 onClick={() => setFilters((current) => ({ ...current, dpeMax: grade }))}
+                aria-pressed={grade === filters.dpeMax}
               >
                 {grade}
               </button>
@@ -297,60 +282,10 @@ export function MapView() {
           </div>
         </div>
 
-        <div className={styles.panelSection}>
-          <FieldLabel>{t("map.paintBy")}</FieldLabel>
-          <div className={styles.radioStack}>
-            {paintOptions.map((option) => (
-              <label key={option.id} className={styles.radioRow}>
-                <input type="radio" name="paint" checked={paintBy === option.id} onChange={() => setPaintBy(option.id)} />
-                <span>{t(option.labelId)}</span>
-                <i />
-              </label>
-            ))}
-          </div>
-        </div>
-
-        <div className={styles.panelSection}>
-          <FieldLabel>{t("map.layers")}</FieldLabel>
-          <label className={styles.checkRow}>
-            <input type="checkbox" defaultChecked />
-            {t("map.schoolsLayer")}
-          </label>
-          <label className={styles.checkRow}>
-            <input type="checkbox" defaultChecked />
-            {t("map.transitLayer")}
-          </label>
-          <label className={styles.checkRow}>
-            <input type="checkbox" />
-            {t("map.noiseLayer")}
-          </label>
-          <label className={styles.checkRow}>
-            <input type="checkbox" />
-            {t("map.floodLayer")}
-          </label>
-        </div>
       </aside>
 
       <div className={styles.mapStage}>
         <div ref={mapEl} className={styles.mapCanvas} />
-        <div className={styles.toolPalette}>
-          {mapTools.map(({ id, labelId, icon }) => (
-            <Button
-              key={id}
-              variant={activeTool === id ? "default" : "ghost"}
-              size="sm"
-              iconOnly
-              aria-label={t(labelId)}
-              onClick={() => setActiveTool(id)}
-            >
-              {icon}
-            </Button>
-          ))}
-          <Button variant="ghost" size="sm">
-            <Search size={14} />
-            {t("map.searchButton")}
-          </Button>
-        </div>
 
         <div className={styles.mapNotice}>
           <span className={styles.goodDot} />
@@ -359,7 +294,7 @@ export function MapView() {
 
         <div className={styles.legend}>
           <div className={styles.sectionHeader}>
-            <FieldLabel>{t(paintOptions.find((option) => option.id === paintBy)?.labelId ?? scoreMessageIds.coast)}</FieldLabel>
+            <SectionLabel>{t(scoreMessageIds.coast)}</SectionLabel>
             <span>0-10</span>
           </div>
           <div className={styles.gradientBar} />
@@ -372,7 +307,7 @@ export function MapView() {
       </div>
 
       <aside className={styles.detailPanel}>
-        {error && <EmptyState>{t("map.errorProperties")}</EmptyState>}
+        {error && <EmptyState role="alert">{t("map.errorProperties")}</EmptyState>}
         {!error && !selectedProperty && <EmptyState>{t("map.emptySelection")}</EmptyState>}
         {selectedProperty && (
           <>
@@ -396,7 +331,7 @@ export function MapView() {
 
               <div className={styles.scoreStack}>
                 <div className={styles.sectionHeader}>
-                  <FieldLabel>{t("map.scoring")}</FieldLabel>
+                  <SectionLabel>{t("map.scoring")}</SectionLabel>
                   <span>{t("map.scoringRecipe")}</span>
                 </div>
                 {detailScoreKeys.map((key) => {
@@ -414,7 +349,7 @@ export function MapView() {
               </div>
 
               <div className={styles.explain}>
-                <FieldLabel>{t("map.why")}</FieldLabel>
+                <SectionLabel>{t("map.why")}</SectionLabel>
                 <p>{t("map.whyCoast", { score: (selectedProperty.scores.coast / 8).toFixed(1), distance: selectedProperty.diagnostics.coastalDistanceKm })}</p>
                 <p>{t("map.whyTransit", { minutes: selectedProperty.diagnostics.transitMinutes })}</p>
                 <p>{t("map.whyNoise", { db: selectedProperty.diagnostics.noiseDbNight })}</p>
@@ -423,9 +358,6 @@ export function MapView() {
               <div className={styles.actions}>
                 <Button className={styles.actionButton} onClick={() => toggleShortlist(selectedProperty.id)}>
                   {shortlisted.includes(selectedProperty.id) ? t("properties.shortlisted") : t("properties.shortlist")}
-                </Button>
-                <Button className={styles.actionButton} variant="primary">
-                  {t("properties.listing")}
                 </Button>
               </div>
               <span className={styles.posted}>{formatPostedDays(selectedProperty.postedDaysAgo, locale)}</span>

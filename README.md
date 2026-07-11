@@ -6,10 +6,10 @@ lives in `apps/web`, and shared UI foundations live in `packages/design-system`.
 ## Local
 
 ```bash
-npm install
+pnpm install
 cp apps/web/.env.example apps/web/.env
-# add OPENAI_API_KEY to .env for the Realtime voice tab
-npm run dev
+# set VITE_ENABLE_REALTIME=true and add OPENAI_API_KEY only for the optional voice experiment
+pnpm dev
 ```
 
 The app uses the in-repo mock API by default. Set `VITE_API_BASE_URL` when a backend is available; API calls are isolated in `apps/web/src/api/denicheurApi.ts`.
@@ -17,6 +17,7 @@ The app uses the in-repo mock API by default. Set `VITE_API_BASE_URL` when a bac
 ## Workspace
 
 - `apps/web`: Vite + React + TypeScript app.
+- `apps/extension`: WXT + React Chrome extension PoC for user-assisted LeBonCoin crawling.
 - `packages/design-system`: shared design tokens, component CSS, and React UI primitives.
 - `turbo.json`: build graph for `build`, `typecheck`, `test:run`, `dev`, and `preview`.
 
@@ -24,7 +25,7 @@ The app imports `@denicheur-breizh/design-system/styles.css` once in `apps/web/s
 
 ## Realtime Spanish-to-French voice agent
 
-The `Voix` / `Voz` tab starts a minimal WebRTC voice translator with `gpt-realtime-2`.
+The optional `Voix` / `Voz` experiment starts a minimal WebRTC voice translator with `gpt-realtime-2`. It is hidden by default; enable it with `VITE_ENABLE_REALTIME=true` only in a Vite dev/preview environment that also has `OPENAI_API_KEY`.
 
 - Browser audio uses `RTCPeerConnection`: microphone input is added as a local audio track and model audio plays through a remote audio element.
 - The app opens an `oai-events` data channel and sends `session.update` to configure a Spanish-to-French interpreter prompt.
@@ -34,10 +35,20 @@ The `Voix` / `Voz` tab starts a minimal WebRTC voice translator with `gpt-realti
 ## Checks
 
 ```bash
-npm run typecheck
-npm run test:run
-npm run build
+pnpm typecheck
+pnpm test:run
+pnpm build
 ```
+
+## Chrome extension PoC
+
+The extension lives in `apps/extension` and writes crawler state to `chrome.storage.local`.
+
+```bash
+pnpm --filter @denicheur-breizh/extension dev
+```
+
+Load the unpacked extension from `apps/extension/.output/chrome-mv3-dev`. The dashboard accepts structured LeBonCoin filters or a raw LeBonCoin search URL and collects up to 20 listings by default. It runs in slow mode, skips detail tabs unless explicitly enabled, pauses on CAPTCHA/DataDome screens, and stops on unusual-activity blocks so the session can be reviewed manually.
 
 ## Structure
 

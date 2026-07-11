@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { AccentMode, DensityMode, ThemeMode, WorkspaceView } from "../types";
+import { parseWorkspaceView } from "../utils/workspaceNavigation";
 
 interface WorkspaceState {
   activeView: WorkspaceView;
@@ -17,8 +18,13 @@ interface WorkspaceState {
   toggleShortlist: (id: string) => void;
 }
 
+function getInitialView(): WorkspaceView {
+  if (typeof window === "undefined") return "map";
+  return parseWorkspaceView(window.location.search) ?? "map";
+}
+
 export const useWorkspaceStore = create<WorkspaceState>((set) => ({
-  activeView: "map",
+  activeView: getInitialView(),
   theme: "dark",
   accent: "lavender",
   density: "comfortable",

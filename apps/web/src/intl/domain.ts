@@ -262,11 +262,7 @@ export function localizeScoringGroup(group: string, locale: LocaleCode) {
 
 export function localizeRecipe(recipe: ScoringRecipe, locale: LocaleCode): ScoringRecipe {
   const copy = recipeCopies[locale][recipe.id];
-  const filters = recipe.filters.map((filter) =>
-    filter.field === "type" && ["Maison", "Casa"].includes(filter.value)
-      ? { ...filter, value: locale === "es" ? "Casa" : "Maison" }
-      : filter,
-  );
+  const filters = recipe.filters.map((filter) => ({ ...filter }));
 
   return copy ? { ...recipe, ...copy, filters } : { ...recipe, filters };
 }

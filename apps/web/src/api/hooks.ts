@@ -6,21 +6,21 @@ import type { PropertyFilters, ScoringRecipe } from "../types";
 export function useProperties(filters?: Partial<PropertyFilters>) {
   return useQuery({
     queryKey: queryKeys.properties.list(filters),
-    queryFn: () => denicheurApi.listProperties(filters),
+    queryFn: ({ signal }) => denicheurApi.listProperties(filters, signal),
   });
 }
 
 export function useScorings() {
   return useQuery({
     queryKey: queryKeys.scorings.all,
-    queryFn: () => denicheurApi.listScorings(),
+    queryFn: ({ signal }) => denicheurApi.listScorings(signal),
   });
 }
 
 export function useRecipes() {
   return useQuery({
     queryKey: queryKeys.recipes.all,
-    queryFn: () => denicheurApi.listRecipes(),
+    queryFn: ({ signal }) => denicheurApi.listRecipes(signal),
   });
 }
 

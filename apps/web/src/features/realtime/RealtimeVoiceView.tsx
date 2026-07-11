@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Activity, Languages, Mic, MicOff, Phone, PhoneOff, Send } from "lucide-react";
 import { Button, Chip } from "@denicheur-breizh/design-system";
+import { useAppIntl } from "../../intl/IntlContext";
+import { bcp47Locales } from "../../intl/locales";
 import styles from "./RealtimeVoiceView.module.css";
 
 const realtimeSessionEndpoint = "/api/realtime/session";
@@ -42,6 +44,7 @@ function getEventLabel(event: RealtimeServerEvent) {
 }
 
 export function RealtimeVoiceView() {
+  const { locale } = useAppIntl();
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
@@ -60,8 +63,11 @@ export function RealtimeVoiceView() {
   }, [status]);
 
   const pushEvent = useCallback((message: string) => {
-    setEvents((current) => [`${new Date().toLocaleTimeString()} ${message}`, ...current].slice(0, 10));
-  }, []);
+    setEvents((current) => [
+      `${new Intl.DateTimeFormat(bcp47Locales[locale], { timeStyle: "medium" }).format(new Date())} ${message}`,
+      ...current,
+    ].slice(0, 10));
+  }, [locale]);
 
   const closeConnection = useCallback(() => {
     dataChannelRef.current?.close();
@@ -121,6 +127,8 @@ export function RealtimeVoiceView() {
         if (peerConnection.connectionState === "failed") {
           setStatus("error");
           setError("Peer connection failed.");
+        } else if (peerConnection.connectionState === "closed" || peerConnection.connectionState === "disconnected") {
+          setStatus("idle");
         }
       });
 
@@ -229,10 +237,12 @@ export function RealtimeVoiceView() {
           <h1>Spanish to French</h1>
         </div>
         <div className={styles.headerMeta}>
+          <div aria-live="polite">
           <Chip tone={statusTone} active={status !== "idle"}>
-            <span className={styles.statusDot} />
+            <span className={styles.statusDot} aria-hidden="true" />
             {status}
           </Chip>
+          </div>
           <span>{realtimeModel}</span>
         </div>
       </header>
@@ -262,9 +272,7 @@ export function RealtimeVoiceView() {
             </div>
           </dl>
 
-          <audio ref={audioRef} autoPlay className={styles.remoteAudio}>
-            <track kind="captions" />
-          </audio>
+          <audio ref={audioRef} autoPlay className={styles.remoteAudio} />
 
           <div className={styles.controls}>
             <Button variant="primary" onClick={connect} disabled={status === "connecting" || status === "connected"}>
@@ -281,7 +289,7 @@ export function RealtimeVoiceView() {
             </Button>
           </div>
 
-          {error && <p className={styles.error}>{error}</p>}
+          {error && <p className={styles.error} role="alert">{error}</p>}
         </section>
 
         <section className={styles.panel} aria-label="Translation mode">
@@ -309,11 +317,13 @@ export function RealtimeVoiceView() {
           <form className={styles.promptForm} onSubmit={submitPrompt}>
             <input
               value={prompt}
+              name="realtime-prompt"
+              autoComplete="off"
               onChange={(event) => setPrompt(event.target.value)}
               disabled={status !== "connected"}
               aria-label="Text prompt"
             />
-            <Button variant="primary" iconOnly disabled={status !== "connected" || !prompt.trim()} aria-label="Send prompt">
+            <Button type="submit" variant="primary" iconOnly disabled={status !== "connected" || !prompt.trim()} aria-label="Send prompt">
               <Send size={16} />
             </Button>
           </form>
@@ -326,7 +336,7 @@ export function RealtimeVoiceView() {
               <h2>Data channel</h2>
             </div>
           </div>
-          <ol className={styles.eventLog}>
+          <ol className={styles.eventLog} aria-live="polite">
             {events.length === 0 ? <li>No events yet</li> : events.map((event) => <li key={event}>{event}</li>)}
           </ol>
         </section>

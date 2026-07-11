@@ -165,12 +165,24 @@
   font-size: 13px;
 }
 
-.titleInput:focus,
-.descriptionInput:focus,
-.filterRow input:focus,
-.weightHeader input:focus {
+.titleInput:focus-visible,
+.descriptionInput:focus-visible,
+.filterRow input:focus-visible,
+.weightHeader input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
   border-color: var(--cta-hover);
   background: var(--color-surface-2);
+}
+
+.saveError {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in oklab, var(--color-danger) 45%, var(--color-border));
+  border-radius: 8px;
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+  font-size: 12px;
 }
 
 .tabs {
@@ -464,17 +476,45 @@
 @media (max-width: 1120px) {
   .view {
     grid-template-columns: 230px minmax(0, 1fr);
+    grid-template-rows: minmax(560px, 1fr) auto;
+    overflow: auto;
   }
 
   .preview {
-    display: none;
+    grid-column: 1 / -1;
+    overflow: visible;
+    border-top: 1px solid var(--color-border);
+    border-left: 0;
   }
 }
 
 @media (max-width: 820px) {
   .view {
     grid-template-columns: 1fr;
+    grid-template-rows: repeat(3, max-content);
+    align-content: start;
     overflow: auto;
+  }
+
+  .palette,
+  .editor,
+  .preview {
+    min-height: max-content;
+  }
+
+  .palette,
+  .preview {
+    overflow: visible;
+  }
+
+  .editor {
+    grid-template-rows: auto auto auto;
+    overflow: visible;
+  }
+
+  .content {
+    min-height: auto;
+    overflow: visible;
   }
 
   .palette {
@@ -487,5 +527,13 @@
 
   .qaStats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .filterRow {
+    grid-template-columns: 1fr;
+  }
+
+  .preview {
+    grid-column: 1;
   }
 }

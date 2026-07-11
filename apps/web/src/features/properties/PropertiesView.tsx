@@ -1,21 +1,20 @@
-import { useMemo, useState } from "react";
-import { ArrowDown, ArrowUp, Download, Grid2X2, List, Star } from "lucide-react";
+import { useMemo, useState, type KeyboardEvent } from "react";
+import { ArrowDown, ArrowUp, Grid2X2, List, Star } from "lucide-react";
 import { useProperties } from "../../api/hooks";
 import { PropertyVisual } from "../../components/PropertyVisual";
-import { Button, Chip, EmptyState, FieldLabel, Meter, ScoreBadge, Select } from "@denicheur-breizh/design-system";
+import { Button, Chip, EmptyState, SectionLabel, Meter, ScoreBadge } from "@denicheur-breizh/design-system";
 import { getPropertyTitle, scoreMessageIds } from "../../intl/domain";
 import { useAppIntl } from "../../intl/IntlContext";
 import type { MessageId } from "../../intl/messages";
 import { useWorkspaceStore } from "../../state/workspaceStore";
 import type { PropertyListing, ProviderName, ScoreKey } from "../../types";
 import { formatPostedDays, formatPrice, formatPricePerM2, formatRooms, percentDelta } from "../../utils/format";
+import { getPropertySortValue, type PropertySortKey } from "../../utils/propertySort";
 import styles from "./PropertiesView.module.css";
 
 type ViewMode = "table" | "cards";
-type SortKey = "title" | "price" | "surfaceM2" | "dpe" | "provider" | "postedDaysAgo" | "overall" | ScoreKey;
-
 interface Column {
-  key: SortKey;
+  key: PropertySortKey;
   labelId: MessageId;
   align?: "left" | "right" | "center";
   width: number;
@@ -37,15 +36,6 @@ const columns: Column[] = [
 ];
 
 const providerOptions: ProviderName[] = ["SeLoger", "Bien'ici", "Leboncoin", "Ouest-France"];
-
-function getSortValue(property: PropertyListing, sortKey: SortKey) {
-  if (sortKey === "overall") return property.scores.overall;
-  if (["coast", "quiet", "value", "family", "transit", "dpe", "flood"].includes(sortKey)) {
-    return property.scores[sortKey as ScoreKey];
-  }
-  return property[sortKey as keyof PropertyListing];
-}
-
 export function PropertiesView() {
   const { locale, t } = useAppIntl();
   const selectedPropertyId = useWorkspaceStore((state) => state.selectedPropertyId);
@@ -54,7 +44,7 @@ export function PropertiesView() {
   const toggleShortlist = useWorkspaceStore((state) => state.toggleShortlist);
   const [viewMode, setViewMode] = useState<ViewMode>("table");
   const [activeProviders, setActiveProviders] = useState<ProviderName[]>(providerOptions);
-  const [sortKey, setSortKey] = useState<SortKey>("overall");
+  const [sortKey, setSortKey] = useState<PropertySortKey>("overall");
   const [sortDir, setSortDir] = useState<-1 | 1>(-1);
   const { data: properties = [], isLoading, error } = useProperties();
 
@@ -62,8 +52,8 @@ export function PropertiesView() {
     return properties
       .filter((property) => activeProviders.includes(property.provider))
       .sort((a, b) => {
-        const av = getSortValue(a, sortKey);
-        const bv = getSortValue(b, sortKey);
+        const av = getPropertySortValue(a, sortKey);
+        const bv = getPropertySortValue(b, sortKey);
         if (typeof av === "number" && typeof bv === "number") return sortDir * (av - bv);
         return sortDir * String(av).localeCompare(String(bv));
       });
@@ -71,7 +61,7 @@ export function PropertiesView() {
 
   const selectedProperty = sortedProperties.find((property) => property.id === selectedPropertyId) ?? sortedProperties[0];
 
-  const sortBy = (key: SortKey) => {
+  const sortBy = (key: PropertySortKey) => {
     if (key === sortKey) {
       setSortDir((current) => (current === -1 ? 1 : -1));
     } else {
@@ -84,18 +74,15 @@ export function PropertiesView() {
     setActiveProviders((current) => (current.includes(provider) ? current.filter((item) => item !== provider) : [...current, provider]));
   };
 
+  const selectWithKeyboard = (event: KeyboardEvent<HTMLElement>, propertyId: string) => {
+    if (event.key !== "Enter" && event.key !== " ") return;
+    event.preventDefault();
+    setSelectedPropertyId(propertyId);
+  };
+
   return (
     <section className={styles.view}>
       <header className={styles.toolbar}>
-        <div className={styles.viewSelect}>
-          <span>{t("properties.view")}</span>
-          <Select defaultValue="weekend">
-            <option value="weekend">{t("properties.recipe.weekend")}</option>
-            <option value="family">{t("properties.recipe.family")}</option>
-            <option value="invest">{t("properties.recipe.invest")}</option>
-          </Select>
-        </div>
-
         <div className={styles.providerFilters}>
           {providerOptions.map((provider) => (
             <Chip key={provider} active={activeProviders.includes(provider)} onClick={() => toggleProvider(provider)}>
@@ -106,31 +93,31 @@ export function PropertiesView() {
 
         <div className={styles.toolbarRight}>
           <span>{t("properties.count", { count: sortedProperties.length })}</span>
-          <Button size="sm" variant={viewMode === "table" ? "default" : "ghost"} iconOnly onClick={() => setViewMode("table")} aria-label={t("properties.table")}>
+          <Button size="sm" variant={viewMode === "table" ? "default" : "ghost"} iconOnly onClick={() => setViewMode("table")} aria-label={t("properties.table")} aria-pressed={viewMode === "table"}>
             <List size={14} />
           </Button>
-          <Button size="sm" variant={viewMode === "cards" ? "default" : "ghost"} iconOnly onClick={() => setViewMode("cards")} aria-label={t("properties.cards")}>
+          <Button size="sm" variant={viewMode === "cards" ? "default" : "ghost"} iconOnly onClick={() => setViewMode("cards")} aria-label={t("properties.cards")} aria-pressed={viewMode === "cards"}>
             <Grid2X2 size={14} />
-          </Button>
-          <Button size="sm" variant="ghost">
-            <Download size={14} />
-            {t("common.export")}
           </Button>
         </div>
       </header>
 
       <div className={styles.body}>
         <div className={styles.results}>
-          {error && <EmptyState>{t("properties.error")}</EmptyState>}
-          {!error && isLoading && <EmptyState>{t("properties.loading")}</EmptyState>}
+          {error && <EmptyState role="alert">{t("properties.error")}</EmptyState>}
+          {!error && isLoading && <EmptyState role="status">{t("properties.loading")}</EmptyState>}
           {!error && !isLoading && sortedProperties.length === 0 && <EmptyState>{t("properties.empty")}</EmptyState>}
           {!error && !isLoading && sortedProperties.length > 0 && viewMode === "table" && (
             <div className={styles.tableWrap}>
-              <table className={styles.table}>
+              <table className={styles.table} aria-label={t("properties.table")}>
                 <thead>
                   <tr>
                     {columns.map((column) => (
-                      <th key={column.key} style={{ minWidth: column.width, textAlign: column.align ?? "left" }}>
+                      <th
+                        key={column.key}
+                        style={{ minWidth: column.width, textAlign: column.align ?? "left" }}
+                        aria-sort={sortKey === column.key ? (sortDir === -1 ? "descending" : "ascending") : "none"}
+                      >
                         <button type="button" onClick={() => sortBy(column.key)}>
                           <span>{t(column.labelId)}</span>
                           {sortKey === column.key && (sortDir === -1 ? <ArrowDown size={12} /> : <ArrowUp size={12} />)}
@@ -145,6 +132,9 @@ export function PropertiesView() {
                       key={property.id}
                       className={property.id === selectedProperty?.id ? styles.selectedRow : ""}
                       onClick={() => setSelectedPropertyId(property.id)}
+                      onKeyDown={(event) => selectWithKeyboard(event, property.id)}
+                      tabIndex={0}
+                      aria-selected={property.id === selectedProperty?.id}
                     >
                       {columns.map((column) => (
                         <td key={column.key} style={{ textAlign: column.align ?? "left" }}>
@@ -165,6 +155,10 @@ export function PropertiesView() {
                   key={property.id}
                   className={[styles.propertyCard, property.id === selectedProperty?.id ? styles.propertyCardActive : ""].join(" ")}
                   onClick={() => setSelectedPropertyId(property.id)}
+                  onKeyDown={(event) => selectWithKeyboard(event, property.id)}
+                  role="button"
+                  tabIndex={0}
+                  aria-pressed={property.id === selectedProperty?.id}
                 >
                   <div className={styles.visualWrap}>
                     <PropertyVisual property={property} />
@@ -210,7 +204,7 @@ export function PropertiesView() {
               </div>
 
               <div className={styles.breakdown}>
-                <FieldLabel>{t("properties.scoringDetail")}</FieldLabel>
+                <SectionLabel>{t("properties.scoringDetail")}</SectionLabel>
                 {[
                   [scoreMessageIds.overall, selectedProperty.scores.overall],
                   [scoreMessageIds.coast, selectedProperty.scores.coast],
@@ -228,7 +222,7 @@ export function PropertiesView() {
               </div>
 
               <div className={styles.marketBox}>
-                <FieldLabel>{t("properties.marketCompare")}</FieldLabel>
+                <SectionLabel>{t("properties.marketCompare")}</SectionLabel>
                 <Comparison label={t("properties.pricePerM2")} value={formatPricePerM2(selectedProperty.price, selectedProperty.surfaceM2, locale)} delta={percentDelta(selectedProperty.price / selectedProperty.surfaceM2, selectedProperty.diagnostics.irisMedianPrice)} />
                 <Comparison label={t("properties.comparableSales")} value={String(selectedProperty.diagnostics.comparableSales)} delta={12} />
                 <Comparison label={t("properties.coastalDistance")} value={`${selectedProperty.diagnostics.coastalDistanceKm} km`} delta={-18} />
@@ -239,7 +233,6 @@ export function PropertiesView() {
                   <Star size={15} />
                   {shortlisted.includes(selectedProperty.id) ? t("properties.shortlisted") : t("properties.shortlist")}
                 </Button>
-                <Button variant="primary">{t("properties.listing")}</Button>
               </div>
             </div>
           </aside>
