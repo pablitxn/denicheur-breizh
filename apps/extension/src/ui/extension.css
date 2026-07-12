@@ -115,6 +115,13 @@ body {
   min-width: 0;
 }
 
+.results-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
 .surface-head > div,
 .results-head > div {
   min-width: 0;
@@ -174,13 +181,212 @@ body {
   font-size: var(--fs-body-sm);
 }
 
+.intelligence-panel {
+  margin-top: var(--space-5);
+  padding: var(--space-4);
+  border: 1px solid color-mix(in oklab, var(--color-sea) 42%, var(--color-border));
+  border-radius: var(--radius-3);
+  background: color-mix(in oklab, var(--color-sea) 5%, var(--color-surface));
+}
+
+.intelligence-head,
+.intelligence-title-row,
+.intelligence-actions,
+.criterion-options,
+.evaluation-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.intelligence-head,
+.evaluation-head {
+  justify-content: space-between;
+}
+
+.intelligence-head > div {
+  min-width: 0;
+}
+
+.intelligence-title-row h3 {
+  margin: 0;
+  font-size: var(--fs-body);
+}
+
+.intelligence-head p,
+.intelligence-note,
+.criteria-empty {
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-muted);
+  font-size: var(--fs-body-sm);
+}
+
+.recipe-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(100px, 0.45fr);
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+.recipe-version {
+  align-self: end;
+  min-width: 0;
+  padding-bottom: var(--space-2);
+}
+
+.recipe-version strong {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+}
+
+.criteria-list {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-4);
+}
+
+.criterion-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: var(--space-3);
+  align-items: start;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-2);
+  background: var(--color-surface);
+}
+
+.criterion-index {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border-radius: 50%;
+  background: color-mix(in oklab, var(--color-sea) 16%, transparent);
+  color: var(--color-sea);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+}
+
+.criterion-fields {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.criterion-description {
+  min-height: 66px;
+  resize: vertical;
+}
+
+.criterion-options {
+  align-items: end;
+  flex-wrap: wrap;
+}
+
+.criterion-options label {
+  display: grid;
+  gap: var(--space-1);
+  color: var(--color-text-muted);
+  font-size: var(--fs-body-sm);
+}
+
+.criterion-weight {
+  width: 76px;
+}
+
+.criterion-required {
+  display: flex !important;
+  align-items: center;
+  min-height: 34px;
+}
+
+.intelligence-actions {
+  flex-wrap: wrap;
+  margin-top: var(--space-4);
+}
+
+.evaluation-summary {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-2);
+  background: color-mix(in oklab, var(--color-sea) 4%, var(--color-surface));
+}
+
+.evaluation-head strong {
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono);
+}
+
+.evaluation-summary p,
+.evaluation-summary details,
+.evaluation-summary summary {
+  margin: 0;
+  font-size: var(--fs-body-sm);
+}
+
+.evaluation-summary summary {
+  cursor: pointer;
+  color: var(--color-text-muted);
+}
+
+.evaluation-criteria {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.criterion-result {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-1) var(--space-2);
+  padding-left: var(--space-2);
+  border-left: 2px solid var(--color-border);
+}
+
+.criterion-result.pass {
+  border-left-color: var(--color-good);
+}
+
+.criterion-result.fail {
+  border-left-color: var(--color-danger);
+}
+
+.criterion-result.unknown {
+  border-left-color: var(--color-warning);
+}
+
+.criterion-result strong {
+  text-transform: uppercase;
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+}
+
+.criterion-result small {
+  grid-column: 2;
+  color: var(--color-text-muted);
+}
+
+.missing-data {
+  color: var(--color-warning);
+}
+
+.evaluation-meta {
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+}
+
 .action-row {
   margin-top: var(--space-5);
 }
 
 .metrics-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(86px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(86px, 1fr));
   gap: var(--space-3);
 }
 
@@ -423,6 +629,7 @@ body {
   }
 
   .form-grid,
+  .recipe-grid,
   .metrics-grid,
   .records-grid {
     grid-template-columns: 1fr;

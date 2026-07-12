@@ -19,6 +19,9 @@ describe("leboncoin extractors", () => {
     expect(normalizeListingUrl("https://www.leboncoin.fr/c/ventes_immobilieres")).toBeUndefined();
     expect(normalizeListingUrl("http://www.leboncoin.fr/ad/ventes_immobilieres/3007106066")).toBeUndefined();
     expect(normalizeListingUrl("https://preview.leboncoin.fr/ad/ventes_immobilieres/3007106066")).toBeUndefined();
+    expect(
+      normalizeListingUrl("https://www.leboncoin.fr/ad/ventes_immobilieres/3007106066?utm_source=test#photo"),
+    ).toBe("https://www.leboncoin.fr/ad/ventes_immobilieres/3007106066");
   });
 
   it("collects listing summaries from result-card-like markup", () => {
@@ -40,6 +43,7 @@ describe("leboncoin extractors", () => {
 
     expect(listings).toHaveLength(1);
     expect(listings[0]).toMatchObject({
+      id: "3007106066",
       title: "Maison familiale à Brest",
       priceEuros: 312000,
       rooms: 5,
@@ -47,6 +51,21 @@ describe("leboncoin extractors", () => {
       location: "Brest 29200",
       sellerType: "Particulier",
     });
+  });
+
+  it("uses the terminal ad id so listings in one category remain unique", () => {
+    const doc = new DOMParser().parseFromString(
+      `
+        <article><a href="/ad/ventes_immobilieres/3007106066">Maison à Brest</a></article>
+        <article><a href="/ad/ventes_immobilieres/3007106077">Maison à Quimper</a></article>
+      `,
+      "text/html",
+    );
+
+    const listings = collectListingSummaries(doc, 20);
+
+    expect(listings.map((listing) => listing.id)).toEqual(["3007106066", "3007106077"]);
+    expect(new Set(listings.map((listing) => listing.id)).size).toBe(2);
   });
 
   it("collects detail fundamentals from an ad page", () => {

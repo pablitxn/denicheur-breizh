@@ -1,8 +1,12 @@
 import { buildLeboncoinSearchUrl, normalizeSearchFilters } from "../lib/leboncoinSearch";
+import { evaluateDetailedRecords, mergeRecordEvaluations } from "../intelligence/filterApi";
+import { recipeValidationError } from "../intelligence/recipe";
 import type { ContentRequest, ContentResponse } from "../lib/messages";
 import type {
   ListingDetail,
   ListingSummary,
+  IntelligenceRecipe,
+  ListingEvaluation,
   ScrapeRun,
   ScrapedPropertyRecord,
   SearchFilters,
@@ -10,6 +14,12 @@ import type {
 import { loadCrawlerState, saveCrawlerState } from "../storage/chromeStorage";
 
 type RunnerObserver = (snapshot: { run: ScrapeRun; records: ScrapedPropertyRecord[] }) => void;
+export type ListingEvaluator = (
+  runId: string,
+  recipe: IntelligenceRecipe,
+  records: ScrapedPropertyRecord[],
+  signal: AbortSignal,
+) => Promise<ListingEvaluation[]>;
 
 const SEARCH_SETTLE_MS = 1600;
 const DETAIL_SETTLE_MS = 1200;
@@ -35,7 +45,10 @@ export class ScrapeRunner {
   private lastPersistedRecords: ScrapedPropertyRecord[] | undefined;
   private resumeWaiter: (() => void) | undefined;
 
-  constructor(private readonly observer: RunnerObserver) {}
+  constructor(
+    private readonly observer: RunnerObserver,
+    private readonly evaluator: ListingEvaluator = defaultEvaluator,
+  ) {}
 
   get paused(): boolean {
     return Boolean(this.resumeWaiter);
@@ -52,12 +65,18 @@ export class ScrapeRunner {
     this.resume();
   }
 
-  async run(filters: SearchFilters): Promise<void> {
+  async run(filters: SearchFilters, recipe?: IntelligenceRecipe): Promise<void> {
     this.cancelled = false;
     this.abortController = new AbortController();
     this.lastPersistedFilters = undefined;
     this.lastPersistedRecords = undefined;
-    const safeFilters = normalizeSearchFilters(filters);
+    const intelligenceError = recipe ? recipeValidationError(recipe) : undefined;
+    if (intelligenceError) throw new Error(intelligenceError);
+
+    const normalizedFilters = normalizeSearchFilters(filters);
+    const safeFilters = recipe?.enabled
+      ? { ...normalizedFilters, collectDetailPages: true }
+      : normalizedFilters;
     const timing = getRunTiming(safeFilters);
     const target = safeFilters.maxListings;
     const startedAt = new Date().toISOString();
@@ -70,6 +89,11 @@ export class ScrapeRunner {
       target,
       found: 0,
       collected: 0,
+      evaluated: 0,
+      relevant: 0,
+      notRelevant: 0,
+      review: 0,
+      intelligenceStatus: recipe?.enabled ? "idle" : undefined,
       message: "Opening leboncoin search.",
     };
 
@@ -157,10 +181,26 @@ export class ScrapeRunner {
       }
 
       this.ensureActive();
+      if (recipe?.enabled) {
+        records = await runIntelligencePhase({
+          run,
+          records,
+          recipe,
+          evaluator: this.evaluator,
+          signal: this.abortController.signal,
+          persist: (nextRun, nextRecords) => this.persist(nextRun, nextRecords, safeFilters),
+        });
+      }
+
+      this.ensureActive();
       run.status = "completed";
       run.finishedAt = new Date().toISOString();
       run.currentUrl = undefined;
-      run.message = `Collected ${run.collected} detailed listings.`;
+      if (run.intelligenceStatus !== "failed") {
+        run.message = recipe?.enabled
+          ? `Collected ${run.collected} listings and evaluated ${run.evaluated}.`
+          : `Collected ${run.collected} detailed listings.`;
+      }
       await this.persist(run, records, safeFilters);
     } catch (error) {
       if (error instanceof ActivityBlockError) {
@@ -170,6 +210,12 @@ export class ScrapeRunner {
       run.finishedAt = new Date().toISOString();
       run.status = this.cancelled ? "cancelled" : "failed";
       run.error = this.cancelled ? undefined : errorMessage(error);
+      if (run.intelligenceStatus === "evaluating") {
+        run.intelligenceStatus = "failed";
+        run.intelligenceError = this.cancelled
+          ? "Intelligence evaluation was cancelled."
+          : errorMessage(error);
+      }
       run.message = this.cancelled ? "Scrape cancelled." : "Scrape failed.";
       await this.persist(run, records, safeFilters);
     } finally {
@@ -330,6 +376,7 @@ function recordFromSummary(summary: ListingSummary, runId: string): ScrapedPrope
     searchRunId: runId,
     status: "listing",
     rawTextSample: summary.rawTextSample,
+    evaluation: undefined,
   };
 }
 
@@ -564,4 +611,67 @@ function randomDelay(minMs: number, maxMs: number): number {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function defaultEvaluator(
+  runId: string,
+  recipe: IntelligenceRecipe,
+  records: ScrapedPropertyRecord[],
+  signal: AbortSignal,
+): Promise<ListingEvaluation[]> {
+  return evaluateDetailedRecords(runId, recipe, records, { signal });
+}
+
+interface IntelligencePhaseOptions {
+  run: ScrapeRun;
+  records: ScrapedPropertyRecord[];
+  recipe: IntelligenceRecipe;
+  evaluator: ListingEvaluator;
+  signal: AbortSignal;
+  persist: (run: ScrapeRun, records: ScrapedPropertyRecord[]) => Promise<void>;
+}
+
+export async function runIntelligencePhase({
+  run,
+  records,
+  recipe,
+  evaluator,
+  signal,
+  persist,
+}: IntelligencePhaseOptions): Promise<ScrapedPropertyRecord[]> {
+  const detailedRecords = records.filter(
+    (record) => record.searchRunId === run.id && record.status === "detailed",
+  );
+  run.status = "evaluating";
+  run.currentUrl = undefined;
+  run.intelligenceStatus = "evaluating";
+  run.intelligenceError = undefined;
+  run.message = `Evaluating ${detailedRecords.length} detailed listings.`;
+  await persist(run, records);
+
+  try {
+    const evaluations = await evaluator(run.id, recipe, detailedRecords, signal);
+    const evaluatedRecords = mergeRecordEvaluations(records, evaluations);
+    applyEvaluationCounts(run, evaluations);
+    run.status = "completed";
+    run.intelligenceStatus = "completed";
+    run.message = `Evaluated ${evaluations.length} detailed listings.`;
+    await persist(run, evaluatedRecords);
+    return evaluatedRecords;
+  } catch (error) {
+    if (signal.aborted) throw error;
+    run.status = "completed";
+    run.intelligenceStatus = "failed";
+    run.intelligenceError = errorMessage(error);
+    run.message = `Collected ${run.collected} detailed listings. Intelligence failed; retry from the dashboard.`;
+    await persist(run, records);
+    return records;
+  }
+}
+
+function applyEvaluationCounts(run: ScrapeRun, evaluations: ListingEvaluation[]): void {
+  run.evaluated = evaluations.length;
+  run.relevant = evaluations.filter((evaluation) => evaluation.decision === "relevant").length;
+  run.notRelevant = evaluations.filter((evaluation) => evaluation.decision === "not-relevant").length;
+  run.review = evaluations.filter((evaluation) => evaluation.decision === "review").length;
 }

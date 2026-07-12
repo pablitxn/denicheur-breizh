@@ -1,17 +1,28 @@
 import {
   AlertTriangle,
+  Brain,
   Database,
   ExternalLink,
   LoaderCircle,
   Play,
+  Plus,
   RefreshCw,
+  Save,
   Search,
   Square,
   Trash2,
+  X,
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Chip, EmptyState, SectionLabel, Select } from "@denicheur-breizh/design-system";
 import { ScrapeRunner } from "../automation/scrapeRunner";
+import { evaluateDetailedRecordsInBatches, mergeRecordEvaluations } from "../intelligence/filterApi";
+import {
+  createDefaultIntelligenceRecipe,
+  createEmptyCriterion,
+  normalizeIntelligenceRecipe,
+  recipeValidationError,
+} from "../intelligence/recipe";
 import {
   buildLeboncoinSearchUrl,
   CATEGORY_OPTIONS,
@@ -21,14 +32,23 @@ import {
   PROPERTY_TYPE_OPTIONS,
   SORT_OPTIONS,
 } from "../lib/leboncoinSearch";
-import type { ScrapeRun, ScrapedPropertyRecord, SearchFilters } from "../lib/types";
+import type {
+  IntelligenceCriterion,
+  IntelligenceRecipe,
+  ListingEvaluation,
+  ScrapeRun,
+  ScrapedPropertyRecord,
+  SearchFilters,
+} from "../lib/types";
 import {
   clearRecords,
   IDLE_RUN,
   isCrawlerStorageKey,
   loadCrawlerState,
   reconcileInterruptedRun,
+  saveCrawlerState,
   saveFilters,
+  saveRecipe,
   saveRun,
 } from "../storage/chromeStorage";
 
@@ -51,6 +71,7 @@ const RUNNING_STATUSES = new Set<ScrapeRun["status"]>([
   "opening-search",
   "collecting-search",
   "collecting-details",
+  "evaluating",
   "paused-captcha",
 ]);
 const MAX_RENDERED_RECORDS = 100;
@@ -59,11 +80,20 @@ export function DashboardApp() {
   const [filters, setFilters] = useState<SearchFilters>(createDefaultSearchFilters);
   const [run, setRun] = useState<ScrapeRun>(IDLE_RUN);
   const [records, setRecords] = useState<ScrapedPropertyRecord[]>([]);
+  const [recipe, setRecipe] = useState<IntelligenceRecipe>(createDefaultIntelligenceRecipe);
+  const [recipeDirty, setRecipeDirty] = useState(false);
+  const [decisionFilter, setDecisionFilter] = useState<"all" | ListingEvaluation["decision"]>("all");
   const [error, setError] = useState<string>();
   const runnerRef = useRef<ScrapeRunner | undefined>(undefined);
+  const reevaluationAbortRef = useRef<AbortController | undefined>(undefined);
   const isRunning = RUNNING_STATUSES.has(run.status);
   const canResume = run.status === "paused-captcha" && runnerRef.current?.paused;
-  const visibleRecords = records.slice(0, MAX_RENDERED_RECORDS);
+  const visibleRecords = useMemo(
+    () => records
+      .filter((record) => decisionFilter === "all" || record.evaluation?.decision === decisionFilter)
+      .slice(0, MAX_RENDERED_RECORDS),
+    [decisionFilter, records],
+  );
   const searchUrl = useMemo(() => {
     try {
       return buildLeboncoinSearchUrl(filters);
@@ -90,6 +120,7 @@ export function DashboardApp() {
         setFilters(snapshot.filters);
         setRun(recoveredRun);
         setRecords(snapshot.records);
+        setRecipe(snapshot.recipe);
       })
       .catch((caught) => {
         if (mounted) setError(caught instanceof Error ? caught.message : String(caught));
@@ -106,6 +137,7 @@ export function DashboardApp() {
           setFilters(snapshot.filters);
           setRun(snapshot.run);
           setRecords(snapshot.records);
+          setRecipe(snapshot.recipe);
         })
         .catch((caught) => {
           if (mounted) setError(caught instanceof Error ? caught.message : String(caught));
@@ -118,6 +150,7 @@ export function DashboardApp() {
       mounted = false;
       chrome.storage.onChanged.removeListener(listener);
       runnerRef.current?.cancel();
+      reevaluationAbortRef.current?.abort();
     };
   }, []);
 
@@ -142,14 +175,66 @@ export function DashboardApp() {
     });
   }
 
+  function patchRecipe(patch: Partial<IntelligenceRecipe>) {
+    setRecipe((current) => ({ ...current, ...patch }));
+    setRecipeDirty(true);
+  }
+
+  function patchCriterion(id: string, patch: Partial<IntelligenceCriterion>) {
+    setRecipe((current) => ({
+      ...current,
+      criteria: current.criteria.map((criterion) =>
+        criterion.id === id ? { ...criterion, ...patch } : criterion,
+      ),
+    }));
+    setRecipeDirty(true);
+  }
+
+  function addCriterion() {
+    setRecipe((current) => ({ ...current, criteria: [...current.criteria, createEmptyCriterion()] }));
+    setRecipeDirty(true);
+  }
+
+  function removeCriterion(id: string) {
+    setRecipe((current) => ({
+      ...current,
+      criteria: current.criteria.filter((criterion) => criterion.id !== id),
+    }));
+    setRecipeDirty(true);
+  }
+
+  async function persistRecipeForUse(): Promise<IntelligenceRecipe> {
+    const versionedRecipe = recipeDirty ? { ...recipe, version: recipe.version + 1 } : recipe;
+    const validationError = recipeValidationError(versionedRecipe);
+    if (validationError) throw new Error(validationError);
+    const nextRecipe = normalizeIntelligenceRecipe(versionedRecipe);
+    await saveRecipe(nextRecipe);
+    setRecipe(nextRecipe);
+    setRecipeDirty(false);
+    return nextRecipe;
+  }
+
+  async function handleSaveRecipe() {
+    setError(undefined);
+    try {
+      await persistRecipeForUse();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }
+
   async function handleStart(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     runnerRef.current?.cancel();
+    reevaluationAbortRef.current?.abort();
     setError(undefined);
 
-    const normalizedFilters = normalizeSearchFilters(filters);
-
     try {
+      const recipeForRun = await persistRecipeForUse();
+      const normalizedFilters = normalizeSearchFilters({
+        ...filters,
+        collectDetailPages: recipeForRun.enabled ? true : filters.collectDetailPages,
+      });
       await saveFilters(normalizedFilters);
       setFilters(normalizedFilters);
       const runner = new ScrapeRunner((snapshot) => {
@@ -157,7 +242,7 @@ export function DashboardApp() {
         setRecords(snapshot.records);
       });
       runnerRef.current = runner;
-      await runner.run(normalizedFilters);
+      await runner.run(normalizedFilters, recipeForRun);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -167,10 +252,63 @@ export function DashboardApp() {
 
   function handleCancel() {
     runnerRef.current?.cancel();
+    reevaluationAbortRef.current?.abort();
   }
 
   function handleResume() {
     runnerRef.current?.resume();
+  }
+
+  async function handleReevaluate() {
+    setError(undefined);
+    try {
+      const recipeForRun = await persistRecipeForUse();
+      if (!recipeForRun.enabled) throw new Error("Enable the intelligence recipe before reevaluating.");
+      const detailedRecords = records.filter((record) => record.status === "detailed");
+      if (detailedRecords.length === 0) throw new Error("No detailed records are available for reevaluation.");
+
+      const reevaluationRunId = `reevaluation-${Date.now()}`;
+      const abortController = new AbortController();
+      reevaluationAbortRef.current = abortController;
+      const evaluatingRun: ScrapeRun = {
+        ...run,
+        status: "evaluating",
+        intelligenceStatus: "evaluating",
+        intelligenceError: undefined,
+        message: `Reevaluating ${detailedRecords.length} stored listings.`,
+      };
+      setRun(evaluatingRun);
+      await saveCrawlerState({ run: evaluatingRun });
+
+      try {
+        const evaluations = await evaluateDetailedRecordsInBatches(
+          reevaluationRunId,
+          recipeForRun,
+          detailedRecords,
+          { signal: abortController.signal },
+        );
+        const nextRecords = mergeRecordEvaluations(records, evaluations);
+        const nextRun = runWithEvaluations(evaluatingRun, evaluations);
+        setRecords(nextRecords);
+        setRun(nextRun);
+        await saveCrawlerState({ run: nextRun, records: nextRecords });
+      } catch (caught) {
+        const nextRun: ScrapeRun = {
+          ...evaluatingRun,
+          status: "completed",
+          intelligenceStatus: "failed",
+          intelligenceError: caught instanceof Error ? caught.message : String(caught),
+          message: "Stored listings were preserved. Intelligence reevaluation failed.",
+        };
+        setRun(nextRun);
+        await saveCrawlerState({ run: nextRun });
+        throw caught;
+      } finally {
+        reevaluationAbortRef.current = undefined;
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
   }
 
   async function handleClear() {
@@ -362,6 +500,139 @@ export function DashboardApp() {
             </label>
           </div>
 
+          <section className="intelligence-panel" aria-labelledby="intelligence-title">
+            <div className="intelligence-head">
+              <div>
+                <div className="intelligence-title-row">
+                  <Brain size={17} />
+                  <h3 id="intelligence-title">Intelligence filter</h3>
+                  <Chip tone={recipe.enabled ? "good" : "sea"}>{recipe.enabled ? "enabled" : "disabled"}</Chip>
+                </div>
+                <p>Structured criteria are evaluated by the local API after detail collection.</p>
+              </div>
+              <label className="toggle">
+                <input
+                  type="checkbox"
+                  name="intelligence-enabled"
+                  checked={recipe.enabled}
+                  onChange={(event) => patchRecipe({ enabled: event.target.checked })}
+                />
+                <span className="track" />
+                <span>Enable</span>
+              </label>
+            </div>
+
+            <div className="recipe-grid">
+              <label className="field wide">
+                <SectionLabel>Recipe name</SectionLabel>
+                <input
+                  className="input"
+                  name="recipe-name"
+                  autoComplete="off"
+                  maxLength={160}
+                  value={recipe.name}
+                  onChange={(event) => patchRecipe({ name: event.target.value })}
+                />
+              </label>
+              <NumberField
+                label="Relevance threshold"
+                value={recipe.threshold}
+                max={100}
+                onChange={(value) => patchRecipe({ threshold: Number(value) })}
+              />
+              <div className="recipe-version">
+                <SectionLabel>Version</SectionLabel>
+                <strong>v{recipe.version}{recipeDirty ? " · unsaved" : ""}</strong>
+              </div>
+            </div>
+
+            <div className="criteria-list">
+              {recipe.criteria.length === 0 && (
+                <p className="criteria-empty">Add a criterion to describe what makes a listing relevant to you.</p>
+              )}
+              {recipe.criteria.map((criterion, index) => (
+                <article className="criterion-row" key={criterion.id}>
+                  <div className="criterion-index">{index + 1}</div>
+                  <div className="criterion-fields">
+                    <input
+                      className="input"
+                      name={`criterion-name-${criterion.id}`}
+                      autoComplete="off"
+                      maxLength={160}
+                      value={criterion.name}
+                      placeholder="Criterion name"
+                      aria-label={`Criterion ${index + 1} name`}
+                      onChange={(event) => patchCriterion(criterion.id, { name: event.target.value })}
+                    />
+                    <textarea
+                      className="input criterion-description"
+                      name={`criterion-description-${criterion.id}`}
+                      value={criterion.description}
+                      maxLength={2000}
+                      placeholder="Explain the evidence that should pass this criterion"
+                      aria-label={`Criterion ${index + 1} description`}
+                      onChange={(event) => patchCriterion(criterion.id, { description: event.target.value })}
+                    />
+                    <div className="criterion-options">
+                      <label>
+                        <span>Weight</span>
+                        <input
+                          className="input criterion-weight"
+                          type="number"
+                          min={0}
+                          max={100}
+                          value={criterion.weight}
+                          aria-label={`Criterion ${index + 1} weight`}
+                          onChange={(event) => patchCriterion(criterion.id, { weight: Number(event.target.value) })}
+                        />
+                      </label>
+                      <label className="criterion-required">
+                        <input
+                          type="checkbox"
+                          checked={criterion.required}
+                          onChange={(event) => patchCriterion(criterion.id, { required: event.target.checked })}
+                        />
+                        Required evidence
+                      </label>
+                    </div>
+                  </div>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    iconOnly
+                    aria-label={`Remove criterion ${index + 1}`}
+                    onClick={() => removeCriterion(criterion.id)}
+                  >
+                    <X size={14} />
+                  </Button>
+                </article>
+              ))}
+            </div>
+
+            <div className="intelligence-actions">
+              <Button type="button" size="sm" onClick={addCriterion} disabled={recipe.criteria.length >= 12}>
+                <Plus size={14} />
+                Add criterion
+              </Button>
+              <Button type="button" size="sm" variant="ghost" onClick={handleSaveRecipe} disabled={!recipeDirty}>
+                <Save size={14} />
+                Save recipe
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={handleReevaluate}
+                disabled={isRunning || !recipe.enabled || records.every((record) => record.status !== "detailed")}
+              >
+                <RefreshCw size={14} />
+                Reevaluate stored
+              </Button>
+            </div>
+            {recipe.enabled && <p className="intelligence-note">Detail collection will be enabled automatically.</p>}
+          </section>
+
           <div className="guardrail-panel">
             <AlertTriangle size={16} />
             <span>
@@ -396,26 +667,48 @@ export function DashboardApp() {
           <div className="metrics-grid">
             <Metric label="Found" value={run.found} />
             <Metric label={filters.collectDetailPages ? "Detailed" : "Collected"} value={run.collected} />
-            <Metric label="Target" value={run.target} />
+            <Metric label="Evaluated" value={run.evaluated} />
+            <Metric label="Relevant" value={run.relevant} />
+            <Metric label="Not relevant" value={run.notRelevant} />
+            <Metric label="Review" value={run.review} />
             <Metric label="Stored" value={records.length} />
           </div>
+
+          {run.intelligenceStatus === "failed" && (
+            <div className="inline-alert" role="alert">
+              <AlertTriangle size={16} />
+              <span>{run.intelligenceError ?? "Intelligence evaluation failed. Your scraped records were preserved."}</span>
+            </div>
+          )}
 
           <div className="results-head">
             <div>
               <h2>Records</h2>
               <p>{run.message ?? "Local extension storage"}</p>
             </div>
-            <Button type="button" size="sm" variant="danger" onClick={handleClear} disabled={records.length === 0}>
-              <Trash2 size={15} />
-              Clear
-            </Button>
+            <div className="results-actions">
+              <Select
+                aria-label="Filter records by intelligence decision"
+                value={decisionFilter}
+                onChange={(event) => setDecisionFilter(event.target.value as typeof decisionFilter)}
+              >
+                <option value="all">All decisions</option>
+                <option value="relevant">Relevant</option>
+                <option value="not-relevant">Not relevant</option>
+                <option value="review">Review</option>
+              </Select>
+              <Button type="button" size="sm" variant="danger" onClick={handleClear} disabled={records.length === 0 || isRunning}>
+                <Trash2 size={15} />
+                Clear
+              </Button>
+            </div>
           </div>
 
-          {records.length === 0 ? (
+          {visibleRecords.length === 0 ? (
             <EmptyState>
               <div className="empty-copy">
                 <Database size={24} />
-                <span>No records yet</span>
+                <span>{records.length === 0 ? "No records yet" : "No records match this decision"}</span>
               </div>
             </EmptyState>
           ) : (
@@ -425,8 +718,10 @@ export function DashboardApp() {
               ))}
             </div>
           )}
-          {records.length > visibleRecords.length && (
-            <p className="records-limit">Showing the newest {visibleRecords.length} of {records.length} stored records.</p>
+          {(records.length > visibleRecords.length || decisionFilter !== "all") && (
+            <p className="records-limit">
+              Showing {visibleRecords.length} matching records from {records.length} stored records.
+            </p>
           )}
         </section>
       </main>
@@ -446,15 +741,14 @@ async function isOnlyDashboardContext(): Promise<boolean> {
   }
 }
 
-function NumberField({
-  label,
-  value,
-  onChange,
-}: {
+interface NumberFieldProps {
   label: string;
   value?: number;
+  max?: number;
   onChange: (value: string) => void;
-}) {
+}
+
+function NumberField({ label, value, max, onChange }: NumberFieldProps) {
   return (
     <label className="field">
       <SectionLabel>{label}</SectionLabel>
@@ -465,6 +759,7 @@ function NumberField({
         autoComplete="off"
         inputMode="numeric"
         min={0}
+        max={max}
         value={value ?? ""}
         onChange={(event) => onChange(event.target.value)}
       />
@@ -472,7 +767,11 @@ function NumberField({
   );
 }
 
-function StatusPill({ run }: { run: ScrapeRun }) {
+interface StatusPillProps {
+  run: ScrapeRun;
+}
+
+function StatusPill({ run }: StatusPillProps) {
   const tone =
     run.status === "completed"
       ? "good"
@@ -490,7 +789,12 @@ function StatusPill({ run }: { run: ScrapeRun }) {
   );
 }
 
-function Metric({ label, value }: { label: string; value: number }) {
+interface MetricProps {
+  label: string;
+  value: number;
+}
+
+function Metric({ label, value }: MetricProps) {
   return (
     <div className="metric">
       <span>{label}</span>
@@ -499,7 +803,11 @@ function Metric({ label, value }: { label: string; value: number }) {
   );
 }
 
-function PropertyRecordCard({ record }: { record: ScrapedPropertyRecord }) {
+interface PropertyRecordCardProps {
+  record: ScrapedPropertyRecord;
+}
+
+function PropertyRecordCard({ record }: PropertyRecordCardProps) {
   return (
     <article className="record-card">
       <div className="record-main">
@@ -540,6 +848,8 @@ function PropertyRecordCard({ record }: { record: ScrapedPropertyRecord }) {
 
       {record.description && <p className="record-description">{record.description}</p>}
 
+      {record.evaluation && <EvaluationSummary evaluation={record.evaluation} />}
+
       <div className="record-footer">
         <Chip tone={record.status === "failed" ? "danger" : record.status === "detailed" ? "good" : "sea"}>
           {record.status}
@@ -553,13 +863,67 @@ function PropertyRecordCard({ record }: { record: ScrapedPropertyRecord }) {
   );
 }
 
-function Fact({ label, value }: { label: string; value?: string }) {
+interface FactProps {
+  label: string;
+  value?: string;
+}
+
+function Fact({ label, value }: FactProps) {
   return (
     <div className="fact">
       <span>{label}</span>
       <strong>{value ?? "-"}</strong>
     </div>
   );
+}
+
+interface EvaluationSummaryProps {
+  evaluation: ListingEvaluation;
+}
+
+function EvaluationSummary({ evaluation }: EvaluationSummaryProps) {
+  const tone = evaluation.decision === "relevant" ? "good" : evaluation.decision === "review" ? "sunset" : "danger";
+  return (
+    <section className="evaluation-summary" aria-label="Intelligence evaluation">
+      <div className="evaluation-head">
+        <Chip tone={tone}>{evaluation.decision}</Chip>
+        <strong>{evaluation.score === null ? "No score" : `${Math.round(evaluation.score)} / 100`}</strong>
+      </div>
+      <p>{evaluation.summary}</p>
+      <details>
+        <summary>Evidence by criterion</summary>
+        <div className="evaluation-criteria">
+          {evaluation.criteria.map((criterion) => (
+            <div key={criterion.criterionId} className={`criterion-result ${criterion.verdict}`}>
+              <strong>{criterion.verdict}</strong>
+              <span>{criterion.reason}</span>
+              {criterion.evidence.length > 0 && <small>{criterion.evidence.join(" · ")}</small>}
+            </div>
+          ))}
+        </div>
+      </details>
+      {evaluation.missingData.length > 0 && (
+        <small className="missing-data">Missing: {evaluation.missingData.join(", ")}</small>
+      )}
+      <small className="evaluation-meta">
+        Recipe v{evaluation.recipeVersion} · {evaluation.evaluator.model} · {new Date(evaluation.evaluatedAt).toLocaleString()}
+      </small>
+    </section>
+  );
+}
+
+function runWithEvaluations(run: ScrapeRun, evaluations: ListingEvaluation[]): ScrapeRun {
+  return {
+    ...run,
+    status: "completed",
+    intelligenceStatus: "completed",
+    intelligenceError: undefined,
+    evaluated: evaluations.length,
+    relevant: evaluations.filter((evaluation) => evaluation.decision === "relevant").length,
+    notRelevant: evaluations.filter((evaluation) => evaluation.decision === "not-relevant").length,
+    review: evaluations.filter((evaluation) => evaluation.decision === "review").length,
+    message: `Reevaluated ${evaluations.length} stored listings.`,
+  };
 }
 
 function formatNumber(value?: number): string | undefined {

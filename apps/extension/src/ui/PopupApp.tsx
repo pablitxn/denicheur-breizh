@@ -50,7 +50,11 @@ export function PopupApp() {
     window.close();
   }
 
-  const isBusy = run.status === "opening-search" || run.status === "collecting-search" || run.status === "collecting-details";
+  const isBusy =
+    run.status === "opening-search" ||
+    run.status === "collecting-search" ||
+    run.status === "collecting-details" ||
+    run.status === "evaluating";
 
   return (
     <main className="popup-shell">

@@ -1,13 +1,23 @@
 import { createDefaultSearchFilters, normalizeSearchFilters } from "../lib/leboncoinSearch";
-import type { ScrapeRun, ScrapedPropertyRecord, SearchFilters, StoredCrawlerState } from "../lib/types";
+import { createDefaultIntelligenceRecipe, normalizeIntelligenceRecipe } from "../intelligence/recipe";
+import { listingIdFromUrl, normalizeListingUrl } from "../lib/leboncoinExtractors";
+import type {
+  IntelligenceRecipe,
+  ScrapeRun,
+  ScrapedPropertyRecord,
+  SearchFilters,
+  StoredCrawlerState,
+} from "../lib/types";
 
 const FILTERS_KEY = "denicheur:crawler:filters";
 const RUN_KEY = "denicheur:crawler:run";
 const RECORDS_KEY = "denicheur:crawler:records";
+const RECIPE_KEY = "denicheur:intelligence:recipe";
 const INTERRUPTIBLE_RUN_STATUSES = new Set<ScrapeRun["status"]>([
   "opening-search",
   "collecting-search",
   "collecting-details",
+  "evaluating",
   "paused-captcha",
 ]);
 
@@ -17,6 +27,11 @@ export const IDLE_RUN: ScrapeRun = {
   target: 20,
   found: 0,
   collected: 0,
+  evaluated: 0,
+  relevant: 0,
+  notRelevant: 0,
+  review: 0,
+  intelligenceStatus: "idle",
 };
 
 export async function loadCrawlerState(): Promise<StoredCrawlerState> {
@@ -24,12 +39,14 @@ export async function loadCrawlerState(): Promise<StoredCrawlerState> {
     [FILTERS_KEY]?: SearchFilters;
     [RUN_KEY]?: ScrapeRun;
     [RECORDS_KEY]?: ScrapedPropertyRecord[];
-  }>([FILTERS_KEY, RUN_KEY, RECORDS_KEY]);
+    [RECIPE_KEY]?: IntelligenceRecipe;
+  }>([FILTERS_KEY, RUN_KEY, RECORDS_KEY, RECIPE_KEY]);
 
   return {
     filters: normalizeSearchFilters(values[FILTERS_KEY] ?? createDefaultSearchFilters()),
-    run: values[RUN_KEY] ?? IDLE_RUN,
-    records: values[RECORDS_KEY] ?? [],
+    recipe: normalizeIntelligenceRecipe(values[RECIPE_KEY] ?? createDefaultIntelligenceRecipe()),
+    run: normalizeRun(values[RUN_KEY]),
+    records: migrateStoredRecords(values[RECORDS_KEY] ?? []),
   };
 }
 
@@ -41,6 +58,10 @@ export async function saveRun(run: ScrapeRun): Promise<void> {
   await setStorage({ [RUN_KEY]: run });
 }
 
+export async function saveRecipe(recipe: IntelligenceRecipe): Promise<void> {
+  await setStorage({ [RECIPE_KEY]: normalizeIntelligenceRecipe(recipe) });
+}
+
 export function reconcileInterruptedRun(run: ScrapeRun, finishedAt = new Date().toISOString()): ScrapeRun {
   if (!INTERRUPTIBLE_RUN_STATUSES.has(run.status)) return run;
 
@@ -50,6 +71,12 @@ export function reconcileInterruptedRun(run: ScrapeRun, finishedAt = new Date().
     finishedAt,
     error: "The dashboard closed before the crawl finished.",
     message: "Previous crawl was interrupted. Start a new crawl to continue.",
+    ...(run.intelligenceStatus === "evaluating"
+      ? {
+          intelligenceStatus: "failed" as const,
+          intelligenceError: "The dashboard closed before intelligence evaluation finished.",
+        }
+      : {}),
   };
 }
 
@@ -58,6 +85,10 @@ export async function saveCrawlerState(state: Partial<StoredCrawlerState>): Prom
 
   if (state.filters) {
     patch[FILTERS_KEY] = state.filters;
+  }
+
+  if (state.recipe) {
+    patch[RECIPE_KEY] = normalizeIntelligenceRecipe(state.recipe);
   }
 
   if (state.run) {
@@ -76,7 +107,39 @@ export async function clearRecords(): Promise<void> {
 }
 
 export function isCrawlerStorageKey(key: string): boolean {
-  return key === FILTERS_KEY || key === RUN_KEY || key === RECORDS_KEY;
+  return key === FILTERS_KEY || key === RUN_KEY || key === RECORDS_KEY || key === RECIPE_KEY;
+}
+
+function normalizeRun(run: ScrapeRun | undefined): ScrapeRun {
+  return {
+    ...IDLE_RUN,
+    ...run,
+    evaluated: run?.evaluated ?? 0,
+    relevant: run?.relevant ?? 0,
+    notRelevant: run?.notRelevant ?? 0,
+    review: run?.review ?? 0,
+    intelligenceStatus: run?.intelligenceStatus ?? "idle",
+  };
+}
+
+export function migrateStoredRecords(records: ScrapedPropertyRecord[]): ScrapedPropertyRecord[] {
+  const byListingId = new Map<string, ScrapedPropertyRecord>();
+
+  for (const record of records) {
+    const canonicalUrl = normalizeListingUrl(record.listingUrl) ?? record.listingUrl;
+    const id = listingIdFromUrl(canonicalUrl);
+    if (byListingId.has(id)) continue;
+
+    const evaluation = record.evaluation?.listingId === id ? record.evaluation : undefined;
+    byListingId.set(id, {
+      ...record,
+      id,
+      listingUrl: canonicalUrl,
+      evaluation,
+    });
+  }
+
+  return [...byListingId.values()];
 }
 
 function getStorage<T extends Record<string, unknown>>(keys: string[]): Promise<T> {

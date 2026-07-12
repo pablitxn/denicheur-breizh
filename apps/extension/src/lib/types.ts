@@ -108,6 +108,51 @@ export interface ScrapedPropertyRecord {
   status: "listing" | "detailed" | "failed";
   error?: string;
   rawTextSample: string;
+  evaluation?: ListingEvaluation;
+}
+
+export type CriterionVerdict = "pass" | "fail" | "unknown";
+export type ListingDecision = "relevant" | "not-relevant" | "review";
+
+export interface IntelligenceCriterion {
+  id: string;
+  name: string;
+  description: string;
+  weight: number;
+  required: boolean;
+}
+
+export interface IntelligenceRecipe {
+  id: string;
+  version: number;
+  name: string;
+  threshold: number;
+  enabled: boolean;
+  criteria: IntelligenceCriterion[];
+}
+
+export interface CriterionEvaluation {
+  criterionId: string;
+  verdict: CriterionVerdict;
+  reason: string;
+  evidence: string[];
+}
+
+export interface ListingEvaluation {
+  listingId: string;
+  decision: ListingDecision;
+  score: number | null;
+  summary: string;
+  criteria: CriterionEvaluation[];
+  missingData: string[];
+  evaluatedAt: string;
+  evaluator: {
+    provider: "openai";
+    model: string;
+    version: string;
+  };
+  recipeId: string;
+  recipeVersion: number;
 }
 
 export type ScrapeRunStatus =
@@ -115,6 +160,7 @@ export type ScrapeRunStatus =
   | "opening-search"
   | "collecting-search"
   | "collecting-details"
+  | "evaluating"
   | "paused-captcha"
   | "blocked-activity"
   | "completed"
@@ -133,10 +179,17 @@ export interface ScrapeRun {
   currentUrl?: string;
   message?: string;
   error?: string;
+  intelligenceStatus?: "idle" | "evaluating" | "completed" | "failed";
+  intelligenceError?: string;
+  evaluated: number;
+  relevant: number;
+  notRelevant: number;
+  review: number;
 }
 
 export interface StoredCrawlerState {
   filters: SearchFilters;
+  recipe: IntelligenceRecipe;
   run: ScrapeRun;
   records: ScrapedPropertyRecord[];
 }

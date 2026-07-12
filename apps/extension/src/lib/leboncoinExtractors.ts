@@ -150,6 +150,8 @@ export function normalizeListingUrl(href: string, baseUrl?: string): string | un
     return undefined;
   }
 
+  url.hostname = "www.leboncoin.fr";
+  url.search = "";
   url.hash = "";
   return url.toString();
 }
@@ -162,7 +164,7 @@ function extractListingSummary(anchor: HTMLAnchorElement, url: string): ListingS
 
   return {
     source: "leboncoin",
-    id: stableListingId(url),
+    id: listingIdFromUrl(url),
     url,
     title: title.slice(0, 240),
     ...common,
@@ -424,8 +426,18 @@ function sampleText(text: string): string {
   return cleanText(text).slice(0, 1200);
 }
 
-function stableListingId(url: string): string {
-  const idFromPath = url.match(/\/([A-Za-z0-9_-]{6,})(?:[/?#]|$)/)?.[1];
+export function listingIdFromUrl(url: string): string {
+  let idFromPath: string | undefined;
+
+  try {
+    const segments = new URL(url).pathname.split("/").filter(Boolean);
+    const candidate = segments.at(-1);
+    if (candidate && /^[A-Za-z0-9_-]{6,}$/.test(candidate)) {
+      idFromPath = candidate;
+    }
+  } catch {
+    idFromPath = undefined;
+  }
 
   if (idFromPath) {
     return idFromPath;
