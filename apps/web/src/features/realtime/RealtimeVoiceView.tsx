@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { formatDateTime, type MessageValues } from "@denicheur-breizh/i18n";
 import { Activity, Languages, Mic, MicOff, Phone, PhoneOff, Send } from "lucide-react";
 import { Button, Chip } from "@denicheur-breizh/design-system";
 import { useAppIntl } from "../../intl/IntlContext";
-import { bcp47Locales } from "../../intl/locales";
+import type { MessageId } from "../../intl/messages";
 import styles from "./RealtimeVoiceView.module.css";
 
 const realtimeSessionEndpoint = "/api/realtime/session";
@@ -18,13 +19,32 @@ interface RealtimeServerEvent {
   };
 }
 
+interface LocalizedMessage {
+  id: MessageId;
+  values?: MessageValues;
+}
+
+interface RealtimeLogEntry extends LocalizedMessage {
+  timestamp: Date;
+}
+
+class RealtimeUiError extends Error {
+  readonly localized: LocalizedMessage;
+
+  constructor(localized: LocalizedMessage) {
+    super(localized.id);
+    this.name = "RealtimeUiError";
+    this.localized = localized;
+  }
+}
+
 const sampleSpanishPhrases = [
   "Hola, quiero visitar una casa mañana por la tarde.",
   "Necesito comparar esta propiedad con otras del barrio.",
   "Podemos hablar el jueves a las diez de la mañana.",
 ];
 
-function buildSessionUpdateEvent() {
+export function buildSessionUpdateEvent() {
   return {
     type: "session.update",
     session: {
@@ -35,23 +55,26 @@ function buildSessionUpdateEvent() {
   };
 }
 
-function getEventLabel(event: RealtimeServerEvent) {
+function getEventMessage(event: RealtimeServerEvent): LocalizedMessage {
   if (event.type === "error") {
-    return `server error ${event.error?.message ?? "unknown"}`;
+    return {
+      id: "realtime.event.serverError",
+      values: { detail: event.error?.message ?? "unknown" },
+    };
   }
 
-  return `server ${event.type ?? "event"}`;
+  return { id: "realtime.event.server", values: { type: event.type ?? "event" } };
 }
 
 export function RealtimeVoiceView() {
-  const { locale } = useAppIntl();
+  const { locale, t } = useAppIntl();
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("idle");
-  const [error, setError] = useState<string | null>(null);
-  const [events, setEvents] = useState<string[]>([]);
+  const [error, setError] = useState<LocalizedMessage | null>(null);
+  const [events, setEvents] = useState<RealtimeLogEntry[]>([]);
   const [isMuted, setIsMuted] = useState(false);
   const [prompt, setPrompt] = useState("Hola, quiero visitar una casa mañana por la tarde.");
 
@@ -62,12 +85,12 @@ export function RealtimeVoiceView() {
     return "default";
   }, [status]);
 
-  const pushEvent = useCallback((message: string) => {
+  const pushEvent = useCallback((message: LocalizedMessage) => {
     setEvents((current) => [
-      `${new Intl.DateTimeFormat(bcp47Locales[locale], { timeStyle: "medium" }).format(new Date())} ${message}`,
+      { ...message, timestamp: new Date() },
       ...current,
     ].slice(0, 10));
-  }, [locale]);
+  }, []);
 
   const closeConnection = useCallback(() => {
     dataChannelRef.current?.close();
@@ -88,12 +111,15 @@ export function RealtimeVoiceView() {
     (event: object) => {
       const dataChannel = dataChannelRef.current;
       if (!dataChannel || dataChannel.readyState !== "open") {
-        setError("Realtime data channel is not open.");
+        setError({ id: "realtime.error.dataChannel" });
         return false;
       }
 
       dataChannel.send(JSON.stringify(event));
-      pushEvent(`client ${(event as { type?: string }).type ?? "event"}`);
+      pushEvent({
+        id: "realtime.event.client",
+        values: { type: (event as { type?: string }).type ?? "event" },
+      });
       return true;
     },
     [pushEvent],
@@ -101,7 +127,7 @@ export function RealtimeVoiceView() {
 
   const handleServerEvent = useCallback(
     (event: RealtimeServerEvent) => {
-      pushEvent(getEventLabel(event));
+      pushEvent(getEventMessage(event));
     },
     [pushEvent],
   );
@@ -123,10 +149,10 @@ export function RealtimeVoiceView() {
       };
 
       peerConnection.addEventListener("connectionstatechange", () => {
-        pushEvent(`peer ${peerConnection.connectionState}`);
+        pushEvent({ id: "realtime.event.peer", values: { state: peerConnection.connectionState } });
         if (peerConnection.connectionState === "failed") {
           setStatus("error");
-          setError("Peer connection failed.");
+          setError({ id: "realtime.error.peer" });
         } else if (peerConnection.connectionState === "closed" || peerConnection.connectionState === "disconnected") {
           setStatus("idle");
         }
@@ -141,7 +167,7 @@ export function RealtimeVoiceView() {
         try {
           handleServerEvent(JSON.parse(message.data) as RealtimeServerEvent);
         } catch {
-          pushEvent("server malformed event");
+          pushEvent({ id: "realtime.event.malformed" });
         }
       });
 
@@ -155,7 +181,7 @@ export function RealtimeVoiceView() {
       await peerConnection.setLocalDescription(offer);
 
       if (!offer.sdp) {
-        throw new Error("Browser did not create an SDP offer.");
+        throw new RealtimeUiError({ id: "realtime.error.sdp" });
       }
 
       const sdpResponse = await fetch(realtimeSessionEndpoint, {
@@ -168,7 +194,11 @@ export function RealtimeVoiceView() {
 
       const answerSdp = await sdpResponse.text();
       if (!sdpResponse.ok) {
-        throw new Error(answerSdp || "Realtime session endpoint failed.");
+        throw new RealtimeUiError(
+          answerSdp
+            ? { id: "realtime.error.endpointDetail", values: { detail: answerSdp } }
+            : { id: "realtime.error.endpoint" },
+        );
       }
 
       await peerConnection.setRemoteDescription({
@@ -177,18 +207,24 @@ export function RealtimeVoiceView() {
       });
 
       setStatus("connected");
-      pushEvent("client connected");
+      pushEvent({ id: "realtime.event.connected" });
     } catch (connectError) {
       closeConnection();
       setStatus("error");
-      setError(connectError instanceof Error ? connectError.message : "Realtime connection failed.");
+      if (connectError instanceof RealtimeUiError) {
+        setError(connectError.localized);
+      } else if (connectError instanceof Error) {
+        setError({ id: "realtime.error.connectionDetail", values: { detail: connectError.message } });
+      } else {
+        setError({ id: "realtime.error.connection" });
+      }
     }
   }, [closeConnection, handleServerEvent, pushEvent, sendRealtimeEvent]);
 
   const disconnect = useCallback(() => {
     closeConnection();
     setStatus("idle");
-    pushEvent("client disconnected");
+    pushEvent({ id: "realtime.event.disconnected" });
   }, [closeConnection, pushEvent]);
 
   const toggleMute = useCallback(() => {
@@ -230,85 +266,85 @@ export function RealtimeVoiceView() {
   useEffect(() => closeConnection, [closeConnection]);
 
   return (
-    <section className={styles.workspace} aria-label="Realtime voice agent">
+    <section className={styles.workspace} aria-label={t("realtime.workspaceAria")}>
       <header className={styles.header}>
         <div>
-          <span className={styles.eyebrow}>Realtime WebRTC</span>
-          <h1>Spanish to French</h1>
+          <span className={styles.eyebrow}>{t("realtime.eyebrow")}</span>
+          <h1>{t("realtime.title")}</h1>
         </div>
         <div className={styles.headerMeta}>
           <div aria-live="polite">
-          <Chip tone={statusTone} active={status !== "idle"}>
-            <span className={styles.statusDot} aria-hidden="true" />
-            {status}
-          </Chip>
+            <Chip tone={statusTone} active={status !== "idle"}>
+              <span className={styles.statusDot} aria-hidden="true" />
+              {t(`realtime.status.${status}`)}
+            </Chip>
           </div>
           <span>{realtimeModel}</span>
         </div>
       </header>
 
       <div className={styles.grid}>
-        <section className={styles.panel} aria-label="Session controls">
+        <section className={styles.panel} aria-label={t("realtime.sessionAria")}>
           <div className={styles.panelHeader}>
             <div>
-              <span className={styles.eyebrow}>Session</span>
-              <h2>WebRTC call</h2>
+              <span className={styles.eyebrow}>{t("realtime.session.eyebrow")}</span>
+              <h2>{t("realtime.session.title")}</h2>
             </div>
             <Activity size={18} aria-hidden="true" />
           </div>
 
           <dl className={styles.facts}>
             <div>
-              <dt>Endpoint</dt>
+              <dt>{t("realtime.session.endpoint")}</dt>
               <dd>{realtimeSessionEndpoint}</dd>
             </div>
             <div>
-              <dt>Channel</dt>
+              <dt>{t("realtime.session.channel")}</dt>
               <dd>oai-events</dd>
             </div>
             <div>
-              <dt>Audio</dt>
-              <dd>mic input / model output</dd>
+              <dt>{t("realtime.session.audio")}</dt>
+              <dd>{t("realtime.session.audioValue")}</dd>
             </div>
           </dl>
 
-          <audio ref={audioRef} autoPlay className={styles.remoteAudio} />
+          <audio ref={audioRef} autoPlay className={styles.remoteAudio} aria-label={t("realtime.session.remoteAudio")} />
 
           <div className={styles.controls}>
             <Button variant="primary" onClick={connect} disabled={status === "connecting" || status === "connected"}>
               <Phone size={16} />
-              Connect
+              {t("realtime.action.connect")}
             </Button>
             <Button onClick={toggleMute} disabled={status !== "connected"}>
               {isMuted ? <MicOff size={16} /> : <Mic size={16} />}
-              {isMuted ? "Muted" : "Mic on"}
+              {isMuted ? t("realtime.action.muted") : t("realtime.action.micOn")}
             </Button>
             <Button variant="ghost" onClick={disconnect} disabled={status === "idle" || status === "connecting"}>
               <PhoneOff size={16} />
-              Disconnect
+              {t("realtime.action.disconnect")}
             </Button>
           </div>
 
-          {error && <p className={styles.error} role="alert">{error}</p>}
+          {error && <p className={styles.error} role="alert">{t(error.id, error.values)}</p>}
         </section>
 
-        <section className={styles.panel} aria-label="Translation mode">
+        <section className={styles.panel} aria-label={t("realtime.translationAria")}>
           <div className={styles.panelHeader}>
             <div>
-              <span className={styles.eyebrow}>Translation mode</span>
-              <h2>Español {"->"} français</h2>
+              <span className={styles.eyebrow}>{t("realtime.translation.eyebrow")}</span>
+              <h2>{t("realtime.translation.title")}</h2>
             </div>
             <Languages size={18} aria-hidden="true" />
           </div>
 
           <div className={styles.toolSchema}>
-            <span>input</span>
-            <span>Spanish speech or text</span>
-            <span>output</span>
-            <span>Natural spoken French</span>
+            <span>{t("realtime.translation.input")}</span>
+            <span>{t("realtime.translation.inputValue")}</span>
+            <span>{t("realtime.translation.output")}</span>
+            <span>{t("realtime.translation.outputValue")}</span>
           </div>
 
-          <div className={styles.slots} aria-label="Sample Spanish phrases">
+          <div className={styles.slots} aria-label={t("realtime.samplesAria")}>
             {sampleSpanishPhrases.map((phrase) => (
               <span key={phrase}>{phrase}</span>
             ))}
@@ -321,23 +357,29 @@ export function RealtimeVoiceView() {
               autoComplete="off"
               onChange={(event) => setPrompt(event.target.value)}
               disabled={status !== "connected"}
-              aria-label="Text prompt"
+              aria-label={t("realtime.promptAria")}
             />
-            <Button type="submit" variant="primary" iconOnly disabled={status !== "connected" || !prompt.trim()} aria-label="Send prompt">
+            <Button type="submit" variant="primary" iconOnly disabled={status !== "connected" || !prompt.trim()} aria-label={t("realtime.sendAria")}>
               <Send size={16} />
             </Button>
           </form>
         </section>
 
-        <section className={[styles.panel, styles.eventsPanel].join(" ")} aria-label="Realtime events">
+        <section className={[styles.panel, styles.eventsPanel].join(" ")} aria-label={t("realtime.eventsAria")}>
           <div className={styles.panelHeader}>
             <div>
-              <span className={styles.eyebrow}>Events</span>
-              <h2>Data channel</h2>
+              <span className={styles.eyebrow}>{t("realtime.events.eyebrow")}</span>
+              <h2>{t("realtime.events.title")}</h2>
             </div>
           </div>
           <ol className={styles.eventLog} aria-live="polite">
-            {events.length === 0 ? <li>No events yet</li> : events.map((event) => <li key={event}>{event}</li>)}
+            {events.length === 0 ? (
+              <li>{t("realtime.events.empty")}</li>
+            ) : events.map((event, index) => (
+              <li key={`${event.timestamp.getTime()}-${index}`}>
+                {formatDateTime(event.timestamp, locale, { timeStyle: "medium" })} {t(event.id, event.values)}
+              </li>
+            ))}
           </ol>
         </section>
       </div>

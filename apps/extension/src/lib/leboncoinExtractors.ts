@@ -85,8 +85,8 @@ export function detectSiteChallenge(doc: Document = document): SiteChallenge | u
   if (unusualEvidence) {
     return {
       type: "unusual-activity",
-      title: "Unusual activity block",
-      message: "LeBonCoin flagged this browser or network. Stop automation and wait before trying again manually.",
+      title: { id: "challenge.unusualTitle" },
+      message: { id: "challenge.unusualMessage" },
       evidence: unusualEvidence,
     };
   }
@@ -98,8 +98,8 @@ export function detectSiteChallenge(doc: Document = document): SiteChallenge | u
   ) {
     return {
       type: "captcha",
-      title: "Captcha challenge",
-      message: "Captcha detected. Solve it manually, then return to the dashboard and press Resume once.",
+      title: { id: "challenge.captchaTitle" },
+      message: { id: "challenge.captchaMessage" },
       evidence: challengeCopy.includes("captcha") || challengeCopy.includes("please enable js")
         ? "visible-captcha-copy"
         : "human-verification-copy",
@@ -119,8 +119,8 @@ export function detectSiteChallenge(doc: Document = document): SiteChallenge | u
   if (challengeElement) {
     return {
       type: "captcha",
-      title: "Captcha challenge",
-      message: "Captcha detected. Solve it manually, then return to the dashboard and press Resume once.",
+      title: { id: "challenge.captchaTitle" },
+      message: { id: "challenge.captchaMessage" },
       evidence: challengeElement instanceof HTMLIFrameElement
         ? "visible-captcha-frame"
         : "visible-captcha-element",
@@ -130,8 +130,8 @@ export function detectSiteChallenge(doc: Document = document): SiteChallenge | u
   if (isStandaloneInterstitialFrame(doc, bodyText)) {
     return {
       type: "unusual-activity",
-      title: "Isolated access interstitial",
-      message: "LeBonCoin returned an isolated interstitial. Automation stopped for manual review.",
+      title: { id: "challenge.interstitialTitle" },
+      message: { id: "challenge.interstitialMessage" },
       evidence: "isolated-interstitial",
     };
   }

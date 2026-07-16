@@ -1,11 +1,22 @@
+import { DEFAULT_LOCALE, type LocaleCode } from "@denicheur-breizh/i18n";
 import {
   isLeboncoinSearchUrl,
   MAX_LISTINGS_PER_PAGE,
   normalizeSearchFilters,
   validateSearchFilters,
 } from "../lib/leboncoinSearch";
-import { evaluateDetailedRecordsInBatches, mergeRecordEvaluations } from "../intelligence/filterApi";
+import {
+  evaluateDetailedRecordsInBatches,
+  filterApiErrorDescriptor,
+  mergeRecordEvaluations,
+} from "../intelligence/filterApi";
 import { recipeValidationError } from "../intelligence/recipe";
+import {
+  ensureMessageDescriptor,
+  errorMessageDescriptor,
+  localizedTextDetail,
+  message,
+} from "../lib/localizedText";
 import type {
   ContentRequest,
   ContentResponse,
@@ -19,6 +30,7 @@ import type {
   ListingSummary,
   IntelligenceRecipe,
   ListingEvaluation,
+  LocalizedText,
   ScrapeRun,
   ScrapedPropertyRecord,
   SearchFilters,
@@ -31,6 +43,7 @@ export type ListingEvaluator = (
   runId: string,
   recipe: IntelligenceRecipe,
   records: ScrapedPropertyRecord[],
+  locale: LocaleCode,
   signal: AbortSignal,
 ) => Promise<ListingEvaluation[]>;
 
@@ -165,7 +178,11 @@ export class ScrapeRunner {
     resolver();
   }
 
-  async run(filters: SearchFilters, recipe?: IntelligenceRecipe): Promise<void> {
+  async run(
+    filters: SearchFilters,
+    recipe?: IntelligenceRecipe,
+    locale: LocaleCode = DEFAULT_LOCALE,
+  ): Promise<void> {
     this.cancelled = false;
     this.abortController = new AbortController();
     this.lastPersistedFilters = undefined;
@@ -205,7 +222,7 @@ export class ScrapeRunner {
       review: 0,
       filterWarnings: [],
       intelligenceStatus: recipe?.enabled ? "idle" : undefined,
-      message: "Opening a dedicated Leboncoin home tab.",
+      message: message("run.openingHome"),
     };
 
     await this.persist(run, records, safeFilters);
@@ -236,7 +253,7 @@ export class ScrapeRunner {
 
       run.status = "configuring-search";
       run.currentUrl = HOME_URL;
-      run.message = "Applying native filters on the Leboncoin home page.";
+      run.message = message("run.applyingHomeFilters");
       await this.persist(run, records, safeFilters);
 
       const nativeFilters = toNativeSearchFilters(safeFilters);
@@ -268,7 +285,7 @@ export class ScrapeRunner {
       await this.tabs.waitForComplete(searchTabId, 45_000, this.abortController.signal);
       await this.observeLoadedPage();
       run.currentUrl = routedTab.url;
-      run.message = "Applying native filters on the search results page.";
+      run.message = message("run.applyingResultsFilters");
       await this.persist(run, records, safeFilters);
 
       await this.configureNativeResults(
@@ -286,7 +303,7 @@ export class ScrapeRunner {
 
       run.status = "collecting-search";
       run.currentUrl = observedSearchTab.url;
-      run.message = "Collecting search results.";
+      run.message = message("run.collectingSearch");
       await this.persist(run, records, safeFilters);
 
       const searchCollection = await this.collectSearchPages(
@@ -302,8 +319,12 @@ export class ScrapeRunner {
         run.status = "completed";
         run.finishedAt = new Date().toISOString();
         run.currentUrl = undefined;
-        run.message = `Collected ${listings.length} listing summaries across ${searchCollection.pagesVisited} ` +
-          `${searchCollection.pagesVisited === 1 ? "page" : "pages"}. Detail tabs were skipped.`;
+        run.message = searchCollection.pagesVisited === 1
+          ? message("run.summaryCollectionCompleteOnePage", { count: listings.length })
+          : message("run.summaryCollectionCompleteManyPages", {
+              count: listings.length,
+              pages: searchCollection.pagesVisited,
+            });
         await this.persist(run, records, safeFilters);
         return;
       }
@@ -312,12 +333,12 @@ export class ScrapeRunner {
         this.ensureActive();
         run.status = "collecting-details";
         run.currentUrl = listing.url;
-        run.message = `Waiting before listing ${index + 1} of ${listings.length}.`;
+        run.message = message("run.waitingListing", { current: index + 1, total: listings.length });
         await this.persist(run, records, safeFilters);
         await this.clock.sleep(this.randomDelay(timing.minDelayMs, timing.maxDelayMs), this.abortController.signal);
 
         this.ensureActive();
-        run.message = `Opening listing ${index + 1} of ${listings.length}.`;
+        run.message = message("run.openingListing", { current: index + 1, total: listings.length });
         await this.persist(run, records, safeFilters);
 
         let detailTabId: number | undefined;
@@ -355,7 +376,10 @@ export class ScrapeRunner {
           const detail = await this.collectListingDetail(detailTabId, run, records, safeFilters);
           records = mergeRecords(records, [recordFromDetail(listing, detail, run.id)]);
           run.collected = records.filter((record) => record.searchRunId === run.id && record.status === "detailed").length;
-          run.message = `Collected ${run.collected} of ${listings.length}.`;
+          run.message = message("run.collectedDetailsProgress", {
+            count: run.collected,
+            total: listings.length,
+          });
           await this.persist(run, records, safeFilters);
           await this.closeOwnedSuccessfulDetail(detailTabId, run);
           await this.persist(run, records, safeFilters);
@@ -369,18 +393,25 @@ export class ScrapeRunner {
             throw error;
           }
 
-          records = mergeRecords(records, [recordFromFailure(listing, run.id, errorMessage(error))]);
+          records = mergeRecords(records, [
+            recordFromFailure(listing, run.id, errorMessageDescriptor("error.listingFailed", error)),
+          ]);
           this.appendFilterWarnings(run, [{
             field: `detail:${listing.id}`,
-            message: `${errorMessage(error)} The failed record was preserved and the crawl continued.`,
+            message: errorMessageDescriptor("warning.detailFailurePreserved", error),
           }]);
-          run.message = `Listing ${index + 1} of ${listings.length} failed; continuing with the next listing.`;
+          run.message = message("run.listingFailedContinuing", {
+            current: index + 1,
+            total: listings.length,
+          });
           await this.persist(run, records, safeFilters);
           this.currentOwnedTabId = searchTabId;
         }
 
         if ((index + 1) % timing.pauseAfterDetails === 0 && index + 1 < listings.length) {
-          run.message = `Cooling down for ${Math.round(timing.cooldownMs / 1000)} seconds.`;
+          run.message = message("run.cooldown", {
+            seconds: Math.round(timing.cooldownMs / 1000),
+          });
           await this.persist(run, records, safeFilters);
           await this.clock.sleep(timing.cooldownMs, this.abortController.signal);
         }
@@ -392,6 +423,7 @@ export class ScrapeRunner {
           run,
           records,
           recipe,
+          locale,
           evaluator: this.evaluator,
           signal: this.abortController.signal,
           persist: (nextRun, nextRecords) => this.persist(nextRun, nextRecords, safeFilters),
@@ -407,11 +439,16 @@ export class ScrapeRunner {
           (record) => record.searchRunId === run.id && record.status === "failed",
         ).length;
         run.message = recipe?.enabled
-          ? `Collected ${run.collected} listings and evaluated ${run.evaluated}.`
-          : `Collected ${run.collected} detailed listings.` +
-            (failedDetails > 0
-              ? ` ${failedDetails} failed detail ${failedDetails === 1 ? "record was" : "records were"} preserved for review.`
-              : "");
+          ? message("run.collectedAndEvaluated", {
+              count: run.collected,
+              evaluated: run.evaluated,
+            })
+          : failedDetails > 0
+            ? message("run.collectedWithFailedDetails", {
+                count: run.collected,
+                failed: failedDetails,
+              })
+            : message("run.collectedDetailed", { count: run.collected });
       }
       await this.persist(run, records, safeFilters);
     } catch (error) {
@@ -425,14 +462,14 @@ export class ScrapeRunner {
 
       run.finishedAt = new Date().toISOString();
       run.status = this.cancelled ? "cancelled" : "failed";
-      run.error = this.cancelled ? undefined : errorMessage(error);
+      run.error = this.cancelled ? undefined : errorMessageDescriptor("error.crawlFailed", error);
       if (run.intelligenceStatus === "evaluating") {
         run.intelligenceStatus = "failed";
         run.intelligenceError = this.cancelled
-          ? "Intelligence evaluation was cancelled."
-          : errorMessage(error);
+          ? message("error.intelligenceCancelled")
+          : errorMessageDescriptor("error.intelligenceFailed", error);
       }
-      run.message = this.cancelled ? "Scrape cancelled." : "Scrape failed.";
+      run.message = this.cancelled ? message("run.cancelled") : message("run.failed");
       await this.persist(run, records, safeFilters);
     } finally {
       const finalTabId = this.terminalReviewTabId;
@@ -494,7 +531,11 @@ export class ScrapeRunner {
         continue;
       }
       if (!response.ok) {
-        throw new Error(response.error ?? `Leboncoin could not complete ${expectedPhase}.`);
+        throw new Error(
+          response.error
+            ? localizedTextDetail(response.error)
+            : `Leboncoin could not complete ${expectedPhase}.`,
+        );
       }
       await this.persist(run, records, filters);
       return response;
@@ -750,7 +791,11 @@ export class ScrapeRunner {
     this.ensureActive();
     if (response.type === "LBC_NATIVE_SEARCH_RESULT") {
       if (!response.ok && !response.challenge) {
-        throw new Error(response.error ?? "A queued native action failed before navigation.");
+        throw new Error(
+          response.error
+            ? localizedTextDetail(response.error)
+            : "A queued native action failed before navigation.",
+        );
       }
       return {
         challenge: response.challenge,
@@ -775,9 +820,13 @@ export class ScrapeRunner {
   private appendFilterWarnings(run: ScrapeRun, warnings: FilterApplicationWarning[]): void {
     for (const warning of warnings) {
       if (run.filterWarnings.some(
-        (existing) => existing.field === warning.field && existing.message === warning.message,
+        (existing) => existing.field === warning.field &&
+          localizedTextDetail(existing.message) === localizedTextDetail(warning.message),
       )) continue;
-      run.filterWarnings.push({ field: warning.field, message: warning.message });
+      run.filterWarnings.push({
+        field: warning.field,
+        message: ensureMessageDescriptor(warning.message),
+      });
     }
   }
 
@@ -800,7 +849,7 @@ export class ScrapeRunner {
     } catch (error) {
       this.appendFilterWarnings(run, [{
         field: "detailTabs",
-        message: `A successfully extracted detail tab could not be closed: ${errorMessage(error)}`,
+        message: errorMessageDescriptor("warning.detailTabCloseFailed", error),
       }]);
     }
   }
@@ -829,7 +878,11 @@ export class ScrapeRunner {
       run.status = "collecting-search";
       run.currentUrl = observed.url;
       run.pagesVisited = pageNumber;
-      run.message = `Collecting search results page ${pageNumber}; ${listings.length} of ${run.target} unique listings found.`;
+      run.message = message("run.collectingSearchPage", {
+        page: pageNumber,
+        count: listings.length,
+        target: run.target,
+      });
       await this.persist(run, nextRecords, filters);
 
       const pageListings = await this.collectSearchResults(
@@ -846,7 +899,11 @@ export class ScrapeRunner {
       );
       run.found = listings.length;
       run.collected = filters.collectDetailPages ? 0 : listings.length;
-      run.message = `Collected page ${pageNumber}; ${listings.length} of ${run.target} unique listings found.`;
+      run.message = message("run.collectedSearchPage", {
+        page: pageNumber,
+        count: listings.length,
+        target: run.target,
+      });
       await this.persist(run, nextRecords, filters);
 
       if (listings.length >= run.target) {
@@ -867,7 +924,7 @@ export class ScrapeRunner {
       }
 
       const beforeUrl = observed.url;
-      run.message = `Advancing to search results page ${pageNumber + 1}.`;
+      run.message = message("run.advancingSearchPage", { page: pageNumber + 1 });
       await this.persist(run, nextRecords, filters);
       await this.performNativePhase(
         tabId,
@@ -951,7 +1008,11 @@ export class ScrapeRunner {
           stableSince = this.clock.now();
           continue;
         }
-        throw new Error(response.error ?? "A queued native results action failed.");
+        throw new Error(
+          response.error
+            ? localizedTextDetail(response.error)
+            : "A queued native results action failed.",
+        );
       }
 
       if (response.type !== "LBC_SEARCH_RESULTS") {
@@ -1104,8 +1165,10 @@ export class ScrapeRunner {
     run.status = "paused-captcha";
     run.finishedAt = undefined;
     const facts = formatCaptchaPauseFacts(diagnostics, challenge);
-    run.message = `Captcha detected during ${sanitizeVisibleDiagnostic(checkpoint)}${facts}. ` +
-      "Solve it manually in the focused tab, then press Resume once.";
+    run.message = message("run.captchaPaused", {
+      checkpoint: sanitizeVisibleDiagnostic(checkpoint),
+      facts,
+    });
     run.error = undefined;
     this.terminalReviewTabId = tabId;
     const resumePromise = new Promise<void>((resolve) => {
@@ -1117,7 +1180,7 @@ export class ScrapeRunner {
     this.ensureActive();
     this.terminalReviewTabId = undefined;
     run.status = resumeStatus;
-    run.message = "Rechecking the same Leboncoin tab after manual CAPTCHA resolution.";
+    run.message = message("run.captchaRechecking");
     await this.persist(run, records, filters);
   }
 
@@ -1126,13 +1189,13 @@ export class ScrapeRunner {
     run: ScrapeRun,
     records: ScrapedPropertyRecord[],
     filters: SearchFilters,
-    message: string,
+    challengeMessage: LocalizedText,
   ): Promise<never> {
     this.ensureActive();
     run.status = "blocked-activity";
     run.finishedAt = new Date().toISOString();
-    run.message = message;
-    run.error = "LeBonCoin unusual activity block detected. Automation stopped.";
+    run.message = ensureMessageDescriptor(challengeMessage, "challenge.unusualMessage");
+    run.error = message("error.activityBlocked");
     this.terminalReviewTabId = tabId;
     await this.tabs.update(tabId, { active: true }).catch(() => undefined);
     await this.persist(run, records, filters).catch(() => undefined);
@@ -1183,7 +1246,9 @@ function formatCaptchaPauseFacts(
       : String(diagnostics.actionExecuted)}`);
   }
 
-  const evidence = sanitizeVisibleDiagnostic(challenge?.evidence ?? challenge?.title ?? "");
+  const evidence = sanitizeVisibleDiagnostic(
+    challenge?.evidence ?? (challenge?.title ? localizedTextDetail(challenge.title) : ""),
+  );
   if (evidence) facts.push(`evidence=${evidence}`);
   return facts.length > 0 ? ` [${facts.join("; ")}]` : "";
 }
@@ -1318,7 +1383,11 @@ function mergeImageUrls(...groups: Array<string[] | undefined>): string[] | unde
   return urls.length > 0 ? urls : undefined;
 }
 
-function recordFromFailure(summary: ListingSummary, runId: string, error: string): ScrapedPropertyRecord {
+function recordFromFailure(
+  summary: ListingSummary,
+  runId: string,
+  error: LocalizedText,
+): ScrapedPropertyRecord {
   return {
     ...recordFromSummary(summary, runId),
     status: "failed",
@@ -1686,15 +1755,17 @@ function defaultEvaluator(
   runId: string,
   recipe: IntelligenceRecipe,
   records: ScrapedPropertyRecord[],
+  locale: LocaleCode,
   signal: AbortSignal,
 ): Promise<ListingEvaluation[]> {
-  return evaluateDetailedRecordsInBatches(runId, recipe, records, { signal });
+  return evaluateDetailedRecordsInBatches(runId, recipe, records, { locale, signal });
 }
 
 interface IntelligencePhaseOptions {
   run: ScrapeRun;
   records: ScrapedPropertyRecord[];
   recipe: IntelligenceRecipe;
+  locale?: LocaleCode;
   evaluator: ListingEvaluator;
   signal: AbortSignal;
   persist: (run: ScrapeRun, records: ScrapedPropertyRecord[]) => Promise<void>;
@@ -1704,6 +1775,7 @@ export async function runIntelligencePhase({
   run,
   records,
   recipe,
+  locale = DEFAULT_LOCALE,
   evaluator,
   signal,
   persist,
@@ -1715,24 +1787,24 @@ export async function runIntelligencePhase({
   run.currentUrl = undefined;
   run.intelligenceStatus = "evaluating";
   run.intelligenceError = undefined;
-  run.message = `Evaluating ${detailedRecords.length} detailed listings.`;
+  run.message = message("run.evaluating", { count: detailedRecords.length });
   await persist(run, records);
 
   try {
-    const evaluations = await evaluator(run.id, recipe, detailedRecords, signal);
+    const evaluations = await evaluator(run.id, recipe, detailedRecords, locale, signal);
     const evaluatedRecords = mergeRecordEvaluations(records, evaluations);
     applyEvaluationCounts(run, evaluations);
     run.status = "completed";
     run.intelligenceStatus = "completed";
-    run.message = `Evaluated ${evaluations.length} detailed listings.`;
+    run.message = message("run.evaluated", { count: evaluations.length });
     await persist(run, evaluatedRecords);
     return evaluatedRecords;
   } catch (error) {
     if (signal.aborted) throw error;
     run.status = "completed";
     run.intelligenceStatus = "failed";
-    run.intelligenceError = errorMessage(error);
-    run.message = `Collected ${run.collected} detailed listings. Intelligence failed; retry from the dashboard.`;
+    run.intelligenceError = filterApiErrorDescriptor(error);
+    run.message = message("run.intelligenceFailed", { count: run.collected });
     await persist(run, records);
     return records;
   }

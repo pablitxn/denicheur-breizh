@@ -1,3 +1,4 @@
+import { SUPPORTED_LOCALES, type LocaleCode } from "@denicheur-breizh/i18n";
 import { z } from "zod";
 
 export const MAX_LISTINGS_PER_REQUEST = 20;
@@ -24,6 +25,13 @@ const identifierSchema = z.string().trim().min(1).max(128);
 const optionalText = (maximum: number) => z.string().trim().min(1).max(maximum).optional();
 const nonNegativeNumber = (maximum: number) => z.number().finite().min(0).max(maximum).optional();
 const optionalCount = z.number().int().min(0).max(100).optional();
+const verbatimEvidenceSchema = z
+  .string()
+  .min(1)
+  .max(500)
+  .refine((value) => value.trim().length > 0, { message: "Evidence must contain non-whitespace text." });
+
+export const filterLocaleSchema = z.enum(SUPPORTED_LOCALES);
 
 export const intelligenceCriterionSchema = z
   .object({
@@ -71,6 +79,7 @@ export const filterListingInputSchema = z
 export const filterListingsRequestSchema = z
   .object({
     runId: identifierSchema,
+    locale: filterLocaleSchema,
     recipe: intelligenceRecipeSchema,
     listings: z.array(filterListingInputSchema).min(1).max(MAX_LISTINGS_PER_REQUEST),
   })
@@ -98,7 +107,7 @@ export const criterionEvaluationSchema = z
     criterionId: identifierSchema,
     verdict: criterionVerdictSchema,
     reason: z.string().trim().min(1).max(1_000),
-    evidence: z.array(z.string().trim().min(1).max(500)).max(5),
+    evidence: z.array(verbatimEvidenceSchema).max(5),
   })
   .strict();
 
@@ -117,6 +126,7 @@ export const listingEvaluationResultSchema = z
 export const filterListingsResponseSchema = z
   .object({
     runId: identifierSchema,
+    locale: filterLocaleSchema,
     recipeId: identifierSchema,
     recipeVersion: z.number().int().min(1),
     evaluator: z
@@ -140,6 +150,7 @@ export type CriterionEvaluation = z.infer<typeof criterionEvaluationSchema>;
 export type ListingEvaluationResult = z.infer<typeof listingEvaluationResultSchema>;
 export type FilterListingsResponse = z.infer<typeof filterListingsResponseSchema>;
 export type MissingDataField = (typeof MISSING_DATA_FIELDS)[number];
+export type FilterLocale = LocaleCode;
 
 function addDuplicateIssues(
   values: readonly string[],

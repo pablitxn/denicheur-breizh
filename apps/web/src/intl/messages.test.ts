@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { esMessages, frMessages } from "./messages";
+import { translate } from "@denicheur-breizh/i18n";
+import { enMessages, esMessages, frMessages, messages } from "./messages";
 
 describe("intl messages", () => {
-  it("keeps Spanish and French catalogs aligned", () => {
+  it("keeps all application catalogs aligned with canonical French", () => {
     expect(Object.keys(esMessages).sort()).toEqual(Object.keys(frMessages).sort());
+    expect(Object.keys(enMessages).sort()).toEqual(Object.keys(frMessages).sort());
+  });
+
+  it("uses locale-aware plurals and interpolation", () => {
+    expect(translate(messages, "fr", "properties.count", { count: 1 })).toBe("1 bien");
+    expect(translate(messages, "es", "properties.count", { count: 2 })).toBe("2 propiedades");
+    expect(translate(messages, "en", "properties.count", { count: 1 })).toBe("1 property");
   });
 });

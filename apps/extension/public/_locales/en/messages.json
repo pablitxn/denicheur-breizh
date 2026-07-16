@@ -1,0 +1,14 @@
+{
+  "extensionName": {
+    "message": "Denicheur Breizh Crawler",
+    "description": "Extension name"
+  },
+  "extensionDescription": {
+    "message": "User-assisted Leboncoin property collection.",
+    "description": "Extension description"
+  },
+  "extensionActionTitle": {
+    "message": "Open Denicheur Breizh",
+    "description": "Toolbar button tooltip"
+  }
+}

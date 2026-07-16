@@ -16,7 +16,21 @@ import {
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Chip, EmptyState, SectionLabel, Select } from "@denicheur-breizh/design-system";
 import { ScrapeRunner } from "../automation/scrapeRunner";
-import { evaluateDetailedRecordsInBatches, mergeRecordEvaluations } from "../intelligence/filterApi";
+import {
+  LocaleSelector,
+  extensionMessage,
+  filterWarningFieldLabel,
+  localeDisplayName,
+  missingFieldLabel,
+  translateFilterValidationIssue,
+  useExtensionI18n,
+  type ExtensionMessageId,
+} from "../i18n";
+import {
+  evaluateDetailedRecordsInBatches,
+  filterApiErrorDescriptor,
+  mergeRecordEvaluations,
+} from "../intelligence/filterApi";
 import {
   createDefaultIntelligenceRecipe,
   createEmptyCriterion,
@@ -88,6 +102,12 @@ interface DashboardRunnerLockManager {
 }
 
 export function DashboardApp() {
+  const {
+    formatNumber,
+    locale,
+    resolveText,
+    t,
+  } = useExtensionI18n();
   const [filters, setFilters] = useState<SearchFilters>(createDefaultSearchFilters);
   const [run, setRun] = useState<ScrapeRun>(IDLE_RUN);
   const [records, setRecords] = useState<ScrapedPropertyRecord[]>([]);
@@ -95,7 +115,7 @@ export function DashboardApp() {
   const [recipeDirty, setRecipeDirty] = useState(false);
   const [hydrated, setHydrated] = useState(false);
   const [decisionFilter, setDecisionFilter] = useState<"all" | ListingEvaluation["decision"]>("all");
-  const [error, setError] = useState<string>();
+  const [error, setError] = useState<unknown>();
   const runnerRef = useRef<ScrapeRunner | undefined>(undefined);
   const startPendingRef = useRef(false);
   const reevaluationAbortRef = useRef<AbortController | undefined>(undefined);
@@ -110,12 +130,6 @@ export function DashboardApp() {
       .slice(0, MAX_RENDERED_RECORDS),
     [decisionFilter, records],
   );
-  useEffect(() => {
-    document.documentElement.dataset.theme = "dark";
-    document.documentElement.dataset.accent = "sea";
-    document.documentElement.dataset.density = "compact";
-  }, []);
-
   useEffect(() => {
     let mounted = true;
 
@@ -271,11 +285,11 @@ export function DashboardApp() {
     event.preventDefault();
     if (!hydrated || startPendingRef.current || isRunActive) return;
     if (requiresReset) {
-      setError("This run stopped for manual review. Clear the run before starting again.");
+      setError(extensionMessage("validation.manualReset"));
       return;
     }
     if (filterIssues.length > 0) {
-      setError("Fix the invalid search filters before starting the crawl.");
+      setError(extensionMessage("validation.fixFilters"));
       return;
     }
     startPendingRef.current = true;
@@ -297,7 +311,7 @@ export function DashboardApp() {
           setRecords(snapshot.records);
         });
         runnerRef.current = runner;
-        await runner.run(normalizedFilters, recipeForRun);
+        await runner.run(normalizedFilters, recipeForRun, locale);
       });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
@@ -320,9 +334,9 @@ export function DashboardApp() {
     setError(undefined);
     try {
       const recipeForRun = await persistRecipeForUse();
-      if (!recipeForRun.enabled) throw new Error("Enable the intelligence recipe before reevaluating.");
+      if (!recipeForRun.enabled) throw extensionMessage("error.enableRecipe");
       const detailedRecords = records.filter((record) => record.status === "detailed");
-      if (detailedRecords.length === 0) throw new Error("No detailed records are available for reevaluation.");
+      if (detailedRecords.length === 0) throw extensionMessage("error.noDetailedRecords");
 
       const reevaluationRunId = `reevaluation-${Date.now()}`;
       const abortController = new AbortController();
@@ -332,7 +346,7 @@ export function DashboardApp() {
         status: "evaluating",
         intelligenceStatus: "evaluating",
         intelligenceError: undefined,
-        message: `Reevaluating ${detailedRecords.length} stored listings.`,
+        message: extensionMessage("run.reevaluating", { count: detailedRecords.length }),
       };
       setRun(evaluatingRun);
       await saveCrawlerState({ run: evaluatingRun });
@@ -342,7 +356,7 @@ export function DashboardApp() {
           reevaluationRunId,
           recipeForRun,
           detailedRecords,
-          { signal: abortController.signal },
+          { locale, signal: abortController.signal },
         );
         const nextRecords = mergeRecordEvaluations(records, evaluations);
         const nextRun = runWithEvaluations(evaluatingRun, evaluations);
@@ -350,28 +364,29 @@ export function DashboardApp() {
         setRun(nextRun);
         await saveCrawlerState({ run: nextRun, records: nextRecords });
       } catch (caught) {
+        const intelligenceError = filterApiErrorDescriptor(caught);
         const nextRun: ScrapeRun = {
           ...evaluatingRun,
           status: "completed",
           intelligenceStatus: "failed",
-          intelligenceError: caught instanceof Error ? caught.message : String(caught),
-          message: "Stored listings were preserved. Intelligence reevaluation failed.",
+          intelligenceError,
+          message: extensionMessage("run.reevaluationFailed"),
         };
         setRun(nextRun);
         await saveCrawlerState({ run: nextRun });
-        throw caught;
+        throw intelligenceError;
       } finally {
         reevaluationAbortRef.current = undefined;
       }
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
+      setError(caught instanceof Error ? caught.message : caught);
     }
   }
 
   async function handleClear() {
     const prompt = requiresReset
-      ? "This clears stored records and acknowledges the terminal stop. Do not continue while a captcha or restriction is still present. Clear anyway?"
-      : "Clear all locally stored crawler records?";
+      ? t("confirm.clearTerminal")
+      : t("confirm.clear");
     if (!window.confirm(prompt)) return;
     runnerRef.current?.cancel();
     try {
@@ -389,12 +404,15 @@ export function DashboardApp() {
         <div className="extension-brand">
           <span className="extension-mark">DB</span>
           <div>
-            <h1>Denicheur Breizh Crawler</h1>
-            <p>LeBonCoin real-estate PoC</p>
+            <h1>{t("app.dashboardTitle")}</h1>
+            <p>{t("app.dashboardSubtitle")}</p>
           </div>
         </div>
-        <div aria-live="polite">
-          <StatusPill run={run} />
+        <div className="extension-toolbar-actions">
+          <LocaleSelector />
+          <div aria-live="polite">
+            <StatusPill run={run} />
+          </div>
         </div>
       </header>
 
@@ -402,14 +420,14 @@ export function DashboardApp() {
         <form className="control-surface" onSubmit={handleStart}>
           <div className="surface-head">
             <div>
-              <h2>Search filters</h2>
-              <p>The extension opens Leboncoin and applies these filters through its native controls.</p>
+              <h2>{t("search.title")}</h2>
+              <p>{t("search.description")}</p>
             </div>
           </div>
 
           <div className="form-grid">
             <label className="field">
-              <SectionLabel>Mode</SectionLabel>
+              <SectionLabel>{t("search.mode")}</SectionLabel>
               <Select
                 name="category"
                 value={filters.category}
@@ -417,38 +435,38 @@ export function DashboardApp() {
               >
                 {CATEGORY_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>
-                    {option.label}
+                    {t(`category.${option.value}`)}
                   </option>
                 ))}
               </Select>
             </label>
 
             <label className="field">
-              <SectionLabel>Keywords</SectionLabel>
+              <SectionLabel>{t("search.keywords")}</SectionLabel>
               <input
                 className="input"
                 name="keywords"
                 autoComplete="off"
                 value={filters.text}
                 onChange={(event) => patchFilters({ text: event.target.value })}
-                placeholder="maison vue mer…"
+                placeholder={t("search.keywordsPlaceholder")}
               />
             </label>
 
             <label className="field wide">
-              <SectionLabel>Location</SectionLabel>
+              <SectionLabel>{t("search.location")}</SectionLabel>
               <input
                 className="input"
                 name="location-query"
                 autoComplete="off"
                 value={filters.locationQuery}
                 onChange={(event) => patchFilters({ locationQuery: event.target.value })}
-                placeholder="Finistère, Quimper…"
+                placeholder={t("search.locationPlaceholder")}
               />
             </label>
 
             <div className="field wide">
-              <SectionLabel>Types</SectionLabel>
+              <SectionLabel>{t("search.types")}</SectionLabel>
               <div className="chip-row">
                 {PROPERTY_TYPE_OPTIONS.map((option) => (
                   <Chip
@@ -456,23 +474,23 @@ export function DashboardApp() {
                     active={filters.propertyTypes.includes(option.value)}
                     onClick={() => togglePropertyType(option.value)}
                   >
-                    {option.label}
+                    {t(`propertyType.${option.value}` as ExtensionMessageId)}
                   </Chip>
                 ))}
               </div>
             </div>
 
-            <NumberField label="Price min" value={filters.priceMin} onChange={(value) => patchNumericFilter("priceMin", value)} />
-            <NumberField label="Price max" value={filters.priceMax} onChange={(value) => patchNumericFilter("priceMax", value)} />
-            <NumberField label="Rooms min" value={filters.roomsMin} onChange={(value) => patchNumericFilter("roomsMin", value)} />
-            <NumberField label="Rooms max" value={filters.roomsMax} onChange={(value) => patchNumericFilter("roomsMax", value)} />
-            <NumberField label="Beds min" value={filters.bedroomsMin} onChange={(value) => patchNumericFilter("bedroomsMin", value)} />
-            <NumberField label="Beds max" value={filters.bedroomsMax} onChange={(value) => patchNumericFilter("bedroomsMax", value)} />
-            <NumberField label="Surface min" value={filters.squareMin} onChange={(value) => patchNumericFilter("squareMin", value)} />
-            <NumberField label="Surface max" value={filters.squareMax} onChange={(value) => patchNumericFilter("squareMax", value)} />
+            <NumberField label={t("search.priceMin")} name="price-min" value={filters.priceMin} onChange={(value) => patchNumericFilter("priceMin", value)} />
+            <NumberField label={t("search.priceMax")} name="price-max" value={filters.priceMax} onChange={(value) => patchNumericFilter("priceMax", value)} />
+            <NumberField label={t("search.roomsMin")} name="rooms-min" value={filters.roomsMin} onChange={(value) => patchNumericFilter("roomsMin", value)} />
+            <NumberField label={t("search.roomsMax")} name="rooms-max" value={filters.roomsMax} onChange={(value) => patchNumericFilter("roomsMax", value)} />
+            <NumberField label={t("search.bedsMin")} name="beds-min" value={filters.bedroomsMin} onChange={(value) => patchNumericFilter("bedroomsMin", value)} />
+            <NumberField label={t("search.bedsMax")} name="beds-max" value={filters.bedroomsMax} onChange={(value) => patchNumericFilter("bedroomsMax", value)} />
+            <NumberField label={t("search.surfaceMin")} name="surface-min" value={filters.squareMin} onChange={(value) => patchNumericFilter("squareMin", value)} />
+            <NumberField label={t("search.surfaceMax")} name="surface-max" value={filters.squareMax} onChange={(value) => patchNumericFilter("squareMax", value)} />
 
             <label className="field">
-              <SectionLabel>Seller</SectionLabel>
+              <SectionLabel>{t("search.seller")}</SectionLabel>
               <Select
                 name="owner-type"
                 value={filters.ownerType}
@@ -480,14 +498,14 @@ export function DashboardApp() {
               >
                 {OWNER_TYPE_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>
-                    {option.label}
+                    {t(`owner.${option.value}`)}
                   </option>
                 ))}
               </Select>
             </label>
 
             <label className="field">
-              <SectionLabel>Sort</SectionLabel>
+              <SectionLabel>{t("search.sort")}</SectionLabel>
               <Select
                 name="sort"
                 value={filters.sort}
@@ -495,14 +513,15 @@ export function DashboardApp() {
               >
                 {SORT_OPTIONS.map((option) => (
                   <option key={option.value} value={option.value}>
-                    {option.label}
+                    {t(`sort.${option.value}`)}
                   </option>
                 ))}
               </Select>
             </label>
 
             <NumberField
-              label="Max listings"
+              label={t("search.maxListings")}
+              name="max-listings"
               value={filters.maxListings}
               min={1}
               max={MAX_LISTINGS_LIMIT}
@@ -517,16 +536,16 @@ export function DashboardApp() {
                 onChange={(event) => patchFilters({ collectDetailPages: event.target.checked })}
               />
               <span className="track" />
-              <span>Collect detail pages</span>
+              <span>{t("search.collectDetails")}</span>
             </label>
             <small className="field wide intelligence-note">
-              Detail pages are opened one at a time in temporary tabs and closed only after successful extraction.
+              {t("search.detailBehaviour")}
             </small>
 
-            <NumberField label="Delay min sec" value={filters.minDelaySeconds} onChange={(value) => patchNumericFilter("minDelaySeconds", value)} />
-            <NumberField label="Delay max sec" value={filters.maxDelaySeconds} onChange={(value) => patchNumericFilter("maxDelaySeconds", value)} />
-            <NumberField label="Pause every" value={filters.pauseAfterDetails} onChange={(value) => patchNumericFilter("pauseAfterDetails", value)} />
-            <NumberField label="Cooldown sec" value={filters.cooldownSeconds} onChange={(value) => patchNumericFilter("cooldownSeconds", value)} />
+            <NumberField label={t("search.delayMin")} name="delay-min-seconds" value={filters.minDelaySeconds} onChange={(value) => patchNumericFilter("minDelaySeconds", value)} />
+            <NumberField label={t("search.delayMax")} name="delay-max-seconds" value={filters.maxDelaySeconds} onChange={(value) => patchNumericFilter("maxDelaySeconds", value)} />
+            <NumberField label={t("search.pauseEvery")} name="pause-every" value={filters.pauseAfterDetails} onChange={(value) => patchNumericFilter("pauseAfterDetails", value)} />
+            <NumberField label={t("search.cooldown")} name="cooldown-seconds" value={filters.cooldownSeconds} onChange={(value) => patchNumericFilter("cooldownSeconds", value)} />
 
           </div>
 
@@ -535,10 +554,12 @@ export function DashboardApp() {
               <div>
                 <div className="intelligence-title-row">
                   <Brain size={17} />
-                  <h3 id="intelligence-title">Intelligence filter</h3>
-                  <Chip tone={recipe.enabled ? "good" : "sea"}>{recipe.enabled ? "enabled" : "disabled"}</Chip>
+                  <h3 id="intelligence-title">{t("intelligence.title")}</h3>
+                  <Chip tone={recipe.enabled ? "good" : "sea"}>
+                    {recipe.enabled ? t("intelligence.enabled") : t("intelligence.disabled")}
+                  </Chip>
                 </div>
-                <p>Structured criteria are evaluated by the local API after detail collection.</p>
+                <p>{t("intelligence.description")}</p>
               </div>
               <label className="toggle">
                 <input
@@ -548,13 +569,13 @@ export function DashboardApp() {
                   onChange={(event) => patchRecipe({ enabled: event.target.checked })}
                 />
                 <span className="track" />
-                <span>Enable</span>
+                <span>{t("intelligence.enable")}</span>
               </label>
             </div>
 
             <div className="recipe-grid">
               <label className="field wide">
-                <SectionLabel>Recipe name</SectionLabel>
+                <SectionLabel>{t("intelligence.recipeName")}</SectionLabel>
                 <input
                   className="input"
                   name="recipe-name"
@@ -565,20 +586,24 @@ export function DashboardApp() {
                 />
               </label>
               <NumberField
-                label="Relevance threshold"
+                label={t("intelligence.threshold")}
+                name="relevance-threshold"
                 value={recipe.threshold}
                 max={100}
                 onChange={(value) => patchRecipe({ threshold: Number(value) })}
               />
               <div className="recipe-version">
-                <SectionLabel>Version</SectionLabel>
-                <strong>v{recipe.version}{recipeDirty ? " · unsaved" : ""}</strong>
+                <SectionLabel>{t("intelligence.version")}</SectionLabel>
+                <strong>
+                  v{formatNumber(recipe.version)}
+                  {recipeDirty ? ` · ${t("intelligence.unsaved")}` : ""}
+                </strong>
               </div>
             </div>
 
             <div className="criteria-list">
               {recipe.criteria.length === 0 && (
-                <p className="criteria-empty">Add a criterion to describe what makes a listing relevant to you.</p>
+                <p className="criteria-empty">{t("intelligence.emptyCriteria")}</p>
               )}
               {recipe.criteria.map((criterion, index) => (
                 <article className="criterion-row" key={criterion.id}>
@@ -590,8 +615,8 @@ export function DashboardApp() {
                       autoComplete="off"
                       maxLength={160}
                       value={criterion.name}
-                      placeholder="Criterion name"
-                      aria-label={`Criterion ${index + 1} name`}
+                      placeholder={t("intelligence.criterionName")}
+                      aria-label={t("intelligence.criterionNameAria", { index: index + 1 })}
                       onChange={(event) => patchCriterion(criterion.id, { name: event.target.value })}
                     />
                     <textarea
@@ -599,20 +624,20 @@ export function DashboardApp() {
                       name={`criterion-description-${criterion.id}`}
                       value={criterion.description}
                       maxLength={2000}
-                      placeholder="Explain the evidence that should pass this criterion"
-                      aria-label={`Criterion ${index + 1} description`}
+                      placeholder={t("intelligence.criterionDescription")}
+                      aria-label={t("intelligence.criterionDescriptionAria", { index: index + 1 })}
                       onChange={(event) => patchCriterion(criterion.id, { description: event.target.value })}
                     />
                     <div className="criterion-options">
                       <label>
-                        <span>Weight</span>
+                        <span>{t("intelligence.weight")}</span>
                         <input
                           className="input criterion-weight"
                           type="number"
                           min={0}
                           max={100}
                           value={criterion.weight}
-                          aria-label={`Criterion ${index + 1} weight`}
+                          aria-label={t("intelligence.weightAria", { index: index + 1 })}
                           onChange={(event) => patchCriterion(criterion.id, { weight: Number(event.target.value) })}
                         />
                       </label>
@@ -622,7 +647,7 @@ export function DashboardApp() {
                           checked={criterion.required}
                           onChange={(event) => patchCriterion(criterion.id, { required: event.target.checked })}
                         />
-                        Required evidence
+                        {t("intelligence.required")}
                       </label>
                     </div>
                   </div>
@@ -631,7 +656,7 @@ export function DashboardApp() {
                     variant="ghost"
                     size="sm"
                     iconOnly
-                    aria-label={`Remove criterion ${index + 1}`}
+                    aria-label={t("intelligence.removeCriterion", { index: index + 1 })}
                     onClick={() => removeCriterion(criterion.id)}
                   >
                     <X size={14} />
@@ -643,11 +668,11 @@ export function DashboardApp() {
             <div className="intelligence-actions">
               <Button type="button" size="sm" onClick={addCriterion} disabled={recipe.criteria.length >= 12}>
                 <Plus size={14} />
-                Add criterion
+                {t("intelligence.addCriterion")}
               </Button>
               <Button type="button" size="sm" variant="ghost" onClick={handleSaveRecipe} disabled={!recipeDirty}>
                 <Save size={14} />
-                Save recipe
+                {t("intelligence.saveRecipe")}
               </Button>
               <Button
                 type="button"
@@ -657,23 +682,27 @@ export function DashboardApp() {
                 disabled={isRunActive || !recipe.enabled || records.every((record) => record.status !== "detailed")}
               >
                 <RefreshCw size={14} />
-                Reevaluate stored
+                {t("intelligence.reevaluate")}
               </Button>
             </div>
-            {recipe.enabled && <p className="intelligence-note">Detail collection will be enabled automatically.</p>}
+            {recipe.enabled && <p className="intelligence-note">{t("intelligence.autoDetails")}</p>}
           </section>
 
           <div className="guardrail-panel">
             <AlertTriangle size={16} />
             <span>
-              Slow mode limits rate and concurrency but cannot guarantee against blocking. The extension accepts an unambiguous cookie banner once, pauses for manual CAPTCHA resolution, and stops permanently on unusual activity.
+              {t("guardrail.notice")}
             </span>
           </div>
 
           {filterIssues.length > 0 && (
             <div className="inline-alert" role="alert">
               <AlertTriangle size={16} />
-              <span>{filterIssues.map((issue) => issue.message).join(" ")}</span>
+              <span>
+                {filterIssues
+                  .map((issue) => translateFilterValidationIssue(issue, filters, t))
+                  .join(" ")}
+              </span>
             </div>
           )}
 
@@ -681,15 +710,24 @@ export function DashboardApp() {
             <div className="inline-alert" role="status">
               <AlertTriangle size={16} />
               <span>
-                {run.filterWarnings.map((warning) => `${warning.field}: ${warning.message}`).join(" ")}
+                {run.filterWarnings.map((warning) => {
+                  const resolved = resolveText(warning.message);
+                  const detail = resolved.technicalDetail
+                    ? ` ${t("error.technicalDetail", { detail: resolved.technicalDetail })}`
+                    : "";
+                  return `${t("warning.field", {
+                    field: filterWarningFieldLabel(warning.field, t),
+                    message: resolved.text,
+                  })}${detail}`;
+                }).join(" ")}
               </span>
             </div>
           )}
 
-          {error && (
+          {error !== undefined && error !== null && (
             <div className="inline-alert" role="alert">
               <AlertTriangle size={16} />
-              <span>{error}</span>
+              <LocalizedMessageView value={error} />
             </div>
           )}
 
@@ -700,12 +738,12 @@ export function DashboardApp() {
               disabled={!hydrated || isRunActive || requiresReset || filterIssues.length > 0}
             >
               {isRunning ? <LoaderCircle className="spin" size={16} /> : <Play size={16} />}
-              Start crawl
+              {t("action.start")}
             </Button>
             {run.status === "paused-captcha" && runnerRef.current && (
               <Button type="button" variant="primary" onClick={handleResume}>
                 <Play size={16} />
-                Resume
+                {t("action.resume")}
               </Button>
             )}
             <Button
@@ -715,52 +753,55 @@ export function DashboardApp() {
               disabled={!isRunActive || !canControlActiveRun}
             >
               <Square size={16} />
-              Cancel
+              {t("action.cancel")}
             </Button>
           </div>
         </form>
 
         <section className="results-surface">
           <div className="metrics-grid">
-            <Metric label="Found" value={run.found} />
-            <Metric label="Pages" value={run.pagesVisited} />
-            <Metric label={filters.collectDetailPages ? "Detailed" : "Collected"} value={run.collected} />
-            <Metric label="Evaluated" value={run.evaluated} />
-            <Metric label="Relevant" value={run.relevant} />
-            <Metric label="Not relevant" value={run.notRelevant} />
-            <Metric label="Review" value={run.review} />
-            <Metric label="Stored" value={records.length} />
+            <Metric label={t("metric.found")} value={run.found} />
+            <Metric label={t("metric.pages")} value={run.pagesVisited} />
+            <Metric label={filters.collectDetailPages ? t("metric.detailed") : t("metric.collected")} value={run.collected} />
+            <Metric label={t("metric.evaluated")} value={run.evaluated} />
+            <Metric label={t("metric.relevant")} value={run.relevant} />
+            <Metric label={t("metric.notRelevant")} value={run.notRelevant} />
+            <Metric label={t("metric.review")} value={run.review} />
+            <Metric label={t("metric.stored")} value={records.length} />
           </div>
 
           {run.error && (
             <div className="inline-alert" role="alert">
               <AlertTriangle size={16} />
-              <span>{run.error}</span>
+              <LocalizedMessageView value={run.error} />
             </div>
           )}
 
           {run.intelligenceStatus === "failed" && (
             <div className="inline-alert" role="alert">
               <AlertTriangle size={16} />
-              <span>{run.intelligenceError ?? "Intelligence evaluation failed. Your scraped records were preserved."}</span>
+              <LocalizedMessageView
+                value={run.intelligenceError}
+                fallbackId="results.intelligenceFailed"
+              />
             </div>
           )}
 
           <div className="results-head">
             <div>
-              <h2>Records</h2>
-              <p>{run.message ?? "Local extension storage"}</p>
+              <h2>{t("results.title")}</h2>
+              <p><LocalizedMessageView value={run.message} fallbackId="results.localStorage" /></p>
             </div>
             <div className="results-actions">
               <Select
-                aria-label="Filter records by intelligence decision"
+                aria-label={t("results.filterAria")}
                 value={decisionFilter}
                 onChange={(event) => setDecisionFilter(event.target.value as typeof decisionFilter)}
               >
-                <option value="all">All decisions</option>
-                <option value="relevant">Relevant</option>
-                <option value="not-relevant">Not relevant</option>
-                <option value="review">Review</option>
+                <option value="all">{t("results.allDecisions")}</option>
+                <option value="relevant">{t("decision.relevant")}</option>
+                <option value="not-relevant">{t("decision.not-relevant")}</option>
+                <option value="review">{t("decision.review")}</option>
               </Select>
               <Button
                 type="button"
@@ -770,7 +811,7 @@ export function DashboardApp() {
                 disabled={(records.length === 0 && run.status === "idle") || isRunActive}
               >
                 <Trash2 size={15} />
-                Clear
+                {t("action.clear")}
               </Button>
             </div>
           </div>
@@ -779,7 +820,7 @@ export function DashboardApp() {
             <EmptyState>
               <div className="empty-copy">
                 <Database size={24} />
-                <span>{records.length === 0 ? "No records yet" : "No records match this decision"}</span>
+                <span>{records.length === 0 ? t("results.empty") : t("results.emptyFilter")}</span>
               </div>
             </EmptyState>
           ) : (
@@ -791,7 +832,10 @@ export function DashboardApp() {
           )}
           {(records.length > visibleRecords.length || decisionFilter !== "all") && (
             <p className="records-limit">
-              Showing {visibleRecords.length} matching records from {records.length} stored records.
+              {t("results.showing", {
+                visible: formatNumber(visibleRecords.length),
+                total: formatNumber(records.length),
+              })}
             </p>
           )}
         </section>
@@ -857,20 +901,21 @@ function isAbortError(error: unknown): boolean {
 
 interface NumberFieldProps {
   label: string;
+  name: string;
   value?: number;
   min?: number;
   max?: number;
   onChange: (value: string) => void;
 }
 
-function NumberField({ label, value, min = 0, max, onChange }: NumberFieldProps) {
+function NumberField({ label, name, value, min = 0, max, onChange }: NumberFieldProps) {
   return (
     <label className="field">
       <SectionLabel>{label}</SectionLabel>
       <input
         className="input"
         type="number"
-        name={label.toLowerCase().replace(/\s+/g, "-")}
+        name={name}
         autoComplete="off"
         inputMode="numeric"
         min={min}
@@ -887,6 +932,7 @@ interface StatusPillProps {
 }
 
 function StatusPill({ run }: StatusPillProps) {
+  const { t } = useExtensionI18n();
   const tone =
     run.status === "completed"
       ? "good"
@@ -899,7 +945,7 @@ function StatusPill({ run }: StatusPillProps) {
   return (
     <Chip tone={tone}>
       <span className="status-dot" />
-      {run.status}
+      {t(`status.${run.status}`)}
     </Chip>
   );
 }
@@ -910,10 +956,11 @@ interface MetricProps {
 }
 
 function Metric({ label, value }: MetricProps) {
+  const { formatNumber } = useExtensionI18n();
   return (
     <div className="metric">
       <span>{label}</span>
-      <strong>{value}</strong>
+      <strong>{formatNumber(value)}</strong>
     </div>
   );
 }
@@ -923,34 +970,38 @@ interface PropertyRecordCardProps {
 }
 
 function PropertyRecordCard({ record }: PropertyRecordCardProps) {
+  const { formatNumber, resolveText, t } = useExtensionI18n();
   const imageCount = record.imageUrls?.length ?? (record.imageUrl ? 1 : 0);
+  const recordError = resolveText(record.error);
 
   return (
     <article className="record-card">
       <div className="record-main">
         <div
           className="image-fallback"
-          title={imageCount > 0 ? `${imageCount} image URLs stored without loading them` : "No image URL"}
+          title={imageCount > 0
+            ? t("record.imagesStored", { count: imageCount })
+            : t("record.noImage")}
         >
           <Search size={22} />
         </div>
         <div>
           <div className="record-title-row">
-            <h3>{record.title ?? "Title unavailable"}</h3>
-            <a className="btn sm icon" href={record.listingUrl} target="_blank" rel="noreferrer" aria-label="Open listing">
+            <h3>{record.title ?? t("record.titleUnavailable")}</h3>
+            <a className="btn sm icon" href={record.listingUrl} target="_blank" rel="noreferrer" aria-label={t("record.openListing")}>
               <ExternalLink size={14} />
             </a>
           </div>
-          <div className="record-price">{record.priceText ?? "No price"}</div>
-          <div className="record-location">{record.location ?? "Location pending"}</div>
+          <div className="record-price">{record.priceText ?? t("record.noPrice")}</div>
+          <div className="record-location">{record.location ?? t("record.locationPending")}</div>
         </div>
       </div>
 
       <div className="record-facts">
-        <Fact label="Type" value={record.propertyType} />
-        <Fact label="Rooms" value={formatNumber(record.rooms)} />
-        <Fact label="Beds" value={formatNumber(record.bedrooms)} />
-        <Fact label="Surface" value={record.surfaceM2 ? `${record.surfaceM2} m²` : undefined} />
+        <Fact label={t("record.type")} value={record.propertyType} />
+        <Fact label={t("record.rooms")} value={record.rooms === undefined ? undefined : formatNumber(record.rooms)} />
+        <Fact label={t("record.beds")} value={record.bedrooms === undefined ? undefined : formatNumber(record.bedrooms)} />
+        <Fact label={t("record.surface")} value={record.surfaceM2 === undefined ? undefined : `${formatNumber(record.surfaceM2)} m²`} />
         <Fact label="DPE" value={record.energyClass} />
         <Fact label="GES" value={record.gesClass} />
       </div>
@@ -961,12 +1012,19 @@ function PropertyRecordCard({ record }: PropertyRecordCardProps) {
 
       <div className="record-footer">
         <Chip tone={record.status === "failed" ? "danger" : record.status === "detailed" ? "good" : "sea"}>
-          {record.status}
+          {t(`recordStatus.${record.status}`)}
         </Chip>
         {record.features.slice(0, 4).map((feature) => (
           <Chip key={feature}>{feature}</Chip>
         ))}
-        {record.error && <span className="record-error">{record.error}</span>}
+        {record.error && (
+          <span className="record-error">
+            {recordError.text}
+            {recordError.technicalDetail && (
+              <> · {t("error.technicalDetail", { detail: recordError.technicalDetail })}</>
+            )}
+          </span>
+        )}
       </div>
     </article>
   );
@@ -978,10 +1036,11 @@ interface FactProps {
 }
 
 function Fact({ label, value }: FactProps) {
+  const { t } = useExtensionI18n();
   return (
     <div className="fact">
       <span>{label}</span>
-      <strong>{value ?? "-"}</strong>
+      <strong>{value ?? t("record.missingValue")}</strong>
     </div>
   );
 }
@@ -991,20 +1050,23 @@ interface EvaluationSummaryProps {
 }
 
 function EvaluationSummary({ evaluation }: EvaluationSummaryProps) {
+  const { formatDateTime, formatList, formatNumber, locale, t } = useExtensionI18n();
   const tone = evaluation.decision === "relevant" ? "good" : evaluation.decision === "review" ? "sunset" : "danger";
+  const missingFields = evaluation.missingData.map((field) => missingFieldLabel(field, t));
+  const hasLocaleMismatch = evaluation.locale !== undefined && evaluation.locale !== locale;
   return (
-    <section className="evaluation-summary" aria-label="Intelligence evaluation">
+    <section className="evaluation-summary" aria-label={t("evaluation.aria")}>
       <div className="evaluation-head">
-        <Chip tone={tone}>{evaluation.decision}</Chip>
-        <strong>{evaluation.score === null ? "No score" : `${Math.round(evaluation.score)} / 100`}</strong>
+        <Chip tone={tone}>{t(`decision.${evaluation.decision}`)}</Chip>
+        <strong>{evaluation.score === null ? t("evaluation.noScore") : `${formatNumber(Math.round(evaluation.score))} / 100`}</strong>
       </div>
       <p>{evaluation.summary}</p>
       <details>
-        <summary>Evidence by criterion</summary>
+        <summary>{t("evaluation.evidence")}</summary>
         <div className="evaluation-criteria">
           {evaluation.criteria.map((criterion) => (
             <div key={criterion.criterionId} className={`criterion-result ${criterion.verdict}`}>
-              <strong>{criterion.verdict}</strong>
+              <strong>{t(`verdict.${criterion.verdict}`)}</strong>
               <span>{criterion.reason}</span>
               {criterion.evidence.length > 0 && <small>{criterion.evidence.join(" · ")}</small>}
             </div>
@@ -1012,10 +1074,26 @@ function EvaluationSummary({ evaluation }: EvaluationSummaryProps) {
         </div>
       </details>
       {evaluation.missingData.length > 0 && (
-        <small className="missing-data">Missing: {evaluation.missingData.join(", ")}</small>
+        <small className="missing-data">
+          {t("evaluation.missing", { fields: formatList(missingFields) })}
+        </small>
+      )}
+      {hasLocaleMismatch && (
+        <small className="evaluation-language-note">
+          {t("intelligence.languageMismatch", {
+            language: localeDisplayName(evaluation.locale!, t),
+          })}
+        </small>
+      )}
+      {evaluation.locale === undefined && (
+        <small className="evaluation-language-note">{t("intelligence.legacyLanguage")}</small>
       )}
       <small className="evaluation-meta">
-        Recipe v{evaluation.recipeVersion} · {evaluation.evaluator.model} · {new Date(evaluation.evaluatedAt).toLocaleString()}
+        {t("evaluation.meta", {
+          version: formatNumber(evaluation.recipeVersion),
+          model: evaluation.evaluator.model,
+          date: formatDateTime(evaluation.evaluatedAt, { dateStyle: "medium", timeStyle: "short" }),
+        })}
       </small>
     </section>
   );
@@ -1031,10 +1109,27 @@ function runWithEvaluations(run: ScrapeRun, evaluations: ListingEvaluation[]): S
     relevant: evaluations.filter((evaluation) => evaluation.decision === "relevant").length,
     notRelevant: evaluations.filter((evaluation) => evaluation.decision === "not-relevant").length,
     review: evaluations.filter((evaluation) => evaluation.decision === "review").length,
-    message: `Reevaluated ${evaluations.length} stored listings.`,
+    message: extensionMessage("run.reevaluated", { count: evaluations.length }),
   };
 }
 
-function formatNumber(value?: number): string | undefined {
-  return value === undefined ? undefined : String(value);
+interface LocalizedMessageViewProps {
+  value: unknown;
+  fallbackId?: ExtensionMessageId;
+}
+
+function LocalizedMessageView({ value, fallbackId }: LocalizedMessageViewProps) {
+  const { resolveText, t } = useExtensionI18n();
+  const resolved = resolveText(value, fallbackId);
+
+  return (
+    <span className="localized-message">
+      <span>{resolved.text}</span>
+      {resolved.technicalDetail && (
+        <small className="technical-detail">
+          {t("error.technicalDetail", { detail: resolved.technicalDetail })}
+        </small>
+      )}
+    </span>
+  );
 }

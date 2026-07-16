@@ -1,5 +1,6 @@
 import react from "@vitejs/plugin-react";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { fileURLToPath } from "node:url";
 import { loadEnv, type Plugin } from "vite";
 import { defineConfig } from "vitest/config";
 
@@ -93,6 +94,11 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react(), realtimeSessionPlugin(env.OPENAI_API_KEY ?? process.env.OPENAI_API_KEY)],
+    resolve: {
+      alias: {
+        "@denicheur-breizh/i18n": fileURLToPath(new URL("../../packages/i18n/src/index.ts", import.meta.url)),
+      },
+    },
     server: {
       host: "127.0.0.1",
       port: 5173,

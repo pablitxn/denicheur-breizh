@@ -1,5 +1,6 @@
 import {
   DETAIL_PAGE_HTML,
+  clearExtensionStorage,
   extensionUrl,
   HOME_URL,
   homePageHtml,
@@ -31,10 +32,10 @@ test("@live crawls search and detail pages, calls the local API and stores OpenA
   );
 
   await page.goto(extensionUrl(extensionId, "dashboard.html"));
-  await page.evaluate(async () => chrome.storage.local.clear());
+  await clearExtensionStorage(page);
   await page.reload();
   await page.getByRole("textbox", { name: "Location", exact: true }).fill("Finistère");
-  const apartment = page.getByRole("button", { name: "Appartement", exact: true });
+  const apartment = page.getByRole("button", { name: "Flat", exact: true });
   if (await apartment.getAttribute("aria-pressed") === "true") await apartment.click();
   await page.getByLabel("Max listings").fill("1");
   await page.getByLabel("Delay min sec").fill("5");

@@ -87,6 +87,7 @@ export function buildFilterResponse(
 
   return {
     runId: request.runId,
+    locale: request.locale,
     recipeId: request.recipe.id,
     recipeVersion: request.recipe.version,
     evaluator: {

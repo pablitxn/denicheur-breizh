@@ -3,6 +3,7 @@ import type { IntelligenceRecipe, ScrapedPropertyRecord } from "../lib/types";
 import {
   evaluateDetailedRecords,
   evaluateDetailedRecordsInBatches,
+  filterApiErrorDescriptor,
   FilterApiError,
   mergeRecordEvaluations,
 } from "./filterApi";
@@ -43,9 +44,10 @@ function detailedRecord(id = "listing-1"): ScrapedPropertyRecord {
   };
 }
 
-function validPayload(listingId = "listing-1") {
+function validPayload(listingId = "listing-1", locale: "fr" | "es" | "en" = "fr") {
   return {
     runId: "run-1",
+    locale,
     recipeId: recipe.id,
     recipeVersion: recipe.version,
     evaluator: { provider: "openai", model: "gpt-5-mini-2025-08-07", version: "filter-v1" },
@@ -74,7 +76,11 @@ describe("intelligence filter API client", () => {
   it("serializes detailed records and returns validated evaluations", async () => {
     const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-      expect(body).toMatchObject({ runId: "run-1", recipe: { id: recipe.id, version: 2 } });
+      expect(body).toMatchObject({
+        runId: "run-1",
+        locale: "es",
+        recipe: { id: recipe.id, version: 2 },
+      });
       expect(body.listings).toEqual([
         expect.objectContaining({
           id: "listing-1",
@@ -84,7 +90,7 @@ describe("intelligence filter API client", () => {
           features: ["Jardin"],
         }),
       ]);
-      return new Response(JSON.stringify(validPayload()), {
+      return new Response(JSON.stringify(validPayload("listing-1", "es")), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
@@ -97,6 +103,7 @@ describe("intelligence filter API client", () => {
     }], {
       baseUrl: "http://127.0.0.1:4310/",
       fetcher,
+      locale: "es",
     });
 
     expect(fetcher).toHaveBeenCalledOnce();
@@ -105,6 +112,7 @@ describe("intelligence filter API client", () => {
       decision: "relevant",
       evaluator: { provider: "openai" },
       recipeId: recipe.id,
+      locale: "es",
     });
   });
 
@@ -134,7 +142,18 @@ describe("intelligence filter API client", () => {
 
     await expect(
       evaluateDetailedRecords("run-1", recipe, [detailedRecord()], { fetcher }),
-    ).rejects.toThrow("unexpected or duplicate listing ids");
+    ).rejects.toMatchObject({
+      code: "INVALID_API_RESPONSE",
+      message: expect.stringContaining("unexpected or duplicate listing ids"),
+    });
+  });
+
+  it("rejects a response whose locale does not match the requested narrative language", async () => {
+    const fetcher = vi.fn(async () => new Response(JSON.stringify(validPayload()), { status: 200 }));
+
+    await expect(
+      evaluateDetailedRecords("run-1", recipe, [detailedRecord()], { fetcher, locale: "en" }),
+    ).rejects.toThrow("does not match the request");
   });
 
   it("normalizes transport failures without losing the original records", async () => {
@@ -148,6 +167,27 @@ describe("intelligence filter API client", () => {
       name: "FilterApiError",
       message: "Intelligence API is unavailable: Failed to fetch",
     }));
+  });
+
+  it.each([
+    ["OPENAI_TIMEOUT", "error.apiTimeout"],
+    ["ORIGIN_NOT_ALLOWED", "error.apiOriginNotAllowed"],
+    ["NOT_FOUND", "error.apiNotFound"],
+    ["INVALID_API_RESPONSE", "error.apiInvalidResponse"],
+    ["CLIENT_VALIDATION", "error.apiInvalidRequest"],
+  ])("maps the known API code %s without exposing its raw English message", (code, id) => {
+    expect(filterApiErrorDescriptor(new FilterApiError("Raw English diagnostic", 503, code))).toEqual({ id });
+  });
+
+  it("keeps the raw diagnosis only for an unknown external error", () => {
+    expect(filterApiErrorDescriptor(new FilterApiError(
+      "Vendor-specific failure",
+      502,
+      "VENDOR_FAILURE",
+    ))).toEqual({
+      id: "error.intelligenceFailed",
+      technicalDetail: "Vendor-specific failure",
+    });
   });
 
   it("merges evaluations by listing id and leaves unrelated records untouched", async () => {

@@ -93,15 +93,16 @@ export function Chip({
 
 export interface ScoreBadgeProps {
   value: number;
-  label?: string;
+  label: string;
+  displayValue?: string;
 }
 
-export function ScoreBadge({ value, label }: ScoreBadgeProps) {
+export function ScoreBadge({ value, label, displayValue }: ScoreBadgeProps) {
   const tone = value >= 8 ? "high" : value >= 6.5 ? "" : value >= 5 ? "mid" : "low";
 
   return (
-    <span className={cx("score", tone)} aria-label={label ?? `Score ${value.toFixed(1)}`}>
-      {value.toFixed(1)}
+    <span className={cx("score", tone)} aria-label={label}>
+      {displayValue ?? value.toFixed(1)}
     </span>
   );
 }

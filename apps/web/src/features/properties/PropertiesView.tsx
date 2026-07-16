@@ -5,10 +5,22 @@ import { PropertyVisual } from "../../components/PropertyVisual";
 import { Button, Chip, EmptyState, SectionLabel, Meter, ScoreBadge } from "@denicheur-breizh/design-system";
 import { getPropertyTitle, scoreMessageIds } from "../../intl/domain";
 import { useAppIntl } from "../../intl/IntlContext";
+import { bcp47Locales } from "../../intl/locales";
 import type { MessageId } from "../../intl/messages";
 import { useWorkspaceStore } from "../../state/workspaceStore";
 import type { PropertyListing, ProviderName, ScoreKey } from "../../types";
-import { formatPostedDays, formatPrice, formatPricePerM2, formatRooms, percentDelta } from "../../utils/format";
+import type { LocaleCode } from "../../intl/locales";
+import {
+  formatDecimal,
+  formatDistanceKm,
+  formatInteger,
+  formatPercentage,
+  formatPostedDays,
+  formatPrice,
+  formatPricePerM2,
+  formatRooms,
+  percentDelta,
+} from "../../utils/format";
 import { getPropertySortValue, type PropertySortKey } from "../../utils/propertySort";
 import styles from "./PropertiesView.module.css";
 
@@ -49,15 +61,18 @@ export function PropertiesView() {
   const { data: properties = [], isLoading, error } = useProperties();
 
   const sortedProperties = useMemo(() => {
-    return properties
+    return [...properties]
       .filter((property) => activeProviders.includes(property.provider))
       .sort((a, b) => {
+        if (sortKey === "title") {
+          return sortDir * getPropertyTitle(a, locale).localeCompare(getPropertyTitle(b, locale), bcp47Locales[locale]);
+        }
         const av = getPropertySortValue(a, sortKey);
         const bv = getPropertySortValue(b, sortKey);
         if (typeof av === "number" && typeof bv === "number") return sortDir * (av - bv);
         return sortDir * String(av).localeCompare(String(bv));
       });
-  }, [activeProviders, properties, sortDir, sortKey]);
+  }, [activeProviders, locale, properties, sortDir, sortKey]);
 
   const selectedProperty = sortedProperties.find((property) => property.id === selectedPropertyId) ?? sortedProperties[0];
 
@@ -164,7 +179,14 @@ export function PropertiesView() {
                     <PropertyVisual property={property} />
                     <span className={styles.cardProvider}>{property.provider}</span>
                     <span className={styles.cardScore}>
-                      <ScoreBadge value={property.scores.overall} />
+                      <ScoreBadge
+                        value={property.scores.overall}
+                        displayValue={formatDecimal(property.scores.overall, locale)}
+                        label={t("score.valueAria", {
+                          name: t("score.overall"),
+                          value: formatDecimal(property.scores.overall, locale),
+                        })}
+                      />
                     </span>
                   </div>
                   <div className={styles.cardBody}>
@@ -173,7 +195,7 @@ export function PropertiesView() {
                       <span>{formatPrice(property.price, locale)}</span>
                     </div>
                     <p>
-                      {property.locality} · {property.surfaceM2} m² · {formatRooms(property.rooms, locale)} · {t("property.dpe")} {property.dpe}
+                      {property.locality} · {formatInteger(property.surfaceM2, locale)} m² · {formatRooms(property.rooms, locale)} · {t("property.dpe")} {property.dpe}
                     </p>
                     <Meter value={property.scores.overall} />
                   </div>
@@ -197,7 +219,7 @@ export function PropertiesView() {
               </div>
 
               <div className={styles.detailFacts}>
-                <span>{selectedProperty.surfaceM2} m²</span>
+                <span>{formatInteger(selectedProperty.surfaceM2, locale)} m²</span>
                 <span>{formatRooms(selectedProperty.rooms, locale)}</span>
                 <span>{formatPricePerM2(selectedProperty.price, selectedProperty.surfaceM2, locale)}</span>
                 <span>{t("property.dpe")} {selectedProperty.dpe}</span>
@@ -215,7 +237,7 @@ export function PropertiesView() {
                 ].map(([label, value]) => (
                   <div key={label} className={styles.metricRow}>
                     <span>{t(label as MessageId)}</span>
-                    <b>{Number(value).toFixed(1)}</b>
+                    <b>{formatDecimal(Number(value), locale)}</b>
                     <Meter value={Number(value)} />
                   </div>
                 ))}
@@ -223,9 +245,9 @@ export function PropertiesView() {
 
               <div className={styles.marketBox}>
                 <SectionLabel>{t("properties.marketCompare")}</SectionLabel>
-                <Comparison label={t("properties.pricePerM2")} value={formatPricePerM2(selectedProperty.price, selectedProperty.surfaceM2, locale)} delta={percentDelta(selectedProperty.price / selectedProperty.surfaceM2, selectedProperty.diagnostics.irisMedianPrice)} />
-                <Comparison label={t("properties.comparableSales")} value={String(selectedProperty.diagnostics.comparableSales)} delta={12} />
-                <Comparison label={t("properties.coastalDistance")} value={`${selectedProperty.diagnostics.coastalDistanceKm} km`} delta={-18} />
+                <Comparison locale={locale} label={t("properties.pricePerM2")} value={formatPricePerM2(selectedProperty.price, selectedProperty.surfaceM2, locale)} delta={percentDelta(selectedProperty.price / selectedProperty.surfaceM2, selectedProperty.diagnostics.irisMedianPrice)} />
+                <Comparison locale={locale} label={t("properties.comparableSales")} value={formatInteger(selectedProperty.diagnostics.comparableSales, locale)} delta={12} />
+                <Comparison locale={locale} label={t("properties.coastalDistance")} value={formatDistanceKm(selectedProperty.diagnostics.coastalDistanceKm, locale)} delta={-18} />
               </div>
 
               <div className={styles.detailActions}>
@@ -242,7 +264,9 @@ export function PropertiesView() {
   );
 }
 
-function Cell({ property, column, shortlisted, locale }: { property: PropertyListing; column: Column; shortlisted: boolean; locale: "fr" | "es" }) {
+function Cell({ property, column, shortlisted, locale }: { property: PropertyListing; column: Column; shortlisted: boolean; locale: LocaleCode }) {
+  const { t } = useAppIntl();
+
   if (column.key === "title") {
     return (
       <div className={styles.titleCell}>
@@ -258,22 +282,30 @@ function Cell({ property, column, shortlisted, locale }: { property: PropertyLis
   }
 
   if (column.key === "price") return <span className={styles.numeric}>{formatPrice(property.price, locale)}</span>;
-  if (column.key === "surfaceM2") return <span className={styles.numeric}>{property.surfaceM2}</span>;
+  if (column.key === "surfaceM2") return <span className={styles.numeric}>{formatInteger(property.surfaceM2, locale)}</span>;
   if (column.key === "provider") return <Chip>{property.provider}</Chip>;
   if (column.key === "postedDaysAgo") return <span className={styles.numeric}>{formatPostedDays(property.postedDaysAgo, locale)}</span>;
   if (column.key === "dpe") return <Chip active>{property.dpe}</Chip>;
-  if (column.key === "overall") return <ScoreBadge value={property.scores.overall} />;
+  const scoreKey = column.key === "overall" ? "overall" : column.key as ScoreKey;
+  const scoreValue = scoreKey === "overall" ? property.scores.overall : property.scores[scoreKey];
+  const displayValue = formatDecimal(scoreValue, locale);
 
-  return <ScoreBadge value={property.scores[column.key as ScoreKey]} />;
+  return (
+    <ScoreBadge
+      value={scoreValue}
+      displayValue={displayValue}
+      label={t("score.valueAria", { name: t(scoreMessageIds[scoreKey]), value: displayValue })}
+    />
+  );
 }
 
-function Comparison({ label, value, delta }: { label: string; value: string; delta: number }) {
+function Comparison({ label, value, delta, locale }: { label: string; value: string; delta: number; locale: LocaleCode }) {
   const positive = delta >= 0;
   return (
     <div className={styles.comparison}>
       <span>{label}</span>
       <b>{value}</b>
-      <em className={positive ? styles.deltaGood : styles.deltaWeak}>{positive ? "+" : ""}{delta.toFixed(0)}%</em>
+      <em className={positive ? styles.deltaGood : styles.deltaWeak}>{formatPercentage(delta, locale)}</em>
     </div>
   );
 }

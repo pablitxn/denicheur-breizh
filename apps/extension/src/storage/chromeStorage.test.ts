@@ -43,7 +43,7 @@ describe("crawler run recovery", () => {
       id: "run-1",
       status: "cancelled",
       finishedAt: "2026-07-11T10:10:00.000Z",
-      message: "Previous crawl was cancelled because the dashboard closed.",
+      message: { id: "run.interrupted" },
     });
     expect(run.error).toBeUndefined();
   });
@@ -62,7 +62,7 @@ describe("crawler run recovery", () => {
     expect(recovered).toMatchObject({
       status: "cancelled",
       finishedAt: "2026-07-12T10:10:00.000Z",
-      message: "Previous crawl was cancelled because the dashboard closed.",
+      message: { id: "run.interrupted" },
     });
   });
 
@@ -84,7 +84,7 @@ describe("crawler run recovery", () => {
     expect(recovered).toMatchObject({
       status: "cancelled",
       intelligenceStatus: "failed",
-      intelligenceError: "The dashboard closed before intelligence evaluation finished.",
+      intelligenceError: { id: "error.interruptedEvaluation" },
     });
   });
 
@@ -108,6 +108,46 @@ describe("crawler run recovery", () => {
       review: 0,
       filterWarnings: [],
       intelligenceStatus: "idle",
+    });
+  });
+
+  it("wraps legacy persisted strings as localized diagnostics without losing their raw text", async () => {
+    storage["denicheur:crawler:run"] = {
+      ...IDLE_RUN,
+      id: "legacy-run",
+      status: "failed",
+      message: "Old run message",
+      error: "Old run failure",
+      intelligenceError: "Old AI failure",
+      filterWarnings: [{ field: "sort", message: "Old warning" }],
+    };
+    storage["denicheur:crawler:records"] = [{
+      id: "3007106066",
+      source: "leboncoin",
+      listingUrl: "https://www.leboncoin.fr/ad/ventes_immobilieres/3007106066",
+      features: [],
+      scrapedAt: "2026-07-11T10:00:00.000Z",
+      searchRunId: "legacy-run",
+      status: "failed",
+      rawTextSample: "Maison",
+      error: "Old record failure",
+    }];
+
+    const state = await loadCrawlerState();
+
+    expect(state.run.message).toEqual({ id: "legacy.message", technicalDetail: "Old run message" });
+    expect(state.run.error).toEqual({ id: "legacy.message", technicalDetail: "Old run failure" });
+    expect(state.run.intelligenceError).toEqual({
+      id: "legacy.message",
+      technicalDetail: "Old AI failure",
+    });
+    expect(state.run.filterWarnings).toEqual([{
+      field: "sort",
+      message: { id: "legacy.message", technicalDetail: "Old warning" },
+    }]);
+    expect(state.records[0].error).toEqual({
+      id: "legacy.message",
+      technicalDetail: "Old record failure",
     });
   });
 

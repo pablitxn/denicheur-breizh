@@ -934,8 +934,16 @@ export const ACTIVITY_BLOCK_PAGE_HTML = `<!doctype html>
   </body>
 </html>`;
 
-export async function clearExtensionStorage(page: Page): Promise<void> {
-  await page.evaluate(async () => chrome.storage.local.clear());
+export async function clearExtensionStorage(
+  page: Page,
+  locale: "fr" | "es" | "en" = "en",
+): Promise<void> {
+  await page.evaluate(async (nextLocale) => {
+    await chrome.storage.local.clear();
+    // Functional crawler E2E runs are intentionally pinned to English. Locale
+    // switching has a separate cross-surface scenario.
+    await chrome.storage.local.set({ "denicheur:locale": nextLocale });
+  }, locale);
 }
 
 export async function readExtensionStorage(page: Page): Promise<Record<string, unknown>> {

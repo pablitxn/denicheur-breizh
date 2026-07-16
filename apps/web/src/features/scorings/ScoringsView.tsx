@@ -15,6 +15,7 @@ import { Chip, EmptyState, SectionLabel, ScoreBadge } from "@denicheur-breizh/de
 import { localizeScoring, localizeScoringGroup } from "../../intl/domain";
 import { useAppIntl } from "../../intl/IntlContext";
 import type { ScoringMetric } from "../../types";
+import { formatDecimal } from "../../utils/format";
 import styles from "./ScoringsView.module.css";
 
 const iconMap: Record<string, LucideIcon> = {
@@ -113,7 +114,7 @@ function MetricListItem({ scoring, active, onClick }: { scoring: ScoringMetric; 
 }
 
 function ScoringDocs({ scoring }: { scoring: ScoringMetric }) {
-  const { t } = useAppIntl();
+  const { locale, t } = useAppIntl();
   const Icon = iconMap[scoring.icon] ?? Sparkles;
 
   return (
@@ -139,7 +140,7 @@ function ScoringDocs({ scoring }: { scoring: ScoringMetric }) {
       <section className={styles.rangeBox}>
         <div className={styles.boxHeader}>
           <SectionLabel>{t("scorings.valueRange")}</SectionLabel>
-          <span>0.0 - 10.0</span>
+          <span>{formatDecimal(0, locale)} - {formatDecimal(10, locale)}</span>
         </div>
         <div className={styles.rangeBar} />
         <div className={styles.rangeLabels}>
@@ -170,14 +171,28 @@ function ScoringDocs({ scoring }: { scoring: ScoringMetric }) {
         <div>
           <div className={styles.boxHeader}>
             <SectionLabel>{t("scorings.goodScore")}</SectionLabel>
-            <ScoreBadge value={8.6} />
+            <ScoreBadge
+              value={8.6}
+              displayValue={formatDecimal(8.6, locale)}
+              label={t("score.valueAria", {
+                name: t("scorings.goodScore"),
+                value: formatDecimal(8.6, locale),
+              })}
+            />
           </div>
           <p>{scoring.sample.good}</p>
         </div>
         <div>
           <div className={styles.boxHeader}>
             <SectionLabel>{t("scorings.weakScore")}</SectionLabel>
-            <ScoreBadge value={3.2} />
+            <ScoreBadge
+              value={3.2}
+              displayValue={formatDecimal(3.2, locale)}
+              label={t("score.valueAria", {
+                name: t("scorings.weakScore"),
+                value: formatDecimal(3.2, locale),
+              })}
+            />
           </div>
           <p>{scoring.sample.weak}</p>
         </div>

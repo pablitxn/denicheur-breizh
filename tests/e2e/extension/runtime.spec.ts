@@ -33,10 +33,12 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     runtimeErrors,
   }) => {
     await page.goto(extensionUrl(extensionId, "popup.html"));
+    await clearExtensionStorage(page);
+    await page.reload();
 
     await expect(page.getByRole("heading", { name: "Denicheur Breizh", exact: true })).toBeVisible();
     await expect(page.getByText("0 records", { exact: true })).toBeVisible();
-    await expect(page.getByText("idle", { exact: true })).toBeVisible();
+    await expect(page.getByText("ready", { exact: true })).toBeVisible();
 
     const manifest = await page.evaluate(() => chrome.runtime.getManifest());
     expect(extensionId).toBe(EXPECTED_EXTENSION_ID);
@@ -129,9 +131,9 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     await configureNativeSearch(page, { keywords: "maison avec vue mer" });
     await page.evaluate(() => {
       const root = document.documentElement;
-      root.dataset.sawPausedCaptcha = String(document.body.innerText.includes("paused-captcha"));
+      root.dataset.sawPausedCaptcha = String(document.body.innerText.includes("CAPTCHA pending"));
       const observer = new MutationObserver(() => {
-        if (document.body.innerText.includes("paused-captcha")) {
+        if (document.body.innerText.includes("CAPTCHA pending")) {
           root.dataset.sawPausedCaptcha = "true";
           observer.disconnect();
         }
@@ -147,7 +149,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
 
     await expect(page.getByText("completed", { exact: true })).toBeVisible({ timeout: 55_000 });
     await expect(page.getByText(
-      "Collected 1 listing summaries across 1 page. Detail tabs were skipped.",
+      "Collected 1 listing summary across one page. Detail tabs were skipped.",
       { exact: true },
     )).toBeVisible();
     await expect(page.getByRole("heading", { name: "Maison familiale à Brest" })).toBeVisible();
@@ -253,8 +255,8 @@ test.describe("Denicheur MV3 native-search runtime", () => {
 
     await expect(page.getByLabel("Mode")).toHaveValue("9");
     await expect(page.getByRole("textbox", { name: "Location", exact: true })).toHaveValue("Finistère");
-    await expect(page.getByRole("button", { name: "Maison", exact: true })).toHaveAttribute("aria-pressed", "true");
-    for (const type of ["Appartement", "Terrain", "Parking", "Autre"]) {
+    await expect(page.getByRole("button", { name: "House", exact: true })).toHaveAttribute("aria-pressed", "true");
+    for (const type of ["Flat", "Land", "Parking", "Other"]) {
       await expect(page.getByRole("button", { name: type, exact: true })).toHaveAttribute("aria-pressed", "false");
     }
     await expect(page.getByLabel("Price max")).toHaveValue("120000");
@@ -277,7 +279,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     await expect(start).toBeDisabled();
 
     await expect(page.getByText("completed", { exact: true })).toBeVisible({ timeout: 55_000 });
-    await expect(page.getByText("Collected 1 detailed listings.", { exact: true })).toBeVisible();
+    await expect(page.getByText("Collected 1 detailed listing.", { exact: true })).toBeVisible();
     await expectMetricValue(page, "Found", 1);
     await expectMetricValue(page, "Detailed", 1);
     await expectMetricValue(page, "Stored", 1);
@@ -637,8 +639,8 @@ test.describe("Denicheur MV3 native-search runtime", () => {
 
     await page.getByRole("button", { name: "Start crawl" }).click();
     await expect(page.getByText("completed", { exact: true })).toBeVisible({ timeout: 55_000 });
-    await expect(page.getByRole("status")).toContainText("ownerType");
-    await expect(page.getByRole("status")).toContainText("native seller control");
+    await expect(page.getByRole("status")).toContainText("Seller");
+    await expect(page.getByRole("status")).toContainText("seller control");
     const run = await readStoredRun(page);
     expect(run.filterWarnings).toEqual([
       expect.objectContaining({ field: "ownerType" }),
@@ -690,7 +692,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     const start = page.getByRole("button", { name: "Start crawl" });
     await start.click();
     await expect(start).toBeDisabled();
-    await expect(page.getByText("configuring-search", { exact: true })).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText("configuring search", { exact: true })).toBeVisible({ timeout: 10_000 });
     await page.getByRole("button", { name: "Cancel" }).click();
 
     await expect(page.getByText("cancelled", { exact: true })).toBeVisible({ timeout: 20_000 });
@@ -711,7 +713,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     await configureNativeSearch(page);
 
     await page.getByRole("button", { name: "Start crawl" }).click();
-    await expect(page.getByText("paused-captcha", { exact: true })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("CAPTCHA pending", { exact: true })).toBeVisible({ timeout: 15_000 });
     await expect(page.getByRole("button", { name: "Resume" })).toBeVisible();
     expect(tracker.searchRequests).toBe(0);
 
@@ -735,10 +737,10 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     await configureNativeSearch(page);
 
     await page.getByRole("button", { name: "Start crawl" }).click();
-    await expect(page.getByText("paused-captcha", { exact: true })).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText("CAPTCHA pending", { exact: true })).toBeVisible({ timeout: 20_000 });
     const searchUrl = context.pages().find((candidate) => candidate.url().includes("/recherche?"))?.url();
     await page.getByRole("button", { name: "Resume" }).click();
-    await expect(page.getByText("paused-captcha", { exact: true })).toBeVisible();
+    await expect(page.getByText("CAPTCHA pending", { exact: true })).toBeVisible();
     expect(context.pages().find((candidate) => candidate.url().includes("/recherche?"))?.url()).toBe(searchUrl);
     expect(tracker.searchRequests).toBe(1);
     await page.getByRole("button", { name: "Cancel" }).click();
@@ -756,7 +758,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     await configureNativeSearch(page, { details: true });
 
     await page.getByRole("button", { name: "Start crawl" }).click();
-    await expect(page.getByText("blocked-activity", { exact: true })).toBeVisible({ timeout: 55_000 });
+    await expect(page.getByText("activity blocked", { exact: true })).toBeVisible({ timeout: 55_000 });
     await expect(page.getByRole("button", { name: "Start crawl" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "Cancel" })).toBeDisabled();
     expect(context.pages().some((candidate) => candidate.url() === DETAIL_URL)).toBe(true);
@@ -877,7 +879,7 @@ interface ConfigureSearchOptions {
 async function configureNativeSearch(page: Page, options: ConfigureSearchOptions = {}): Promise<void> {
   await page.getByRole("textbox", { name: "Location", exact: true }).fill(options.location ?? "Finistère");
   if (options.keywords) await page.getByLabel("Keywords").fill(options.keywords);
-  const apartment = page.getByRole("button", { name: "Appartement", exact: true });
+  const apartment = page.getByRole("button", { name: "Flat", exact: true });
   if (await apartment.getAttribute("aria-pressed") === "true") await apartment.click();
   await page.getByLabel("Price max").fill("120000");
   await page.getByLabel("Rooms min").fill("2");

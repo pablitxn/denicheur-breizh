@@ -9,8 +9,9 @@ export default defineConfig({
   modules: ["@wxt-dev/module-react"],
   manifest: {
     key: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuFcnz7Nr0VcF3Do+LuucBnnowhfT2835oocq7jJYyp7Y29y7WzfLIqczNmYXVQCsJSHUPt/+ysfLBJXs2d88W4Uhg6TKj0q+Yhva8CoLJtVUet2PkGrC9Sey3Nh9LfIjCImuRFtsre3LEf9jznbG4cubXHOg5tQ+cejdjLaN56WBkuuQheFLB5Z9czygefdQBLkUq5yFvKpKNEMFx0cJeqtW1V1Ds6rcimDFeCOuWMmkYcam+AqAe2dDlTqicZSGHDhOEycSKuWSV/Y/L48phhvSKmpxShDWjfte030/rrYI99s0TwJoRkH5y/Enasfi+AwSo6r7BsT8eqyi9BalHwIDAQAB",
-    name: "Denicheur Breizh Crawler",
-    description: "User-assisted real-estate extraction PoC for leboncoin.fr.",
+    default_locale: "fr",
+    name: "__MSG_extensionName__",
+    description: "__MSG_extensionDescription__",
     minimum_chrome_version: "116",
     permissions: ["storage"],
     host_permissions: [
@@ -25,7 +26,7 @@ export default defineConfig({
       128: "icons/icon128.png",
     },
     action: {
-      default_title: "Denicheur Breizh",
+      default_title: "__MSG_extensionActionTitle__",
       default_icon: {
         16: "icons/icon16.png",
         24: "icons/icon24.png",

@@ -42,6 +42,35 @@ const propertyTitles: Record<LocaleCode, Record<string, string>> = {
     p11: "Casa",
     p12: "Casa antigua",
   },
+  en: {
+    p1: "Stone house",
+    p2: "Renovated longhouse",
+    p3: "Three-room flat",
+    p4: "Seaside house",
+    p5: "Family house",
+    p6: "Stone house",
+    p7: "House within the city walls",
+    p8: "Village house",
+    p9: "Contemporary house",
+    p10: "Renovated Breton cottage",
+    p11: "House",
+    p12: "Period house",
+  },
+};
+
+const sourcePropertyTitles: Record<string, string> = {
+  p1: "Maison en pierre",
+  p2: "Longere renovee",
+  p3: "Appartement T3",
+  p4: "Maison de bord de mer",
+  p5: "Maison familiale",
+  p6: "Maison en pierre",
+  p7: "Maison intra-muros",
+  p8: "Maison de bourg",
+  p9: "Maison contemporaine",
+  p10: "Penty renove",
+  p11: "Maison",
+  p12: "Maison ancienne",
 };
 
 type ScoringCopy = Pick<ScoringMetric, "group" | "name" | "short" | "formula" | "inputs" | "sample">;
@@ -179,6 +208,72 @@ const scoringCopies: Record<LocaleCode, Record<ScoringMetric["id"], ScoringCopy>
       sample: { good: "Cancale, 8.2 global", weak: "Lamballe, 6.4 global" },
     },
   },
+  en: {
+    coast: {
+      group: "Location",
+      name: "Coastal access",
+      short: "Distance, terrain and actual travel time to the coast.",
+      formula: "100 x exp(-coast_distance / 8 km) - road_penalty",
+      inputs: ["IGN coastal polygons", "OSM road network", "Cumulative elevation gain"],
+      sample: { good: "Cancale, 800 m from the beach", weak: "Central Rennes, 65 km" },
+    },
+    quiet: {
+      group: "Environment",
+      name: "Night-time quiet",
+      short: "Estimated median noise level between 10 pm and 6 am.",
+      formula: "55 - Lden_night, normalised to 0-10",
+      inputs: ["Noise maps", "Major roads", "Railways"],
+      sample: { good: "Saint-Briac, 38 dB", weak: "Near the D137, 67 dB" },
+    },
+    value: {
+      group: "Market",
+      name: "IRIS value",
+      short: "Difference between the listing price/m² and comparable transactions.",
+      formula: "inverse z-score of price/m² vs IRIS over 12 months",
+      inputs: ["DVF", "INSEE IRIS", "Comparable property type"],
+      sample: { good: "12% below IRIS, 8 sales", weak: "24% above IRIS" },
+    },
+    family: {
+      group: "Daily life",
+      name: "Family life",
+      short: "Schools, nurseries, parks and local safety.",
+      formula: "0.4 x schools + 0.3 x nurseries + 0.2 x parks + 0.1 x safety",
+      inputs: ["French Education Ministry", "OSM parks", "Municipal indicators"],
+      sample: { good: "Pleurtuit, A-rated school + park 300 m", weak: "Industrial estate, no nearby school" },
+    },
+    transit: {
+      group: "Mobility",
+      name: "Rail and bus",
+      short: "Travel time and frequency to Rennes and Saint-Malo.",
+      formula: "10 x (1 - time_to_Rennes / 90 min) with frequency adjustment",
+      inputs: ["TER GTFS", "BreizhGo", "OSRM walking"],
+      sample: { good: "Dinan, 28 min by rail", weak: "Plouër, infrequent bus" },
+    },
+    dpe: {
+      group: "Property",
+      name: "DPE energy",
+      short: "DPE rating converted into a score with an age adjustment.",
+      formula: "lookup(DPE) - 0.5 x (assessment > 5 years)",
+      inputs: ["Listing DPE", "ADEME open data", "Assessment year"],
+      sample: { good: "B, assessed in 2024", weak: "F, assessed in 2017" },
+    },
+    flood: {
+      group: "Risk",
+      name: "Flood risk",
+      short: "Likelihood of being in a high-risk PPRI zone.",
+      formula: "10 x (1 - zoning_probability) with red-zone discount",
+      inputs: ["Géorisques PPRI", "Elevation", "Distance from waterways"],
+      sample: { good: "Outside zone, elevation +18 m", weak: "Blue zone, 100-year flood" },
+    },
+    weekend: {
+      group: "Composite",
+      name: "Weekend retreat",
+      short: "Composite score for a second home in northern Brittany.",
+      formula: "0.35 x coast + 0.25 x quiet + 0.20 x value + 0.10 x rail + 0.10 x DPE",
+      inputs: ["Coastal access", "Quiet", "Value", "Mobility", "DPE"],
+      sample: { good: "Cancale, 8.2 overall", weak: "Lamballe, 6.4 overall" },
+    },
+  },
 };
 
 const recipeCopies: Record<LocaleCode, Record<string, Pick<ScoringRecipe, "name" | "description">>> = {
@@ -218,6 +313,39 @@ const recipeCopies: Record<LocaleCode, Record<string, Pick<ScoringRecipe, "name"
       description: "Segunda residencia, mar rápido, calma nocturna y precio defendible.",
     },
   },
+  en: {
+    weekend: {
+      name: "Weekend retreat",
+      description: "Second home with quick sea access, quiet nights and a defensible price.",
+    },
+    family: {
+      name: "Family house",
+      description: "Daily life, schools, quiet and mobility take priority over proximity to the coast.",
+    },
+    invest: {
+      name: "Buy-to-let investment",
+      description: "Potential yield, transport and local undervaluation.",
+    },
+    draft: {
+      name: "Weekend retreat",
+      description: "Second home with quick sea access, quiet nights and a defensible price.",
+    },
+  },
+};
+
+const sourceRecipeCopies: Record<string, Pick<ScoringRecipe, "name" | "description">> = {
+  weekend: {
+    name: "Weekend retreat",
+    description: "Residence secondaire, acces mer rapide, calme la nuit, prix defendable.",
+  },
+  family: {
+    name: "Maison famille",
+    description: "Vie quotidienne, ecoles, calme et mobilite avant proximite littorale.",
+  },
+  invest: {
+    name: "Investissement locatif",
+    description: "Rendement potentiel, transport et sous-valorisation locale.",
+  },
 };
 
 const scoringGroupCopies: Record<LocaleCode, Record<string, string>> = {
@@ -245,15 +373,45 @@ const scoringGroupCopies: Record<LocaleCode, Record<string, string>> = {
     Risque: "Riesgo",
     Composite: "Compuesto",
   },
+  en: {
+    Lieu: "Location",
+    Environnement: "Environment",
+    Marche: "Market",
+    Marché: "Market",
+    "Vie quotidienne": "Daily life",
+    Mobilite: "Mobility",
+    Mobilité: "Mobility",
+    Bien: "Property",
+    Risque: "Risk",
+    Composite: "Composite",
+  },
+};
+
+const scoringTagCopies: Record<LocaleCode, Record<string, string>> = {
+  fr: { Custom: "Personnalisé", Composite: "Composite" },
+  es: { Custom: "Personalizado", Composite: "Compuesto" },
+  en: { Custom: "Custom", Composite: "Composite" },
 };
 
 export function getPropertyTitle(property: PropertyListing, locale: LocaleCode) {
-  return propertyTitles[locale][property.id] ?? property.title;
+  const localizedTitle = propertyTitles[locale][property.id];
+  if (!localizedTitle) return property.title;
+
+  const isMockDomainCopy =
+    sourcePropertyTitles[property.id] === property.title ||
+    Object.values(propertyTitles).some((catalog) => catalog[property.id] === property.title);
+  return isMockDomainCopy ? localizedTitle : property.title;
 }
 
 export function localizeScoring(scoring: ScoringMetric, locale: LocaleCode): ScoringMetric {
-  const copy = scoringCopies[locale][scoring.id];
-  return copy ? { ...scoring, ...copy } : scoring;
+  const isKnownDomainCopy =
+    scoring.builtIn ||
+    Object.values(scoringCopies).some((catalog) => catalog[scoring.id]?.name === scoring.name);
+  const copy = isKnownDomainCopy ? scoringCopies[locale][scoring.id] : undefined;
+  if (!copy) return { ...scoring, inputs: [...scoring.inputs], tags: [...scoring.tags] };
+
+  const tags = scoring.tags.map((tag) => scoringTagCopies[locale][tag] ?? tag);
+  return { ...scoring, ...copy, tags };
 }
 
 export function localizeScoringGroup(group: string, locale: LocaleCode) {
@@ -261,7 +419,12 @@ export function localizeScoringGroup(group: string, locale: LocaleCode) {
 }
 
 export function localizeRecipe(recipe: ScoringRecipe, locale: LocaleCode): ScoringRecipe {
-  const copy = recipeCopies[locale][recipe.id];
+  const localizedCopy = recipeCopies[locale][recipe.id];
+  const isKnownDomainCopy = [
+    sourceRecipeCopies[recipe.id],
+    ...Object.values(recipeCopies).map((catalog) => catalog[recipe.id]),
+  ].some((copy) => copy?.name === recipe.name && copy.description === recipe.description);
+  const copy = isKnownDomainCopy ? localizedCopy : undefined;
   const filters = recipe.filters.map((filter) => ({ ...filter }));
 
   return copy ? { ...recipe, ...copy, filters } : { ...recipe, filters };

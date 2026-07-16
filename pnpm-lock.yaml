@@ -35,6 +35,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@denicheur-breizh/i18n':
+        specifier: workspace:*
+        version: link:../../packages/i18n
       cors:
         specifier: ^2.8.6
         version: 2.8.6
@@ -84,6 +87,9 @@ importers:
       '@denicheur-breizh/design-system':
         specifier: workspace:*
         version: link:../../packages/design-system
+      '@denicheur-breizh/i18n':
+        specifier: workspace:*
+        version: link:../../packages/i18n
       lucide-react:
         specifier: ^0.554.0
         version: 0.554.0(react@19.2.7)
@@ -127,6 +133,9 @@ importers:
       '@denicheur-breizh/design-system':
         specifier: workspace:*
         version: link:../../packages/design-system
+      '@denicheur-breizh/i18n':
+        specifier: workspace:*
+        version: link:../../packages/i18n
       '@tanstack/react-query':
         specifier: ^5.101.2
         version: 5.101.2(react@19.2.7)
@@ -201,6 +210,18 @@ importers:
       typescript:
         specifier: ~5.9.3
         version: 5.9.3
+
+  packages/i18n:
+    devDependencies:
+      '@vitest/coverage-v8':
+        specifier: ^4.1.10
+        version: 4.1.10(vitest@4.1.10)
+      typescript:
+        specifier: ~5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^4.1.10
+        version: 4.1.10(@types/node@24.13.3)(@vitest/coverage-v8@4.1.10)(jsdom@27.4.0(@noble/hashes@1.8.0))(vite@8.1.4(@types/node@24.13.3)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.23.0))
 
 packages:
 

@@ -10,7 +10,6 @@ describe("parseAndValidateModelOutput", () => {
     const batch = createModelBatch(request);
     batch.results.reverse();
     batch.results.forEach((result) => result.criteria.reverse());
-    batch.results[0]!.criteria[1]!.evidence = [" 85 "];
 
     const result = parseAndValidateModelOutput(JSON.stringify(batch), request);
 
@@ -24,6 +23,14 @@ describe("parseAndValidateModelOutput", () => {
 
   it("rejects non-JSON output", () => {
     expectInvalid("not json", createRequest());
+  });
+
+  it("rejects a summary containing only whitespace", () => {
+    const request = createRequest();
+    const batch = createModelBatch(request);
+    batch.results[0]!.summary = "   ";
+
+    expectInvalid(JSON.stringify(batch), request);
   });
 
   it("rejects a missing listing result", () => {
@@ -73,6 +80,29 @@ describe("parseAndValidateModelOutput", () => {
 
     expectInvalid(JSON.stringify(batch), request);
   });
+
+  it("preserves verbatim evidence in its original language", () => {
+    const request = createRequest();
+    request.listings[0]!.description = "Maison rénovée, très lumineuse et calme.";
+    const batch = createModelBatch(request);
+    batch.results[0]!.criteria[1]!.evidence = ["très lumineuse"];
+
+    const parsed = parseAndValidateModelOutput(JSON.stringify(batch), request);
+
+    expect(parsed.results[0]!.criteria[1]!.evidence).toEqual(["très lumineuse"]);
+  });
+
+  it.each(["Très lumineuse", "tres lumineuse", "très  lumineuse", "  très lumineuse "])(
+    "rejects non-verbatim evidence %s",
+    (evidence) => {
+      const request = createRequest();
+      request.listings[0]!.description = "Maison rénovée, très lumineuse et calme.";
+      const batch = createModelBatch(request);
+      batch.results[0]!.criteria[1]!.evidence = [evidence];
+
+      expectInvalid(JSON.stringify(batch), request);
+    },
+  );
 
   it("rejects pass or fail verdicts without evidence", () => {
     const request = createRequest();

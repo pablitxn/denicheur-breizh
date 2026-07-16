@@ -5,6 +5,7 @@ import type {
   LeboncoinSort,
   ListingDetail,
   ListingSummary,
+  LocalizedText,
   SiteChallenge,
 } from "./types";
 import { MAX_LISTINGS_PER_PAGE } from "./leboncoinSearch";
@@ -29,7 +30,7 @@ export interface NativeSearchFilters {
 
 export interface FilterWarning {
   field: string;
-  message: string;
+  message: LocalizedText;
 }
 
 export type NativeSearchPhase =
@@ -124,7 +125,7 @@ export interface NativeSearchResponse {
    */
   actionExecuted?: boolean;
   challenge?: SiteChallenge;
-  error?: string;
+  error?: LocalizedText;
 }
 
 export function isContentRequest(message: unknown): message is ContentRequest {

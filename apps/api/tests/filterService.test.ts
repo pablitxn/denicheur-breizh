@@ -64,10 +64,19 @@ describe("buildFilterResponse", () => {
 
     expect(response).toMatchObject({
       runId: request.runId,
+      locale: "fr",
       recipeId: request.recipe.id,
       recipeVersion: request.recipe.version,
       evaluator: { provider: "openai", model: "gpt-fixed", version: "2.1.0" },
     });
+  });
+
+  it.each(["fr", "es", "en"] as const)("echoes the requested %s locale", (locale) => {
+    const request = createRequest(1, locale);
+
+    const response = buildFilterResponse(request, createModelBatch(request), "gpt-fixed", "1.0.0", EVALUATED_AT);
+
+    expect(response.locale).toBe(locale);
   });
 
   it("derives missing data from the normalized listing instead of model output", () => {

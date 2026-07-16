@@ -1,6 +1,7 @@
 {
   "files": [],
   "references": [
+    { "path": "./packages/i18n" },
     { "path": "./packages/design-system" },
     { "path": "./apps/web" },
     { "path": "./apps/extension" }

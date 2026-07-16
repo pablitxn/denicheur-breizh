@@ -5,8 +5,10 @@ import {
 } from "../lib/leboncoinSearch";
 import { createDefaultIntelligenceRecipe, normalizeIntelligenceRecipe } from "../intelligence/recipe";
 import { listingIdFromUrl, normalizeListingUrl } from "../lib/leboncoinExtractors";
+import { message } from "../lib/localizedText";
 import type {
   IntelligenceRecipe,
+  LocalizedText,
   ScrapeRun,
   ScrapedPropertyRecord,
   SearchFilters,
@@ -86,11 +88,11 @@ export function reconcileInterruptedRun(run: ScrapeRun, finishedAt = new Date().
     status: "cancelled",
     finishedAt,
     error: undefined,
-    message: "Previous crawl was cancelled because the dashboard closed.",
+    message: message("run.interrupted"),
     ...(run.intelligenceStatus === "evaluating"
       ? {
           intelligenceStatus: "failed" as const,
-          intelligenceError: "The dashboard closed before intelligence evaluation finished.",
+          intelligenceError: message("error.interruptedEvaluation"),
         }
       : {}),
   };
@@ -137,6 +139,9 @@ function normalizeRun(run: ScrapeRun | undefined): ScrapeRun {
     review: run?.review ?? 0,
     filterWarnings: normalizeFilterWarnings(run?.filterWarnings),
     intelligenceStatus: run?.intelligenceStatus ?? "idle",
+    message: normalizeLocalizedText(run?.message),
+    error: normalizeLocalizedText(run?.error),
+    intelligenceError: normalizeLocalizedText(run?.intelligenceError),
   };
 }
 
@@ -161,14 +166,51 @@ function normalizeFilterWarnings(value: unknown): ScrapeRun["filterWarnings"] {
       warning === null ||
       !("field" in warning) ||
       !("message" in warning) ||
-      typeof warning.field !== "string" ||
-      typeof warning.message !== "string"
+      typeof warning.field !== "string"
     ) {
       return [];
     }
 
-    return [{ field: warning.field, message: warning.message }];
+    const message = normalizeLocalizedText(warning.message);
+    return message ? [{ field: warning.field, message }] : [];
   });
+}
+
+function normalizeLocalizedText(value: unknown): LocalizedText | undefined {
+  if (typeof value === "string" && value.trim()) {
+    return { id: "legacy.message", technicalDetail: value };
+  }
+
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    "id" in value &&
+    typeof value.id === "string" &&
+    value.id.trim()
+  ) {
+    const values = "values" in value && isMessageValues(value.values) ? value.values : undefined;
+    const technicalDetail =
+      "technicalDetail" in value && typeof value.technicalDetail === "string"
+        ? value.technicalDetail
+        : undefined;
+    return {
+      id: value.id,
+      ...(values ? { values } : {}),
+      ...(technicalDetail ? { technicalDetail } : {}),
+    };
+  }
+
+  return undefined;
+}
+
+function isMessageValues(value: unknown): value is Record<string, string | number> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.values(value).every((item) => typeof item === "string" || typeof item === "number")
+  );
 }
 
 export function migrateStoredRecords(records: ScrapedPropertyRecord[]): ScrapedPropertyRecord[] {
@@ -185,6 +227,7 @@ export function migrateStoredRecords(records: ScrapedPropertyRecord[]): ScrapedP
       id,
       listingUrl: canonicalUrl,
       evaluation,
+      error: normalizeLocalizedText(record.error),
     };
     const existing = byListingId.get(id);
     const preferred = existing ? preferMigratedRecord(existing, candidate) : candidate;

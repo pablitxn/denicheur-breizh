@@ -1,18 +1,14 @@
 import { Database, ExternalLink, LoaderCircle, Play } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button, Chip } from "@denicheur-breizh/design-system";
+import { LocaleSelector, useExtensionI18n } from "../i18n";
 import type { ScrapeRun } from "../lib/types";
 import { IDLE_RUN, isCrawlerStorageKey, loadCrawlerState } from "../storage/chromeStorage";
 
 export function PopupApp() {
+  const { formatNumber, resolveText, t } = useExtensionI18n();
   const [run, setRun] = useState<ScrapeRun>(IDLE_RUN);
   const [recordCount, setRecordCount] = useState(0);
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = "dark";
-    document.documentElement.dataset.accent = "sea";
-    document.documentElement.dataset.density = "compact";
-  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -63,44 +59,53 @@ export function PopupApp() {
     run.status === "collecting-search" ||
     run.status === "collecting-details" ||
     run.status === "evaluating";
+  const progressMessage = resolveText(run.message, "popup.ready");
 
   return (
     <main className="popup-shell">
-      <header className="popup-head">
-        <span className="extension-mark">DB</span>
-        <div>
-          <h1>Denicheur Breizh</h1>
-          <p>LeBonCoin crawler</p>
+      <header className="popup-topbar">
+        <div className="popup-head">
+          <span className="extension-mark">DB</span>
+          <div>
+            <h1>{t("app.popupTitle")}</h1>
+            <p>{t("app.popupSubtitle")}</p>
+          </div>
         </div>
+        <LocaleSelector />
       </header>
 
       <section className="popup-status">
         <Chip tone={run.status === "paused-captcha" ? "sunset" : run.status === "failed" || run.status === "blocked-activity" || run.status === "blocked-captcha" ? "danger" : "sea"}>
           {isBusy && <LoaderCircle className="spin" size={13} />}
-          {run.status}
+          {t(`status.${run.status}`)}
         </Chip>
         <div className="popup-count">
           <Database size={16} />
-          <span>{recordCount} records</span>
+          <span>{t("popup.records", { count: recordCount })}</span>
         </div>
       </section>
 
-      <div className="popup-progress">
-        <span>{run.message ?? "Ready"}</span>
+      <div className="popup-progress" aria-label={t("popup.progressLabel")}>
+        <span>{progressMessage.text}</span>
         <strong>
-          {run.collected}/{run.target}
+          {formatNumber(run.collected)}/{formatNumber(run.target)}
         </strong>
       </div>
+      {progressMessage.technicalDetail && (
+        <small className="technical-detail">
+          {t("error.technicalDetail", { detail: progressMessage.technicalDetail })}
+        </small>
+      )}
 
       <div className="popup-actions">
         <Button type="button" variant="primary" onClick={openDashboard}>
           <Play size={16} />
-          Open crawler
+          {t("popup.openCrawler")}
         </Button>
         {run.searchUrl && (
           <a className="btn" href={run.searchUrl} target="_blank" rel="noreferrer">
             <ExternalLink size={16} />
-            Search
+            {t("popup.openSearch")}
           </a>
         )}
       </div>

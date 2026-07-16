@@ -578,7 +578,10 @@ describe("scrape runner native browser orchestration", () => {
       searchUrl: OBSERVED_SEARCH_URL,
       found: 1,
       collected: 1,
-      filterWarnings: [{ field: "squareMax", message: "Surface maximum was unavailable." }],
+      filterWarnings: [{
+        field: "squareMax",
+        message: { id: "legacy.message", technicalDetail: "Surface maximum was unavailable." },
+      }],
     });
     expect(gateway.updates.at(-1)).toEqual({
       tabId: DASHBOARD_TAB_ID,
@@ -930,7 +933,7 @@ describe("scrape runner native browser orchestration", () => {
     expect(collector.latest().run).toMatchObject({
       status: "cancelled",
       error: undefined,
-      message: "Scrape cancelled.",
+      message: { id: "run.cancelled" },
     });
     expect(gateway.touchedTabIds).not.toEqual(expect.arrayContaining(FOREIGN_TAB_IDS));
   });
@@ -957,12 +960,13 @@ describe("scrape runner native browser orchestration", () => {
     await collector.waitFor("paused-captcha", 1);
     await flushMicrotasks();
     expect(gateway.messages).toHaveLength(1);
-    expect(collector.latest().run.message).toBe(
-      "Captcha detected during home-prepared " +
-      "[source=native-action-response; phase=home-prepared; actionExecuted=unknown; " +
-      "evidence=visible test marker]. " +
-      "Solve it manually in the focused tab, then press Resume once.",
-    );
+    expect(collector.latest().run.message).toEqual({
+      id: "run.captchaPaused",
+      values: {
+        checkpoint: "home-prepared",
+        facts: " [source=native-action-response; phase=home-prepared; actionExecuted=unknown; evidence=visible test marker]",
+      },
+    });
 
     runner.resume();
     await collector.waitFor("paused-captcha", 2);
@@ -1013,12 +1017,13 @@ describe("scrape runner native browser orchestration", () => {
     await collector.waitFor("paused-captcha");
     await flushMicrotasks();
 
-    expect(collector.latest().run.message).toBe(
-      "Captcha detected during search-navigation " +
-      "[source=queued-native-action; phase=home-submitted; actionExecuted=false; " +
-      "evidence=visible queued marker 1 safe]. " +
-      "Solve it manually in the focused tab, then press Resume once.",
-    );
+    expect(collector.latest().run.message).toEqual({
+      id: "run.captchaPaused",
+      values: {
+        checkpoint: "search-navigation",
+        facts: " [source=queued-native-action; phase=home-submitted; actionExecuted=false; evidence=visible queued marker 1 safe]",
+      },
+    });
     expect(submitAttempts).toBe(1);
     expect(waitForUrl).toHaveBeenCalledTimes(1);
 
@@ -1067,12 +1072,13 @@ describe("scrape runner native browser orchestration", () => {
     await collector.waitFor("paused-captcha");
     await flushMicrotasks();
 
-    expect(collector.latest().run.message).toBe(
-      "Captcha detected during search-navigation " +
-      "[source=queued-native-action; phase=home-submitted; actionExecuted=true; " +
-      "evidence=queued click completed]. " +
-      "Solve it manually in the focused tab, then press Resume once.",
-    );
+    expect(collector.latest().run.message).toEqual({
+      id: "run.captchaPaused",
+      values: {
+        checkpoint: "search-navigation",
+        facts: " [source=queued-native-action; phase=home-submitted; actionExecuted=true; evidence=queued click completed]",
+      },
+    });
     expect(submitAttempts).toBe(1);
 
     runner.resume();
@@ -1122,12 +1128,13 @@ describe("scrape runner native browser orchestration", () => {
     await collector.waitFor("paused-captcha");
     await flushMicrotasks();
 
-    expect(collector.latest().run.message).toBe(
-      "Captcha detected during search-navigation " +
-      "[source=direct-page-inspection; phase=search-results; actionExecuted=unknown; " +
-      "evidence=visible direct inspection marker]. " +
-      "Solve it manually in the focused tab, then press Resume once.",
-    );
+    expect(collector.latest().run.message).toEqual({
+      id: "run.captchaPaused",
+      values: {
+        checkpoint: "search-navigation",
+        facts: " [source=direct-page-inspection; phase=search-results; actionExecuted=unknown; evidence=visible direct inspection marker]",
+      },
+    });
     expect(submitAttempts).toBe(1);
 
     runner.resume();
@@ -1363,11 +1370,13 @@ describe("scrape runner native browser orchestration", () => {
     expect(harness.appliedSteps).toEqual(["location"]);
     expect(harness.applyAttempts.get("location")).toBe(1);
     expect(gateway.navigations).toEqual([STAGED_SEARCH_URLS[0]]);
-    expect(collector.latest().run.message).toContain(
-      "Captcha detected during results-applied " +
-      "[source=native-action-response; phase=results-applied; actionExecuted=true; " +
-      "evidence=visible staged location challenge].",
-    );
+    expect(collector.latest().run.message).toEqual({
+      id: "run.captchaPaused",
+      values: {
+        checkpoint: "results-applied",
+        facts: " [source=native-action-response; phase=results-applied; actionExecuted=true; evidence=visible staged location challenge]",
+      },
+    });
 
     runner.resume();
     await runPromise;
@@ -1434,8 +1443,11 @@ describe("scrape runner native browser orchestration", () => {
     expect(gateway.removed).toEqual([]);
     expect(collector.latest().run).toMatchObject({
       status: "blocked-activity",
-      message: "Blocked activity detected.",
-      error: "LeBonCoin unusual activity block detected. Automation stopped.",
+      message: {
+        id: "challenge.unusualMessage",
+        technicalDetail: "Blocked activity detected.",
+      },
+      error: { id: "error.activityBlocked" },
     });
     expect(gateway.updates.at(-1)).toEqual({
       tabId: HOME_TAB_ID,
@@ -1538,6 +1550,7 @@ describe("scrape runner intelligence phase", () => {
       "run-1",
       recipe,
       [detailed],
+      "fr",
       expect.any(AbortSignal),
     );
     expect(snapshots).toEqual([
@@ -1569,7 +1582,7 @@ describe("scrape runner intelligence phase", () => {
     expect(activeRun).toMatchObject({
       status: "completed",
       intelligenceStatus: "failed",
-      intelligenceError: "API unavailable",
+      intelligenceError: { id: "error.intelligenceFailed", technicalDetail: "API unavailable" },
       collected: 1,
     });
     expect(persist).toHaveBeenCalledTimes(2);

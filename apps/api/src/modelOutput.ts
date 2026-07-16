@@ -12,7 +12,7 @@ import { invalidModelOutput } from "./errors.js";
 const modelListingResultSchema = z
   .object({
     listingId: z.string().min(1).max(128),
-    summary: z.string().min(1).max(1_000),
+    summary: z.string().trim().min(1).max(1_000),
     criteria: z.array(criterionEvaluationSchema).min(1).max(MAX_CRITERIA_PER_RECIPE),
   })
   .strict();
@@ -161,13 +161,10 @@ function uniqueMap<T>(values: readonly T[], getId: (value: T) => string): Map<st
 }
 
 function evidenceBelongsToListing(evidence: readonly string[], listing: FilterListingInput): boolean {
-  const sourceValues = listingEvidenceValues(listing).map(normalizeEvidence);
+  const sourceValues = listingEvidenceValues(listing);
 
   return evidence.every((excerpt) => {
-    const normalizedExcerpt = normalizeEvidence(excerpt);
-    return sourceValues.some((value) =>
-      normalizedExcerpt.length < 3 ? value === normalizedExcerpt : value.includes(normalizedExcerpt),
-    );
+    return sourceValues.some((value) => (excerpt.length < 3 ? value === excerpt : value.includes(excerpt)));
   });
 }
 
@@ -191,8 +188,4 @@ function listingEvidenceValues(listing: FilterListingInput): string[] {
   ];
 
   return values.filter((value): value is string | number => value !== undefined).map(String);
-}
-
-function normalizeEvidence(value: string): string {
-  return value.normalize("NFKC").replace(/\s+/g, " ").trim().toLocaleLowerCase("fr");
 }

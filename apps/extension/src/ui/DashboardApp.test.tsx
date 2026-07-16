@@ -28,7 +28,7 @@ describe("dashboard runner ownership recovery", () => {
     expect(firstDashboard).toMatchObject({
       status: "cancelled",
       finishedAt: FINISHED_AT,
-      message: "Previous crawl was cancelled because the dashboard closed.",
+      message: { id: "run.interrupted" },
     });
     expect(secondDashboard).toEqual(firstDashboard);
   });

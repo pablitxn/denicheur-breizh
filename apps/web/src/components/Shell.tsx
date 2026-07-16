@@ -77,7 +77,7 @@ export function Shell({ children }: { children: ReactNode }) {
                 type="button"
                 className={locale === item ? styles.localeActive : ""}
                 aria-pressed={locale === item}
-                aria-label={t(item === "fr" ? "app.language.fr" : "app.language.es")}
+                aria-label={t(`app.language.${item}`)}
                 onClick={() => setLocale(item)}
               >
                 {localeLabels[item]}

@@ -1,4 +1,12 @@
+import type { LocaleCode, MessageDescriptor } from "@denicheur-breizh/i18n";
+
 export type SourceSite = "leboncoin";
+
+/**
+ * New runtime state stores stable message descriptors. Strings remain accepted
+ * so installations can load crawler records written by older extension builds.
+ */
+export type LocalizedText = string | MessageDescriptor<string>;
 
 export type LeboncoinCategory = "9" | "10" | "11" | "13" | "2001";
 export type LeboncoinOwnerType = "all" | "private" | "pro";
@@ -32,13 +40,13 @@ export interface SearchFilters {
 
 export interface FilterApplicationWarning {
   field: string;
-  message: string;
+  message: LocalizedText;
 }
 
 export interface SiteChallenge {
   type: "captcha" | "unusual-activity";
-  title: string;
-  message: string;
+  title: LocalizedText;
+  message: LocalizedText;
   /** Short, non-sensitive detector evidence suitable for the visible run log. */
   evidence?: string;
 }
@@ -119,7 +127,7 @@ export interface ScrapedPropertyRecord {
   scrapedAt: string;
   searchRunId: string;
   status: "listing" | "detailed" | "failed";
-  error?: string;
+  error?: LocalizedText;
   rawTextSample: string;
   evaluation?: ListingEvaluation;
 }
@@ -166,6 +174,8 @@ export interface ListingEvaluation {
   };
   recipeId: string;
   recipeVersion: number;
+  /** Missing on evaluations persisted by extension builds before locale support. */
+  locale?: LocaleCode;
 }
 
 export type ScrapeRunStatus =
@@ -193,10 +203,10 @@ export interface ScrapeRun {
   pagesVisited: number;
   collected: number;
   currentUrl?: string;
-  message?: string;
-  error?: string;
+  message?: LocalizedText;
+  error?: LocalizedText;
   intelligenceStatus?: "idle" | "evaluating" | "completed" | "failed";
-  intelligenceError?: string;
+  intelligenceError?: LocalizedText;
   evaluated: number;
   relevant: number;
   notRelevant: number;

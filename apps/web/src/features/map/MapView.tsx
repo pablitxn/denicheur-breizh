@@ -8,7 +8,7 @@ import { getPropertyTitle, scoreMessageIds } from "../../intl/domain";
 import { useAppIntl } from "../../intl/IntlContext";
 import { useWorkspaceStore } from "../../state/workspaceStore";
 import type { PropertyFilters, PropertyListing, ProviderName, ScoreKey } from "../../types";
-import { formatPostedDays, formatPrice, formatPricePerM2, formatRooms } from "../../utils/format";
+import { formatDecimal, formatInteger, formatPostedDays, formatPrice, formatPricePerM2, formatRooms } from "../../utils/format";
 import { propertiesToGeoJson, regionsGeoJson } from "../../utils/mapData";
 import styles from "./MapView.module.css";
 
@@ -52,6 +52,12 @@ export function MapView() {
     const averageScore = properties.reduce((total, property) => total + property.scores.overall, 0) / Math.max(properties.length, 1);
     return { count: properties.length, averageScore };
   }, [properties]);
+  const mapUiLocale = useMemo(() => ({
+    "Map.Title": t("map.control.title"),
+    "NavigationControl.ZoomIn": t("map.control.zoomIn"),
+    "NavigationControl.ZoomOut": t("map.control.zoomOut"),
+    "AttributionControl.ToggleAttribution": t("map.control.toggleAttribution"),
+  }), [t]);
 
   useEffect(() => {
     let disposed = false;
@@ -100,6 +106,7 @@ export function MapView() {
         center: [-2.05, 48.55],
         zoom: 8.75,
         attributionControl: { compact: true },
+        locale: mapUiLocale,
       });
 
       map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
@@ -186,7 +193,7 @@ export function MapView() {
       mapRef.current?.remove();
       mapRef.current = null;
     };
-  }, [setSelectedPropertyId]);
+  }, [mapUiLocale, setSelectedPropertyId]);
 
   useEffect(() => {
     const source = mapRef.current?.getSource("properties") as GeoJSONSource | undefined;
@@ -244,9 +251,9 @@ export function MapView() {
             onChange={(event) => setFilters((current) => ({ ...current, priceMax: Number(event.target.value) }))}
           />
           <div className={styles.rangeLegend}>
-            <span>160 k</span>
+            <span>{formatPrice(160000, locale)}</span>
             <span>{formatPrice(filters.priceMax, locale)}</span>
-            <span>540 k</span>
+            <span>{formatPrice(540000, locale)}</span>
           </div>
 
           <SectionLabel>{t("map.minSurface")}</SectionLabel>
@@ -261,9 +268,9 @@ export function MapView() {
             onChange={(event) => setFilters((current) => ({ ...current, surfaceMin: Number(event.target.value) }))}
           />
           <div className={styles.rangeLegend}>
-            <span>40</span>
-            <span>{filters.surfaceMin} m²</span>
-            <span>140+</span>
+            <span>{formatInteger(40, locale)}</span>
+            <span>{formatInteger(filters.surfaceMin, locale)} m²</span>
+            <span>{formatInteger(140, locale)}+</span>
           </div>
 
           <SectionLabel>{t("map.acceptedDpe")}</SectionLabel>
@@ -285,11 +292,11 @@ export function MapView() {
       </aside>
 
       <div className={styles.mapStage}>
-        <div ref={mapEl} className={styles.mapCanvas} />
+        <div ref={mapEl} className={styles.mapCanvas} role="region" aria-label={t("map.canvasAria")} />
 
         <div className={styles.mapNotice}>
           <span className={styles.goodDot} />
-          <span>{t("map.summary", { count: summary.count, score: summary.averageScore.toFixed(1) })}</span>
+          <span>{t("map.summary", { count: summary.count, score: formatDecimal(summary.averageScore, locale) })}</span>
         </div>
 
         <div className={styles.legend}>
@@ -319,11 +326,18 @@ export function MapView() {
                   <h1>{getPropertyTitle(selectedProperty, locale)}</h1>
                   <p>{selectedProperty.address}</p>
                 </div>
-                <ScoreBadge value={selectedProperty.scores.overall} />
+                <ScoreBadge
+                  value={selectedProperty.scores.overall}
+                  displayValue={formatDecimal(selectedProperty.scores.overall, locale)}
+                  label={t("score.valueAria", {
+                    name: t("score.overall"),
+                    value: formatDecimal(selectedProperty.scores.overall, locale),
+                  })}
+                />
               </div>
 
               <div className={styles.metaRow}>
-                <span>{selectedProperty.surfaceM2} m²</span>
+                <span>{formatInteger(selectedProperty.surfaceM2, locale)} m²</span>
                 <span>{formatRooms(selectedProperty.rooms, locale)}</span>
                 <span>{formatPricePerM2(selectedProperty.price, selectedProperty.surfaceM2, locale)}</span>
                 <span>{t("property.dpe")} {selectedProperty.dpe}</span>
@@ -340,7 +354,7 @@ export function MapView() {
                   <div key={key} className={styles.scoreRow}>
                     <div>
                       <span>{t(scoreMessageIds[key])}</span>
-                      <b>{value.toFixed(1)}</b>
+                      <b>{formatDecimal(value, locale)}</b>
                     </div>
                     <Meter value={value} />
                   </div>
@@ -350,9 +364,12 @@ export function MapView() {
 
               <div className={styles.explain}>
                 <SectionLabel>{t("map.why")}</SectionLabel>
-                <p>{t("map.whyCoast", { score: (selectedProperty.scores.coast / 8).toFixed(1), distance: selectedProperty.diagnostics.coastalDistanceKm })}</p>
-                <p>{t("map.whyTransit", { minutes: selectedProperty.diagnostics.transitMinutes })}</p>
-                <p>{t("map.whyNoise", { db: selectedProperty.diagnostics.noiseDbNight })}</p>
+                <p>{t("map.whyCoast", {
+                  score: formatDecimal(selectedProperty.scores.coast / 8, locale),
+                  distance: formatDecimal(selectedProperty.diagnostics.coastalDistanceKm, locale),
+                })}</p>
+                <p>{t("map.whyTransit", { minutes: formatInteger(selectedProperty.diagnostics.transitMinutes, locale) })}</p>
+                <p>{t("map.whyNoise", { db: formatInteger(selectedProperty.diagnostics.noiseDbNight, locale) })}</p>
               </div>
 
               <div className={styles.actions}>

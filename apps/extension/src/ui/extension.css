@@ -40,6 +40,63 @@ body {
   min-width: 0;
 }
 
+.extension-toolbar-actions,
+.popup-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.extension-toolbar-actions {
+  flex: none;
+}
+
+.locale-selector {
+  display: inline-grid;
+  grid-template-columns: repeat(3, 1fr);
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2);
+  background: var(--color-surface);
+}
+
+.locale-option {
+  min-width: 34px;
+  min-height: 28px;
+  padding: 0 var(--space-2);
+  border: 0;
+  border-right: 1px solid var(--color-border);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.locale-option:last-child {
+  border-right: 0;
+}
+
+.locale-option:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+}
+
+.locale-option[aria-pressed="true"] {
+  background: color-mix(in oklab, var(--color-sea) 18%, var(--color-surface));
+  color: var(--color-sea);
+}
+
+.locale-option:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: 2px solid var(--color-sea);
+  outline-offset: -2px;
+}
+
 .extension-mark {
   display: inline-grid;
   width: 34px;
@@ -374,6 +431,14 @@ body {
   color: var(--color-warning);
 }
 
+.evaluation-language-note {
+  padding: var(--space-2);
+  border: 1px solid color-mix(in oklab, var(--color-warning) 35%, var(--color-border));
+  border-radius: var(--radius-2);
+  background: color-mix(in oklab, var(--color-warning) 7%, transparent);
+  color: var(--color-warning);
+}
+
 .evaluation-meta {
   color: var(--color-text-muted);
   font-family: var(--font-mono);
@@ -528,6 +593,21 @@ body {
   font-size: var(--fs-mono-xs);
 }
 
+.localized-message {
+  display: inline-grid;
+  gap: var(--space-1);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.technical-detail {
+  display: block;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  overflow-wrap: anywhere;
+}
+
 .records-limit {
   margin: 0;
   color: var(--color-text-muted);
@@ -563,6 +643,10 @@ body {
   min-height: 280px;
   padding: var(--space-5);
   background: var(--color-bg);
+}
+
+.popup-topbar {
+  align-items: flex-start;
 }
 
 .popup-status {
@@ -621,7 +705,12 @@ body {
   .extension-topbar {
     height: auto;
     align-items: flex-start;
+    flex-wrap: wrap;
     padding: var(--space-4);
+  }
+
+  .extension-toolbar-actions {
+    width: 100%;
   }
 
   .dashboard-layout {

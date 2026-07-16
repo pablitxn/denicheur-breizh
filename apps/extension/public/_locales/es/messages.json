@@ -1,0 +1,14 @@
+{
+  "extensionName": {
+    "message": "Denicheur Breizh Crawler",
+    "description": "Nombre de la extensión"
+  },
+  "extensionDescription": {
+    "message": "Recopilación inmobiliaria de Leboncoin asistida por el usuario.",
+    "description": "Descripción de la extensión"
+  },
+  "extensionActionTitle": {
+    "message": "Abrir Denicheur Breizh",
+    "description": "Texto del botón de la barra de herramientas"
+  }
+}

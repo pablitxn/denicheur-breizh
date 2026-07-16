@@ -1,10 +1,10 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { isLocaleCode, localeNames, normalizeLocale, type LocaleCode } from "./locales";
+import { LOCALE_METADATA, translate, type MessageValues } from "@denicheur-breizh/i18n";
+import { isLocaleCode, localeNames, resolveLocale, type LocaleCode } from "./locales";
 import { messages, type MessageId } from "./messages";
 
-const storageKey = "denicheur.locale";
-
-type MessageValues = Record<string, string | number>;
+export const localeStorageKey = "denicheur:locale";
+const legacyStorageKey = "denicheur.locale";
 
 interface AppIntlContextValue {
   locale: LocaleCode;
@@ -15,46 +15,56 @@ interface AppIntlContextValue {
 
 const AppIntlContext = createContext<AppIntlContextValue | null>(null);
 
-function getInitialLocale() {
+export function getInitialLocale(): LocaleCode {
   if (typeof window === "undefined") return "fr";
+
+  let stored: string | null = null;
   try {
-    const stored = window.localStorage.getItem(storageKey);
-    if (isLocaleCode(stored)) return stored;
+    stored = window.localStorage.getItem(localeStorageKey) ?? window.localStorage.getItem(legacyStorageKey);
   } catch {
-    return normalizeLocale(window.navigator.language);
+    // Browser locale detection still works when storage is unavailable.
   }
-  return normalizeLocale(window.navigator.language);
-}
 
-function interpolate(message: string, values?: MessageValues) {
-  if (!values) return message;
-
-  return message.replace(/\{(\w+)\}/g, (match, key: string) => {
-    const value = values[key];
-    return value === undefined ? match : String(value);
-  });
+  return resolveLocale([stored, ...window.navigator.languages, window.navigator.language]);
 }
 
 export function AppIntlProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<LocaleCode>(getInitialLocale);
 
+  const t = useCallback(
+    (id: MessageId, values?: MessageValues) => translate(messages, locale, id, values),
+    [locale],
+  );
+
   useEffect(() => {
-    document.documentElement.lang = locale;
+    document.documentElement.lang = LOCALE_METADATA[locale].bcp47;
+    document.title = t("app.meta.title");
+    document
+      .querySelector('meta[name="description"]')
+      ?.setAttribute("content", t("app.meta.description"));
+
     try {
-      window.localStorage.setItem(storageKey, locale);
+      window.localStorage.setItem(localeStorageKey, locale);
+      window.localStorage.removeItem(legacyStorageKey);
     } catch {
       // Locale still works for the current session if storage is unavailable.
     }
-  }, [locale]);
+  }, [locale, t]);
+
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === localeStorageKey && isLocaleCode(event.newValue)) {
+        setLocaleState(event.newValue);
+      }
+    };
+
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, []);
 
   const setLocale = useCallback((nextLocale: LocaleCode) => {
     setLocaleState(nextLocale);
   }, []);
-
-  const t = useCallback(
-    (id: MessageId, values?: MessageValues) => interpolate(messages[locale][id], values),
-    [locale],
-  );
 
   const value = useMemo<AppIntlContextValue>(
     () => ({

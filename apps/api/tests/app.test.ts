@@ -23,7 +23,7 @@ describe("HTTP API", () => {
   });
 
   it("classifies a valid batch and returns a request id", async () => {
-    const input = createRequest();
+    const input = createRequest(1, "es");
     const expected = createResponse(input);
     const { app, filter } = createTestApp({ response: expected });
 
@@ -34,6 +34,7 @@ describe("HTTP API", () => {
       .expect(200);
 
     expect(response.body).toEqual(expected);
+    expect(response.body.locale).toBe("es");
     expect(response.headers["x-request-id"]).toMatch(/^[0-9a-f-]{36}$/);
     expect(response.headers["access-control-allow-origin"]).toBe(VALID_EXTENSION_ORIGIN);
     expect(filter).toHaveBeenCalledWith(input, { requestId: response.headers["x-request-id"] });
@@ -51,6 +52,21 @@ describe("HTTP API", () => {
       message: "The request body is invalid.",
       issues: expect.any(Array),
     });
+    expect(filter).not.toHaveBeenCalled();
+  });
+
+  it("requires an exact supported locale before invoking the evaluator", async () => {
+    const { locale: _locale, ...withoutLocale } = createRequest();
+    const { app, filter } = createTestApp();
+
+    const missing = await request(app).post("/v1/listings/filter").send(withoutLocale).expect(400);
+    const regional = await request(app)
+      .post("/v1/listings/filter")
+      .send({ ...createRequest(), locale: "es-ES" })
+      .expect(400);
+
+    expect(missing.body.error).toMatchObject({ code: "INVALID_REQUEST" });
+    expect(regional.body.error).toMatchObject({ code: "INVALID_REQUEST" });
     expect(filter).not.toHaveBeenCalled();
   });
 

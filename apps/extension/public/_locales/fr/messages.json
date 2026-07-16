@@ -1,0 +1,14 @@
+{
+  "extensionName": {
+    "message": "Denicheur Breizh Crawler",
+    "description": "Nom de l’extension"
+  },
+  "extensionDescription": {
+    "message": "Collecte immobilière Leboncoin assistée par l’utilisateur.",
+    "description": "Description de l’extension"
+  },
+  "extensionActionTitle": {
+    "message": "Ouvrir Denicheur Breizh",
+    "description": "Infobulle du bouton de la barre d’outils"
+  }
+}

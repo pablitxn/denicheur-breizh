@@ -10,7 +10,7 @@
   "scripts": {
     "dev": "turbo run dev --filter=@denicheur-breizh/web",
     "build": "turbo run build",
-    "build:e2e": "WXT_OUTPUT_DIR=.output-e2e WXT_FILTER_API_URL=http://127.0.0.1:14310 turbo run build",
+    "build:e2e": "VITE_ENABLE_REALTIME=true WXT_OUTPUT_DIR=.output-e2e WXT_FILTER_API_URL=http://127.0.0.1:14310 turbo run build",
     "preview": "turbo run preview --filter=@denicheur-breizh/web",
     "test": "turbo run test",
     "test:run": "turbo run test:run",

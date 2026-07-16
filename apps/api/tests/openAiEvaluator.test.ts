@@ -33,9 +33,22 @@ describe("buildOpenAiRequest", () => {
     expect(openAiRequest.tools).toBeUndefined();
     expect(JSON.stringify(openAiRequest.text?.format)).not.toMatch(/minLength|maxLength/);
     expect(JSON.parse(openAiRequest.input as string)).toEqual({
+      locale: request.locale,
       recipe: request.recipe,
       listings: request.listings,
     });
+  });
+
+  it.each([
+    ["fr", "French (fr-FR)"],
+    ["es", "Spanish (es-ES)"],
+    ["en", "English (en-GB)"],
+  ] as const)("requires summaries and reasons in %s while preserving evidence", (locale, language) => {
+    const openAiRequest = buildOpenAiRequest(createRequest(1, locale), MODEL);
+
+    expect(openAiRequest.instructions).toContain(`summary and criterion reason in ${language}`);
+    expect(openAiRequest.instructions).toContain("copy it exactly as written");
+    expect(openAiRequest.instructions).toContain("Never translate, paraphrase, normalize");
   });
 
   it("keeps prompt-injection text in untrusted input instead of model instructions", () => {
@@ -81,6 +94,29 @@ describe("OpenAiListingEvaluator", () => {
       }),
     );
     expect(JSON.stringify(logger.info.mock.calls)).not.toContain("UNIQUE_PRIVATE_DESCRIPTION");
+  });
+
+  it("preserves localized narratives and source-language evidence without rewriting either", async () => {
+    const request = createRequest(1, "es");
+    const batch = createModelBatch(request);
+    batch.results[0]!.summary = "La vivienda coincide globalmente con los criterios.";
+    batch.results[0]!.criteria[1]!.reason = "El anuncio aporta una prueba explícita.";
+    batch.results[0]!.criteria[1]!.evidence = ["environnement calme"];
+    const evaluator = createEvaluator(
+      createLogger(),
+      vi.fn<CreateOpenAiResponse>().mockResolvedValue({
+        output_text: JSON.stringify(batch),
+        status: "completed",
+      }),
+    );
+
+    const result = await evaluator.evaluate(request, { requestId: "request-1" });
+
+    expect(result.results[0]!.summary).toBe("La vivienda coincide globalmente con los criterios.");
+    expect(result.results[0]!.criteria[1]).toMatchObject({
+      reason: "El anuncio aporta una prueba explícita.",
+      evidence: ["environnement calme"],
+    });
   });
 
   it("returns a service error when no server credential is configured", async () => {

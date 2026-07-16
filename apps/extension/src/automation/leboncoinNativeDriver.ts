@@ -1,4 +1,6 @@
 import { detectSiteChallenge } from "../lib/leboncoinExtractors";
+import { localizedTextDetail, message } from "../lib/localizedText";
+import type { LocalizedText } from "../lib/types";
 import type {
   FilterWarning,
   NativeSearchFilters,
@@ -258,7 +260,13 @@ export class LeboncoinNativeDriver {
         if (this.homeSubmissionExecuted) return;
         try {
           const challenge = this.challengeResponse(phase);
-          if (challenge) throw new Error(challenge.challenge?.message ?? "A site challenge interrupted submission.");
+          if (challenge) {
+            throw new Error(
+              challenge.challenge?.message
+                ? localizedTextDetail(challenge.challenge.message)
+                : "A site challenge interrupted submission.",
+            );
+          }
           const button = this.findHomeSubmit(this.homeSearchRoot, undefined, undefined);
           if (!button) throw new Error("The native search submit control is no longer available.");
           await this.clickVisible(button, () => {
@@ -476,7 +484,13 @@ export class LeboncoinNativeDriver {
         if (this.resultsApplicationExecuted) return;
         try {
           const challenge = this.challengeResponse(phase);
-          if (challenge) throw new Error(challenge.challenge?.message ?? "A site challenge interrupted filter application.");
+          if (challenge) {
+            throw new Error(
+              challenge.challenge?.message
+                ? localizedTextDetail(challenge.challenge.message)
+                : "A site challenge interrupted filter application.",
+            );
+          }
           if (this.resultsSelectAction) {
             const { control, value, labels } = this.resultsSelectAction;
             const selected = await this.selectOption(control, value, labels, () => {
@@ -583,7 +597,13 @@ export class LeboncoinNativeDriver {
         if (this.paginationAdvanceExecuted) return;
         try {
           const challenge = this.challengeResponse(phase);
-          if (challenge) throw new Error(challenge.challenge?.message ?? "A site challenge interrupted pagination.");
+          if (challenge) {
+            throw new Error(
+              challenge.challenge?.message
+                ? localizedTextDetail(challenge.challenge.message)
+                : "A site challenge interrupted pagination.",
+            );
+          }
           if (!capturedButton.isConnected || capturedButton !== this.findNextPageControl()) {
             throw new Error("The native next-page control is no longer available.");
           }
@@ -1332,7 +1352,7 @@ export class LeboncoinNativeDriver {
     }
 
     if (missing.length > 0) {
-      this.warn("propertyTypes", `Native property type controls were unavailable for: ${missing.join(", ")}.`);
+      this.warn("propertyTypes", message("warning.propertyTypesUnavailable", { types: missing.join(", ") }));
     }
     return validate ? { root: choiceRoot, validate } : undefined;
   }
@@ -1367,7 +1387,7 @@ export class LeboncoinNativeDriver {
     const label = ownerType === "private" ? "Particulier" : "Professionnel";
     const choice = findByAccessibleName<HTMLElement>(root, CHOICE_SELECTOR, [exactTextPattern(label), new RegExp(`^${label}`, "iu")], []);
     if (!choice) {
-      this.warn("ownerType", `The native seller control "${label}" was not found.`);
+      this.warn("ownerType", message("warning.sellerControlMissing", { label }));
       return;
     }
 
@@ -1421,7 +1441,9 @@ export class LeboncoinNativeDriver {
           : { value: expectedMin, mode: "select" as const };
         const staged = await this.prepareRangeChoice(group.minField, choice.value, choice.mode);
         if (staged) return { ...staged, step: group.minStep };
-        this.warn(group.minField, `The native ${NUMERIC_FILTERS[group.minField].description} control was not found.`);
+        this.warn(group.minField, message("warning.nativeControlMissing", {
+          control: NUMERIC_FILTERS[group.minField].description,
+        }));
         continue;
       }
 
@@ -1433,7 +1455,9 @@ export class LeboncoinNativeDriver {
           : { value: expectedMax, mode: "select" as const };
         const staged = await this.prepareRangeChoice(group.maxField, choice.value, choice.mode);
         if (staged) return { ...staged, step: group.maxStep };
-        this.warn(group.maxField, `The native ${NUMERIC_FILTERS[group.maxField].description} control was not found.`);
+        this.warn(group.maxField, message("warning.nativeControlMissing", {
+          control: NUMERIC_FILTERS[group.maxField].description,
+        }));
       }
     }
     return undefined;
@@ -1507,7 +1531,7 @@ export class LeboncoinNativeDriver {
       definition.selectors,
     );
     if (!input) {
-      this.warn(field, `The native ${definition.description} control was not found.`);
+      this.warn(field, message("warning.nativeControlMissing", { control: definition.description }));
       return;
     }
 
@@ -1582,7 +1606,7 @@ export class LeboncoinNativeDriver {
     if (control instanceof HTMLSelectElement) {
       const option = matchingSelectOption(control, `${filters.sort}-${filters.order}`, labels);
       if (!option) {
-        this.warn("sort", `The native sort option "${labels[0]}" was not found.`);
+        this.warn("sort", message("warning.sortOptionMissing", { label: labels[0] ?? "" }));
         return true;
       }
       if (control.value === option.value) {
@@ -1592,7 +1616,7 @@ export class LeboncoinNativeDriver {
       const previousValue = control.value;
       const selected = await this.selectOption(control, `${filters.sort}-${filters.order}`, labels);
       if (!selected) {
-        this.warn("sort", `The native sort option "${labels[0]}" was not found.`);
+        this.warn("sort", message("warning.sortOptionMissing", { label: labels[0] ?? "" }));
         return true;
       }
       if (control.value !== previousValue) this.resultsFilterChanged = true;
@@ -1610,7 +1634,7 @@ export class LeboncoinNativeDriver {
       ),
     );
     if (!option) {
-      this.warn("sort", `The native sort option "${labels[0]}" was not found.`);
+      this.warn("sort", message("warning.sortOptionMissing", { label: labels[0] ?? "" }));
       return true;
     }
     await this.clickVisible(choiceClickTarget(option));
@@ -1643,14 +1667,14 @@ export class LeboncoinNativeDriver {
       SELECTORS.sort,
     );
     if (!control) {
-      this.warn("sort", "The native sort control was not found.");
+      this.warn("sort", message("warning.sortControlMissing"));
       return;
     }
 
     if (control instanceof HTMLSelectElement) {
       const option = matchingSelectOption(control, `${filters.sort}-${filters.order}`, labels);
       if (!option) {
-        this.warn("sort", `The native sort option "${labels[0]}" was not found.`);
+        this.warn("sort", message("warning.sortOptionMissing", { label: labels[0] ?? "" }));
       } else if (control.value === option.value) {
         this.resultsApplied.push("sort");
       } else {
@@ -1675,7 +1699,7 @@ export class LeboncoinNativeDriver {
       );
     });
     if (!option) {
-      this.warn("sort", `The native sort option "${labels[0]}" was not found.`);
+      this.warn("sort", message("warning.sortOptionMissing", { label: labels[0] ?? "" }));
       return;
     }
     this.resultsApplyButton = choiceClickTarget(option);
@@ -1838,7 +1862,7 @@ export class LeboncoinNativeDriver {
 
   private assertNoChallenge(): void {
     const challenge = detectSiteChallenge(this.doc);
-    if (challenge) throw new Error(challenge.message);
+    if (challenge) throw new Error(localizedTextDetail(challenge.message));
   }
 
   private successResponse(
@@ -1875,13 +1899,18 @@ export class LeboncoinNativeDriver {
       applied: [...new Set(applied)],
       omitted: [...new Set(omitted)],
       warnings: [...warnings],
-      error: error instanceof Error ? error.message : "Native Leboncoin form interaction failed.",
+      error: error instanceof Error
+        ? message("error.nativeInteraction", undefined, error.message)
+        : message("error.nativeInteraction"),
     };
   }
 
-  private warn(field: string, message: string): void {
-    if (!this.resultsWarnings.some((warning) => warning.field === field && warning.message === message)) {
-      this.resultsWarnings.push({ field, message });
+  private warn(field: string, warningMessage: LocalizedText): void {
+    const diagnostic = localizedTextDetail(warningMessage);
+    if (!this.resultsWarnings.some(
+      (warning) => warning.field === field && localizedTextDetail(warning.message) === diagnostic,
+    )) {
+      this.resultsWarnings.push({ field, message: warningMessage });
     }
   }
 

@@ -16,11 +16,37 @@ Without an explicit allowlist, only local Vite origins and the repository's pinn
 ## Commands
 
 ```sh
-pnpm --filter @denicheur-breizh/api dev
-pnpm --filter @denicheur-breizh/api test:run
-pnpm --filter @denicheur-breizh/api typecheck
-pnpm --filter @denicheur-breizh/api build
+pnpm exec turbo run dev --filter=@denicheur-breizh/api
+pnpm exec turbo run test:run --filter=@denicheur-breizh/api
+pnpm exec turbo run typecheck --filter=@denicheur-breizh/api
+pnpm exec turbo run build --filter=@denicheur-breizh/api
 pnpm --filter @denicheur-breizh/api start
 ```
 
-`GET /health` never calls OpenAI. `POST /v1/listings/filter` accepts one recipe and 1–20 normalized listings. OpenAI returns only per-criterion verdicts; this service validates their completeness and evidence before calculating the final score and decision.
+The Turbo commands build workspace dependencies such as `@denicheur-breizh/i18n` first. Run `start` only after the filtered build command.
+
+`GET /health` never calls OpenAI. `POST /v1/listings/filter` accepts one recipe and 1–20 normalized listings. The request must include an exact `locale` of `fr`, `es`, or `en`; the response echoes it. OpenAI writes summaries and criterion reasons in the requested language, while evidence remains a verbatim excerpt from the source listing. The service validates result completeness and exact evidence before calculating the final score and decision.
+
+Contract shape:
+
+```ts
+interface FilterListingsRequest {
+  runId: string;
+  locale: "fr" | "es" | "en";
+  recipe: IntelligenceRecipe;
+  listings: FilterListingInput[];
+}
+```
+
+Successful responses include the same batch metadata:
+
+```ts
+interface FilterListingsResponse {
+  runId: string;
+  locale: "fr" | "es" | "en";
+  recipeId: string;
+  recipeVersion: number;
+  evaluator: { provider: "openai"; model: string; version: string };
+  results: ListingEvaluationResult[];
+}
+```

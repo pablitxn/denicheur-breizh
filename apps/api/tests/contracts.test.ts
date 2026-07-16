@@ -1,9 +1,20 @@
 import { describe, expect, it } from "vitest";
+import { SUPPORTED_LOCALES } from "@denicheur-breizh/i18n";
 
 import { filterListingsRequestSchema, MAX_LISTINGS_PER_REQUEST } from "../src/contracts.js";
 import { createRequest } from "./fixtures.js";
 
 describe("filterListingsRequestSchema", () => {
+  it.each(SUPPORTED_LOCALES)("accepts the supported %s locale", (locale) => {
+    expect(filterListingsRequestSchema.safeParse(createRequest(1, locale)).success).toBe(true);
+  });
+
+  it.each([undefined, null, "FR", "fr-FR", "de"])("rejects the unsupported locale %s", (locale) => {
+    const request: Record<string, unknown> = { ...createRequest(), locale };
+
+    expect(filterListingsRequestSchema.safeParse(request).success).toBe(false);
+  });
+
   it("accepts a normalized batch at the maximum listing size", () => {
     const request = createRequest(MAX_LISTINGS_PER_REQUEST);
 

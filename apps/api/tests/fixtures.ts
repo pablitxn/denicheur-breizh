@@ -1,9 +1,12 @@
+import type { LocaleCode } from "@denicheur-breizh/i18n";
+
 import type { FilterListingsRequest, FilterListingsResponse } from "../src/contracts.js";
 import type { ModelEvaluationBatch } from "../src/modelOutput.js";
 
-export function createRequest(listingCount = 1): FilterListingsRequest {
+export function createRequest(listingCount = 1, locale: LocaleCode = "fr"): FilterListingsRequest {
   return {
     runId: "run-123",
+    locale,
     recipe: {
       id: "recipe-1",
       version: 1,
@@ -67,6 +70,7 @@ export function createModelBatch(
 export function createResponse(request = createRequest()): FilterListingsResponse {
   return {
     runId: request.runId,
+    locale: request.locale,
     recipeId: request.recipe.id,
     recipeVersion: request.recipe.version,
     evaluator: {

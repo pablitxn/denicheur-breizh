@@ -54,7 +54,10 @@ describe("LeboncoinNativeDriver home search", () => {
     expect(driver.armHomeSearchSubmission().response).toMatchObject({
       phase: "home-submitted",
       ok: false,
-      error: "The native home search was already submitted.",
+      error: {
+        id: "error.nativeInteraction",
+        technicalDetail: "The native home search was already submitted.",
+      },
     });
   });
 
@@ -151,7 +154,10 @@ describe("LeboncoinNativeDriver home search", () => {
     expect(response).toMatchObject({
       phase: "home-prepared",
       ok: false,
-      error: 'The native category option "Ventes immobilières" did not stabilize.',
+      error: {
+        id: "error.nativeInteraction",
+        technicalDetail: 'The native category option "Ventes immobilières" did not stabilize.',
+      },
     });
     expect(harness.categoryOptionClicks).not.toHaveBeenCalled();
     expect(harness.locationOptionClicks).not.toHaveBeenCalled();
@@ -168,7 +174,10 @@ describe("LeboncoinNativeDriver home search", () => {
     expect(response).toMatchObject({
       phase: "home-prepared",
       ok: false,
-      error: "The native home category control may navigate before search submission.",
+      error: {
+        id: "error.nativeInteraction",
+        technicalDetail: "The native home category control may navigate before search submission.",
+      },
     });
     expect(harness.categoryOptionClicks).not.toHaveBeenCalled();
     expect(harness.locationOptionClicks).not.toHaveBeenCalled();
@@ -194,7 +203,10 @@ describe("LeboncoinNativeDriver home search", () => {
       phase: "home-prepared",
       ok: false,
       applied: ["category"],
-      error: 'The native location suggestion for "Finistère" did not stabilize.',
+      error: {
+        id: "error.nativeInteraction",
+        technicalDetail: 'The native location suggestion for "Finistère" did not stabilize.',
+      },
     });
     expect(harness.categoryOptionClicks).toHaveBeenCalledOnce();
     expect(harness.locationOptionClicks).not.toHaveBeenCalled();
@@ -241,7 +253,10 @@ describe("LeboncoinNativeDriver home search", () => {
     expect(response).toMatchObject({
       phase: "home-prepared",
       ok: false,
-      error: "A visible cookie consent banner has no supported accept control.",
+      error: {
+        id: "error.nativeInteraction",
+        technicalDetail: "A visible cookie consent banner has no supported accept control.",
+      },
     });
     expect(harness.headerActivations).not.toHaveBeenCalled();
     expect(harness.categoryOptionClicks).not.toHaveBeenCalled();
@@ -301,7 +316,12 @@ describe("LeboncoinNativeDriver home search", () => {
       phase: "home-prepared",
       ok: false,
       applied: [],
-      error: expect.stringMatching(/home search controls did not open|search submit control was not found/iu),
+      error: {
+        id: "error.nativeInteraction",
+        technicalDetail: expect.stringMatching(
+          /home search controls did not open|search submit control was not found/iu,
+        ),
+      },
     });
     expect(harness.recentSearchClicks).not.toHaveBeenCalled();
     expect(harness.submitClicks).not.toHaveBeenCalled();
@@ -1103,7 +1123,10 @@ describe("LeboncoinNativeDriver result filters", () => {
     expect(action.response).toMatchObject({
       phase: "results-applied",
       ok: false,
-      error: "Results filters must be prepared before they can be applied.",
+      error: {
+        id: "error.nativeInteraction",
+        technicalDetail: "Results filters must be prepared before they can be applied.",
+      },
     });
     await action.execute();
     expect(harness.locationOptionClicks).not.toHaveBeenCalled();
@@ -1134,7 +1157,10 @@ describe("LeboncoinNativeDriver result filters", () => {
     expect(response).toMatchObject({
       phase: "results-prepared",
       ok: false,
-      error: expect.stringMatching(error),
+      error: {
+        id: "error.nativeInteraction",
+        technicalDetail: expect.stringMatching(error),
+      },
     });
     expect(harness.categoryTriggerClicks).toHaveBeenCalledOnce();
     expect(harness.categoryOptionClicks).not.toHaveBeenCalled();
@@ -1155,7 +1181,10 @@ describe("LeboncoinNativeDriver result filters", () => {
     expect(response).toMatchObject({
       phase: "results-prepared",
       ok: false,
-      error: 'Location "Paris" is ambiguous; choose a more precise city or department.',
+      error: {
+        id: "error.nativeInteraction",
+        technicalDetail: 'Location "Paris" is ambiguous; choose a more precise city or department.',
+      },
     });
     expect(harness.locationOptionClicks).not.toHaveBeenCalled();
     expect(harness.filterTriggerClicks).not.toHaveBeenCalled();
@@ -1172,7 +1201,10 @@ describe("LeboncoinNativeDriver result filters", () => {
     expect(response).toMatchObject({
       phase: "results-prepared",
       ok: false,
-      error: "The native results filter apply control was not found.",
+      error: {
+        id: "error.nativeInteraction",
+        technicalDetail: "The native results filter apply control was not found.",
+      },
     });
     expect(response.applied.length).toBeGreaterThan(0);
     expect(harness.applyClicks).not.toHaveBeenCalled();
@@ -1261,7 +1293,10 @@ describe("LeboncoinNativeDriver results pagination", () => {
     expect(driver.armNextResultsPage().response).toMatchObject({
       phase: "pagination-advanced",
       ok: false,
-      error: "The native results page was already advanced.",
+      error: {
+        id: "error.nativeInteraction",
+        technicalDetail: "The native results page was already advanced.",
+      },
     });
   });
 
@@ -1284,7 +1319,10 @@ describe("LeboncoinNativeDriver results pagination", () => {
     expect(driver.armNextResultsPage().response).toMatchObject({
       phase: "pagination-advanced",
       ok: false,
-      error: "The current results page has no next page.",
+      error: {
+        id: "error.nativeInteraction",
+        technicalDetail: "The current results page has no next page.",
+      },
     });
   });
 });

@@ -3,7 +3,7 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "env": ["WXT_FILTER_API_URL", "WXT_OUTPUT_DIR"],
+      "env": ["VITE_ENABLE_REALTIME", "WXT_FILTER_API_URL", "WXT_OUTPUT_DIR"],
       "outputs": ["dist/**", ".output/**", ".output-e2e/**"]
     },
     "typecheck": {
