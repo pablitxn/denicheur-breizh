@@ -4,6 +4,7 @@ export const MAX_LISTINGS_PER_REQUEST = 20;
 export const MAX_CRITERIA_PER_RECIPE = 20;
 
 export const MISSING_DATA_FIELDS = [
+  "title",
   "priceEuros",
   "propertyType",
   "rooms",
@@ -50,7 +51,7 @@ export const filterListingInputSchema = z
     url: z.string().trim().url().max(2_048).refine((value) => new URL(value).protocol === "https:", {
       message: "Listing URLs must use HTTPS.",
     }),
-    title: z.string().trim().min(1).max(300),
+    title: optionalText(300),
     priceEuros: nonNegativeNumber(1_000_000_000),
     propertyType: optionalText(120),
     rooms: optionalCount,

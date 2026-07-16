@@ -24,13 +24,14 @@ import {
   recipeValidationError,
 } from "../intelligence/recipe";
 import {
-  buildLeboncoinSearchUrl,
   CATEGORY_OPTIONS,
   createDefaultSearchFilters,
+  MAX_LISTINGS_LIMIT,
   normalizeSearchFilters,
   OWNER_TYPE_OPTIONS,
   PROPERTY_TYPE_OPTIONS,
   SORT_OPTIONS,
+  validateSearchFilters,
 } from "../lib/leboncoinSearch";
 import type {
   IntelligenceCriterion,
@@ -69,12 +70,22 @@ type NumericFilterKey =
 
 const RUNNING_STATUSES = new Set<ScrapeRun["status"]>([
   "opening-search",
+  "configuring-search",
   "collecting-search",
   "collecting-details",
   "evaluating",
-  "paused-captcha",
 ]);
 const MAX_RENDERED_RECORDS = 100;
+const DASHBOARD_RUNNER_LOCK_NAME = "denicheur:crawler:dashboard-runner";
+
+interface DashboardRunnerLockManager {
+  query(): Promise<LockManagerSnapshot>;
+  request<T>(
+    name: string,
+    options: LockOptions,
+    callback: LockGrantedCallback<T>,
+  ): Promise<T>;
+}
 
 export function DashboardApp() {
   const [filters, setFilters] = useState<SearchFilters>(createDefaultSearchFilters);
@@ -82,26 +93,23 @@ export function DashboardApp() {
   const [records, setRecords] = useState<ScrapedPropertyRecord[]>([]);
   const [recipe, setRecipe] = useState<IntelligenceRecipe>(createDefaultIntelligenceRecipe);
   const [recipeDirty, setRecipeDirty] = useState(false);
+  const [hydrated, setHydrated] = useState(false);
   const [decisionFilter, setDecisionFilter] = useState<"all" | ListingEvaluation["decision"]>("all");
   const [error, setError] = useState<string>();
   const runnerRef = useRef<ScrapeRunner | undefined>(undefined);
+  const startPendingRef = useRef(false);
   const reevaluationAbortRef = useRef<AbortController | undefined>(undefined);
   const isRunning = RUNNING_STATUSES.has(run.status);
-  const canResume = run.status === "paused-captcha" && runnerRef.current?.paused;
+  const isRunActive = isRunning || run.status === "paused-captcha";
+  const canControlActiveRun = Boolean(runnerRef.current || reevaluationAbortRef.current);
+  const requiresReset = run.status === "blocked-captcha" || run.status === "blocked-activity";
+  const filterIssues = useMemo(() => validateSearchFilters(filters), [filters]);
   const visibleRecords = useMemo(
     () => records
       .filter((record) => decisionFilter === "all" || record.evaluation?.decision === decisionFilter)
       .slice(0, MAX_RENDERED_RECORDS),
     [decisionFilter, records],
   );
-  const searchUrl = useMemo(() => {
-    try {
-      return buildLeboncoinSearchUrl(filters);
-    } catch {
-      return undefined;
-    }
-  }, [filters]);
-
   useEffect(() => {
     document.documentElement.dataset.theme = "dark";
     document.documentElement.dataset.accent = "sea";
@@ -113,7 +121,10 @@ export function DashboardApp() {
 
     void loadCrawlerState()
       .then(async (snapshot) => {
-        const recoveredRun = (await isOnlyDashboardContext()) ? reconcileInterruptedRun(snapshot.run) : snapshot.run;
+        const hasLiveRunner = await hasLiveDashboardRunner(
+          Boolean(runnerRef.current),
+        );
+        const recoveredRun = reconcileDashboardRun(snapshot.run, hasLiveRunner);
         if (recoveredRun !== snapshot.run) await saveRun(recoveredRun);
         if (!mounted) return;
 
@@ -121,9 +132,13 @@ export function DashboardApp() {
         setRun(recoveredRun);
         setRecords(snapshot.records);
         setRecipe(snapshot.recipe);
+        setHydrated(true);
       })
       .catch((caught) => {
-        if (mounted) setError(caught instanceof Error ? caught.message : String(caught));
+        if (mounted) {
+          setError(caught instanceof Error ? caught.message : String(caught));
+          setHydrated(true);
+        }
       });
 
     const listener = (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => {
@@ -153,6 +168,35 @@ export function DashboardApp() {
       reevaluationAbortRef.current?.abort();
     };
   }, []);
+
+  useEffect(() => {
+    if (run.status !== "paused-captcha" || runnerRef.current) return;
+
+    const abortController = new AbortController();
+    let mounted = true;
+
+    void waitForDashboardRunnerRelease(abortController.signal)
+      .then(async () => {
+        if (!mounted || runnerRef.current) return;
+
+        const snapshot = await loadCrawlerState();
+        const recoveredRun = reconcileDashboardRun(snapshot.run, false);
+        if (recoveredRun === snapshot.run) return;
+
+        await saveRun(recoveredRun);
+        if (mounted) setRun(recoveredRun);
+      })
+      .catch((caught) => {
+        if (mounted && !isAbortError(caught)) {
+          setError(caught instanceof Error ? caught.message : String(caught));
+        }
+      });
+
+    return () => {
+      mounted = false;
+      abortController.abort();
+    };
+  }, [run.status]);
 
   function patchFilters(patch: Partial<SearchFilters>) {
     setFilters((current) => ({ ...current, ...patch }));
@@ -225,28 +269,41 @@ export function DashboardApp() {
 
   async function handleStart(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!hydrated || startPendingRef.current || isRunActive) return;
+    if (requiresReset) {
+      setError("This run stopped for manual review. Clear the run before starting again.");
+      return;
+    }
+    if (filterIssues.length > 0) {
+      setError("Fix the invalid search filters before starting the crawl.");
+      return;
+    }
+    startPendingRef.current = true;
     runnerRef.current?.cancel();
     reevaluationAbortRef.current?.abort();
     setError(undefined);
 
     try {
-      const recipeForRun = await persistRecipeForUse();
-      const normalizedFilters = normalizeSearchFilters({
-        ...filters,
-        collectDetailPages: recipeForRun.enabled ? true : filters.collectDetailPages,
+      await withDashboardRunnerLease(async () => {
+        const recipeForRun = await persistRecipeForUse();
+        const normalizedFilters = normalizeSearchFilters({
+          ...filters,
+          collectDetailPages: recipeForRun.enabled ? true : filters.collectDetailPages,
+        });
+        await saveFilters(normalizedFilters);
+        setFilters(normalizedFilters);
+        const runner = new ScrapeRunner((snapshot) => {
+          setRun(snapshot.run);
+          setRecords(snapshot.records);
+        });
+        runnerRef.current = runner;
+        await runner.run(normalizedFilters, recipeForRun);
       });
-      await saveFilters(normalizedFilters);
-      setFilters(normalizedFilters);
-      const runner = new ScrapeRunner((snapshot) => {
-        setRun(snapshot.run);
-        setRecords(snapshot.records);
-      });
-      runnerRef.current = runner;
-      await runner.run(normalizedFilters, recipeForRun);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
       runnerRef.current = undefined;
+      startPendingRef.current = false;
     }
   }
 
@@ -312,25 +369,15 @@ export function DashboardApp() {
   }
 
   async function handleClear() {
-    if (!window.confirm("Clear all locally stored crawler records?")) return;
+    const prompt = requiresReset
+      ? "This clears stored records and acknowledges the terminal stop. Do not continue while a captcha or restriction is still present. Clear anyway?"
+      : "Clear all locally stored crawler records?";
+    if (!window.confirm(prompt)) return;
     runnerRef.current?.cancel();
     try {
       await clearRecords();
       setRecords([]);
       setRun(IDLE_RUN);
-    } catch (caught) {
-      setError(caught instanceof Error ? caught.message : String(caught));
-    }
-  }
-
-  async function openSearchUrl() {
-    if (!searchUrl) {
-      setError("Search URL is invalid.");
-      return;
-    }
-
-    try {
-      await chrome.tabs.create({ url: searchUrl, active: true });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     }
@@ -356,27 +403,11 @@ export function DashboardApp() {
           <div className="surface-head">
             <div>
               <h2>Search filters</h2>
-              <p>{searchUrl ?? "Invalid search URL"}</p>
+              <p>The extension opens Leboncoin and applies these filters through its native controls.</p>
             </div>
-            <Button type="button" size="sm" variant="ghost" iconOnly onClick={openSearchUrl} aria-label="Open search URL">
-              <ExternalLink size={15} />
-            </Button>
           </div>
 
           <div className="form-grid">
-            <label className="field wide">
-              <SectionLabel>Source URL</SectionLabel>
-              <input
-                className="input"
-                type="url"
-                name="source-url"
-                autoComplete="off"
-                value={filters.rawSearchUrl}
-                onChange={(event) => patchFilters({ rawSearchUrl: event.target.value })}
-                placeholder="https://www.leboncoin.fr/recherche?category=9…"
-              />
-            </label>
-
             <label className="field">
               <SectionLabel>Mode</SectionLabel>
               <Select
@@ -405,14 +436,14 @@ export function DashboardApp() {
             </label>
 
             <label className="field wide">
-              <SectionLabel>Location token</SectionLabel>
+              <SectionLabel>Location</SectionLabel>
               <input
                 className="input"
-                name="location-token"
+                name="location-query"
                 autoComplete="off"
-                value={filters.locationToken}
-                onChange={(event) => patchFilters({ locationToken: event.target.value })}
-                placeholder="Quimper__47.996_-4.102_5000…"
+                value={filters.locationQuery}
+                onChange={(event) => patchFilters({ locationQuery: event.target.value })}
+                placeholder="Finistère, Quimper…"
               />
             </label>
 
@@ -470,7 +501,13 @@ export function DashboardApp() {
               </Select>
             </label>
 
-            <NumberField label="Max listings" value={filters.maxListings} onChange={(value) => patchNumericFilter("maxListings", value)} />
+            <NumberField
+              label="Max listings"
+              value={filters.maxListings}
+              min={1}
+              max={MAX_LISTINGS_LIMIT}
+              onChange={(value) => patchNumericFilter("maxListings", value)}
+            />
 
             <label className="toggle close-toggle">
               <input
@@ -480,24 +517,17 @@ export function DashboardApp() {
                 onChange={(event) => patchFilters({ collectDetailPages: event.target.checked })}
               />
               <span className="track" />
-              <span>Open detail tabs</span>
+              <span>Collect detail pages</span>
             </label>
+            <small className="field wide intelligence-note">
+              Detail pages are opened one at a time in temporary tabs and closed only after successful extraction.
+            </small>
 
             <NumberField label="Delay min sec" value={filters.minDelaySeconds} onChange={(value) => patchNumericFilter("minDelaySeconds", value)} />
             <NumberField label="Delay max sec" value={filters.maxDelaySeconds} onChange={(value) => patchNumericFilter("maxDelaySeconds", value)} />
             <NumberField label="Pause every" value={filters.pauseAfterDetails} onChange={(value) => patchNumericFilter("pauseAfterDetails", value)} />
             <NumberField label="Cooldown sec" value={filters.cooldownSeconds} onChange={(value) => patchNumericFilter("cooldownSeconds", value)} />
 
-            <label className="toggle close-toggle">
-              <input
-                type="checkbox"
-                name="close-detail-tabs"
-                checked={filters.closeDetailTabs}
-                onChange={(event) => patchFilters({ closeDetailTabs: event.target.checked })}
-              />
-              <span className="track" />
-              <span>Close detail tabs</span>
-            </label>
           </div>
 
           <section className="intelligence-panel" aria-labelledby="intelligence-title">
@@ -624,7 +654,7 @@ export function DashboardApp() {
                 size="sm"
                 variant="ghost"
                 onClick={handleReevaluate}
-                disabled={isRunning || !recipe.enabled || records.every((record) => record.status !== "detailed")}
+                disabled={isRunActive || !recipe.enabled || records.every((record) => record.status !== "detailed")}
               >
                 <RefreshCw size={14} />
                 Reevaluate stored
@@ -636,9 +666,25 @@ export function DashboardApp() {
           <div className="guardrail-panel">
             <AlertTriangle size={16} />
             <span>
-              Slow mode is the default. If LeBonCoin shows unusual activity, the run stops and the active tab is left for manual review.
+              Slow mode limits rate and concurrency but cannot guarantee against blocking. The extension accepts an unambiguous cookie banner once, pauses for manual CAPTCHA resolution, and stops permanently on unusual activity.
             </span>
           </div>
+
+          {filterIssues.length > 0 && (
+            <div className="inline-alert" role="alert">
+              <AlertTriangle size={16} />
+              <span>{filterIssues.map((issue) => issue.message).join(" ")}</span>
+            </div>
+          )}
+
+          {run.filterWarnings.length > 0 && (
+            <div className="inline-alert" role="status">
+              <AlertTriangle size={16} />
+              <span>
+                {run.filterWarnings.map((warning) => `${warning.field}: ${warning.message}`).join(" ")}
+              </span>
+            </div>
+          )}
 
           {error && (
             <div className="inline-alert" role="alert">
@@ -648,15 +694,26 @@ export function DashboardApp() {
           )}
 
           <div className="action-row">
-            <Button type="submit" variant="primary" disabled={isRunning}>
+            <Button
+              type="submit"
+              variant="primary"
+              disabled={!hydrated || isRunActive || requiresReset || filterIssues.length > 0}
+            >
               {isRunning ? <LoaderCircle className="spin" size={16} /> : <Play size={16} />}
               Start crawl
             </Button>
-            <Button type="button" variant="default" onClick={handleResume} disabled={!canResume}>
-              <RefreshCw size={16} />
-              Resume
-            </Button>
-            <Button type="button" variant="ghost" onClick={handleCancel} disabled={!isRunning}>
+            {run.status === "paused-captcha" && runnerRef.current && (
+              <Button type="button" variant="primary" onClick={handleResume}>
+                <Play size={16} />
+                Resume
+              </Button>
+            )}
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={handleCancel}
+              disabled={!isRunActive || !canControlActiveRun}
+            >
               <Square size={16} />
               Cancel
             </Button>
@@ -666,6 +723,7 @@ export function DashboardApp() {
         <section className="results-surface">
           <div className="metrics-grid">
             <Metric label="Found" value={run.found} />
+            <Metric label="Pages" value={run.pagesVisited} />
             <Metric label={filters.collectDetailPages ? "Detailed" : "Collected"} value={run.collected} />
             <Metric label="Evaluated" value={run.evaluated} />
             <Metric label="Relevant" value={run.relevant} />
@@ -673,6 +731,13 @@ export function DashboardApp() {
             <Metric label="Review" value={run.review} />
             <Metric label="Stored" value={records.length} />
           </div>
+
+          {run.error && (
+            <div className="inline-alert" role="alert">
+              <AlertTriangle size={16} />
+              <span>{run.error}</span>
+            </div>
+          )}
 
           {run.intelligenceStatus === "failed" && (
             <div className="inline-alert" role="alert">
@@ -697,7 +762,13 @@ export function DashboardApp() {
                 <option value="not-relevant">Not relevant</option>
                 <option value="review">Review</option>
               </Select>
-              <Button type="button" size="sm" variant="danger" onClick={handleClear} disabled={records.length === 0 || isRunning}>
+              <Button
+                type="button"
+                size="sm"
+                variant="danger"
+                onClick={handleClear}
+                disabled={(records.length === 0 && run.status === "idle") || isRunActive}
+              >
                 <Trash2 size={15} />
                 Clear
               </Button>
@@ -729,26 +800,70 @@ export function DashboardApp() {
   );
 }
 
-async function isOnlyDashboardContext(): Promise<boolean> {
+export function reconcileDashboardRun(
+  run: ScrapeRun,
+  hasLiveRunner: boolean,
+  finishedAt?: string,
+): ScrapeRun {
+  return hasLiveRunner ? run : reconcileInterruptedRun(run, finishedAt);
+}
+
+export async function hasLiveDashboardRunner(
+  hasLocalRunner: boolean,
+  lockManager: Pick<DashboardRunnerLockManager, "query"> = navigator.locks,
+): Promise<boolean> {
+  if (hasLocalRunner) return true;
+
   try {
-    const contexts = await chrome.runtime.getContexts({
-      contextTypes: ["TAB"],
-      documentUrls: [chrome.runtime.getURL("dashboard.html")],
-    });
-    return contexts.length <= 1;
+    const snapshot = await lockManager.query();
+    return Boolean(
+      snapshot.held?.some((lock) => lock.name === DASHBOARD_RUNNER_LOCK_NAME),
+    );
   } catch {
     return false;
   }
 }
 
+export async function withDashboardRunnerLease<T>(
+  operation: () => Promise<T>,
+  lockManager: Pick<DashboardRunnerLockManager, "request"> = navigator.locks,
+): Promise<T> {
+  return lockManager.request(
+    DASHBOARD_RUNNER_LOCK_NAME,
+    { ifAvailable: true },
+    async (lock) => {
+      if (!lock) {
+        throw new Error("Another dashboard already owns the crawler run.");
+      }
+      return operation();
+    },
+  );
+}
+
+async function waitForDashboardRunnerRelease(
+  signal: AbortSignal,
+  lockManager: Pick<DashboardRunnerLockManager, "request"> = navigator.locks,
+): Promise<void> {
+  await lockManager.request(
+    DASHBOARD_RUNNER_LOCK_NAME,
+    { mode: "shared", signal },
+    async () => undefined,
+  );
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
 interface NumberFieldProps {
   label: string;
   value?: number;
+  min?: number;
   max?: number;
   onChange: (value: string) => void;
 }
 
-function NumberField({ label, value, max, onChange }: NumberFieldProps) {
+function NumberField({ label, value, min = 0, max, onChange }: NumberFieldProps) {
   return (
     <label className="field">
       <SectionLabel>{label}</SectionLabel>
@@ -758,7 +873,7 @@ function NumberField({ label, value, max, onChange }: NumberFieldProps) {
         name={label.toLowerCase().replace(/\s+/g, "-")}
         autoComplete="off"
         inputMode="numeric"
-        min={0}
+        min={min}
         max={max}
         value={value ?? ""}
         onChange={(event) => onChange(event.target.value)}
@@ -775,7 +890,7 @@ function StatusPill({ run }: StatusPillProps) {
   const tone =
     run.status === "completed"
       ? "good"
-      : run.status === "failed" || run.status === "blocked-activity"
+      : run.status === "failed" || run.status === "blocked-activity" || run.status === "blocked-captcha"
         ? "danger"
         : run.status === "paused-captcha"
           ? "sunset"
@@ -808,26 +923,20 @@ interface PropertyRecordCardProps {
 }
 
 function PropertyRecordCard({ record }: PropertyRecordCardProps) {
+  const imageCount = record.imageUrls?.length ?? (record.imageUrl ? 1 : 0);
+
   return (
     <article className="record-card">
       <div className="record-main">
-        {record.imageUrl ? (
-          <img
-            src={record.imageUrl}
-            alt=""
-            width={96}
-            height={72}
-            loading="lazy"
-            referrerPolicy="no-referrer"
-          />
-        ) : (
-          <div className="image-fallback">
-            <Search size={22} />
-          </div>
-        )}
+        <div
+          className="image-fallback"
+          title={imageCount > 0 ? `${imageCount} image URLs stored without loading them` : "No image URL"}
+        >
+          <Search size={22} />
+        </div>
         <div>
           <div className="record-title-row">
-            <h3>{record.title}</h3>
+            <h3>{record.title ?? "Title unavailable"}</h3>
             <a className="btn sm icon" href={record.listingUrl} target="_blank" rel="noreferrer" aria-label="Open listing">
               <ExternalLink size={14} />
             </a>

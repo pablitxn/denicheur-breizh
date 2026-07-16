@@ -3,7 +3,8 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**", ".output/**"]
+      "env": ["WXT_FILTER_API_URL", "WXT_OUTPUT_DIR"],
+      "outputs": ["dist/**", ".output/**", ".output-e2e/**"]
     },
     "typecheck": {
       "dependsOn": ["^typecheck"],
@@ -16,6 +17,11 @@
     },
     "test:run": {
       "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "test:coverage": {
+      "dependsOn": ["^build"],
+      "cache": false,
       "outputs": []
     },
     "dev": {

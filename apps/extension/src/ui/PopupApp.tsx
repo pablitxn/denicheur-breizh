@@ -46,12 +46,20 @@ export function PopupApp() {
   }, []);
 
   async function openDashboard() {
-    await chrome.tabs.create({ url: chrome.runtime.getURL("dashboard.html"), active: true });
+    const dashboardUrl = chrome.runtime.getURL("dashboard.html");
+    const existing = (await chrome.tabs.query({ url: dashboardUrl }))[0];
+    if (existing?.id !== undefined) {
+      await chrome.tabs.update(existing.id, { active: true });
+      await chrome.windows.update(existing.windowId, { focused: true });
+    } else {
+      await chrome.tabs.create({ url: dashboardUrl, active: true });
+    }
     window.close();
   }
 
   const isBusy =
     run.status === "opening-search" ||
+    run.status === "configuring-search" ||
     run.status === "collecting-search" ||
     run.status === "collecting-details" ||
     run.status === "evaluating";
@@ -67,7 +75,7 @@ export function PopupApp() {
       </header>
 
       <section className="popup-status">
-        <Chip tone={run.status === "paused-captcha" ? "sunset" : run.status === "failed" || run.status === "blocked-activity" ? "danger" : "sea"}>
+        <Chip tone={run.status === "paused-captcha" ? "sunset" : run.status === "failed" || run.status === "blocked-activity" || run.status === "blocked-captcha" ? "danger" : "sea"}>
           {isBusy && <LoaderCircle className="spin" size={13} />}
           {run.status}
         </Chip>

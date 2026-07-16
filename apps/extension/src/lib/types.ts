@@ -7,10 +7,9 @@ export type LeboncoinOrder = "asc" | "desc";
 
 export interface SearchFilters {
   source: SourceSite;
-  rawSearchUrl: string;
   category: LeboncoinCategory;
   text: string;
-  locationToken: string;
+  locationQuery: string;
   propertyTypes: string[];
   ownerType: LeboncoinOwnerType;
   priceMin?: number;
@@ -29,37 +28,49 @@ export interface SearchFilters {
   maxDelaySeconds: number;
   pauseAfterDetails: number;
   cooldownSeconds: number;
-  closeDetailTabs: boolean;
+}
+
+export interface FilterApplicationWarning {
+  field: string;
+  message: string;
 }
 
 export interface SiteChallenge {
   type: "captcha" | "unusual-activity";
   title: string;
   message: string;
+  /** Short, non-sensitive detector evidence suitable for the visible run log. */
+  evidence?: string;
 }
 
 export interface ListingSummary {
   source: SourceSite;
   id: string;
   url: string;
-  title: string;
+  title?: string;
   priceText?: string;
   priceEuros?: number;
   pricePerSquareMeterText?: string;
   propertyType?: string;
   rooms?: number;
+  bedrooms?: number;
   surfaceM2?: number;
   landSurfaceM2?: number;
   location?: string;
   sellerName?: string;
   sellerType?: string;
   postedAt?: string;
+  energyClass?: string;
+  gesClass?: string;
   imageUrl?: string;
+  imageUrls?: string[];
   features: string[];
   rawTextSample: string;
 }
 
 export interface ListingDetail {
+  id?: string;
+  url?: string;
   title?: string;
   priceText?: string;
   priceEuros?: number;
@@ -77,6 +88,7 @@ export interface ListingDetail {
   energyClass?: string;
   gesClass?: string;
   imageUrl?: string;
+  imageUrls?: string[];
   features: string[];
   rawTextSample: string;
 }
@@ -85,7 +97,7 @@ export interface ScrapedPropertyRecord {
   id: string;
   source: SourceSite;
   listingUrl: string;
-  title: string;
+  title?: string;
   priceText?: string;
   priceEuros?: number;
   pricePerSquareMeterText?: string;
@@ -102,6 +114,7 @@ export interface ScrapedPropertyRecord {
   energyClass?: string;
   gesClass?: string;
   imageUrl?: string;
+  imageUrls?: string[];
   features: string[];
   scrapedAt: string;
   searchRunId: string;
@@ -158,9 +171,11 @@ export interface ListingEvaluation {
 export type ScrapeRunStatus =
   | "idle"
   | "opening-search"
+  | "configuring-search"
   | "collecting-search"
   | "collecting-details"
   | "evaluating"
+  | "blocked-captcha"
   | "paused-captcha"
   | "blocked-activity"
   | "completed"
@@ -175,6 +190,7 @@ export interface ScrapeRun {
   searchUrl?: string;
   target: number;
   found: number;
+  pagesVisited: number;
   collected: number;
   currentUrl?: string;
   message?: string;
@@ -185,6 +201,7 @@ export interface ScrapeRun {
   relevant: number;
   notRelevant: number;
   review: number;
+  filterWarnings: FilterApplicationWarning[];
 }
 
 export interface StoredCrawlerState {

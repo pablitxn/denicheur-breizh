@@ -1,4 +1,8 @@
-import { createDefaultSearchFilters, normalizeSearchFilters } from "../lib/leboncoinSearch";
+import {
+  createDefaultSearchFilters,
+  migrateStoredSearchFilters,
+  normalizeSearchFilters,
+} from "../lib/leboncoinSearch";
 import { createDefaultIntelligenceRecipe, normalizeIntelligenceRecipe } from "../intelligence/recipe";
 import { listingIdFromUrl, normalizeListingUrl } from "../lib/leboncoinExtractors";
 import type {
@@ -15,6 +19,7 @@ const RECORDS_KEY = "denicheur:crawler:records";
 const RECIPE_KEY = "denicheur:intelligence:recipe";
 const INTERRUPTIBLE_RUN_STATUSES = new Set<ScrapeRun["status"]>([
   "opening-search",
+  "configuring-search",
   "collecting-search",
   "collecting-details",
   "evaluating",
@@ -26,24 +31,35 @@ export const IDLE_RUN: ScrapeRun = {
   status: "idle",
   target: 20,
   found: 0,
+  pagesVisited: 0,
   collected: 0,
   evaluated: 0,
   relevant: 0,
   notRelevant: 0,
   review: 0,
+  filterWarnings: [],
   intelligenceStatus: "idle",
 };
 
 export async function loadCrawlerState(): Promise<StoredCrawlerState> {
   const values = await getStorage<{
-    [FILTERS_KEY]?: SearchFilters;
+    [FILTERS_KEY]?: unknown;
     [RUN_KEY]?: ScrapeRun;
     [RECORDS_KEY]?: ScrapedPropertyRecord[];
     [RECIPE_KEY]?: IntelligenceRecipe;
   }>([FILTERS_KEY, RUN_KEY, RECORDS_KEY, RECIPE_KEY]);
 
+  const storedFilters = values[FILTERS_KEY];
+  const filters = storedFilters === undefined
+    ? createDefaultSearchFilters()
+    : migrateStoredSearchFilters(storedFilters);
+
+  if (storedFilters !== undefined && needsStoredFilterMigration(storedFilters)) {
+    await setStorage({ [FILTERS_KEY]: filters });
+  }
+
   return {
-    filters: normalizeSearchFilters(values[FILTERS_KEY] ?? createDefaultSearchFilters()),
+    filters,
     recipe: normalizeIntelligenceRecipe(values[RECIPE_KEY] ?? createDefaultIntelligenceRecipe()),
     run: normalizeRun(values[RUN_KEY]),
     records: migrateStoredRecords(values[RECORDS_KEY] ?? []),
@@ -51,7 +67,7 @@ export async function loadCrawlerState(): Promise<StoredCrawlerState> {
 }
 
 export async function saveFilters(filters: SearchFilters): Promise<void> {
-  await setStorage({ [FILTERS_KEY]: filters });
+  await setStorage({ [FILTERS_KEY]: normalizeSearchFilters(filters) });
 }
 
 export async function saveRun(run: ScrapeRun): Promise<void> {
@@ -67,10 +83,10 @@ export function reconcileInterruptedRun(run: ScrapeRun, finishedAt = new Date().
 
   return {
     ...run,
-    status: "failed",
+    status: "cancelled",
     finishedAt,
-    error: "The dashboard closed before the crawl finished.",
-    message: "Previous crawl was interrupted. Start a new crawl to continue.",
+    error: undefined,
+    message: "Previous crawl was cancelled because the dashboard closed.",
     ...(run.intelligenceStatus === "evaluating"
       ? {
           intelligenceStatus: "failed" as const,
@@ -84,7 +100,7 @@ export async function saveCrawlerState(state: Partial<StoredCrawlerState>): Prom
   const patch: Record<string, unknown> = {};
 
   if (state.filters) {
-    patch[FILTERS_KEY] = state.filters;
+    patch[FILTERS_KEY] = normalizeSearchFilters(state.filters);
   }
 
   if (state.recipe) {
@@ -114,12 +130,45 @@ function normalizeRun(run: ScrapeRun | undefined): ScrapeRun {
   return {
     ...IDLE_RUN,
     ...run,
+    pagesVisited: run?.pagesVisited ?? 0,
     evaluated: run?.evaluated ?? 0,
     relevant: run?.relevant ?? 0,
     notRelevant: run?.notRelevant ?? 0,
     review: run?.review ?? 0,
+    filterWarnings: normalizeFilterWarnings(run?.filterWarnings),
     intelligenceStatus: run?.intelligenceStatus ?? "idle",
   };
+}
+
+function needsStoredFilterMigration(value: unknown): boolean {
+  return (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    !("locationQuery" in value) ||
+    "rawSearchUrl" in value ||
+    "locationToken" in value ||
+    "closeDetailTabs" in value
+  );
+}
+
+function normalizeFilterWarnings(value: unknown): ScrapeRun["filterWarnings"] {
+  if (!Array.isArray(value)) return [];
+
+  return value.flatMap((warning) => {
+    if (
+      typeof warning !== "object" ||
+      warning === null ||
+      !("field" in warning) ||
+      !("message" in warning) ||
+      typeof warning.field !== "string" ||
+      typeof warning.message !== "string"
+    ) {
+      return [];
+    }
+
+    return [{ field: warning.field, message: warning.message }];
+  });
 }
 
 export function migrateStoredRecords(records: ScrapedPropertyRecord[]): ScrapedPropertyRecord[] {
@@ -127,19 +176,45 @@ export function migrateStoredRecords(records: ScrapedPropertyRecord[]): ScrapedP
 
   for (const record of records) {
     const canonicalUrl = normalizeListingUrl(record.listingUrl) ?? record.listingUrl;
-    const id = listingIdFromUrl(canonicalUrl);
-    if (byListingId.has(id)) continue;
+    const id = listingIdFromUrl(canonicalUrl) ?? record.id.trim();
+    if (!id) continue;
 
     const evaluation = record.evaluation?.listingId === id ? record.evaluation : undefined;
-    byListingId.set(id, {
+    const candidate: ScrapedPropertyRecord = {
       ...record,
       id,
       listingUrl: canonicalUrl,
       evaluation,
+    };
+    const existing = byListingId.get(id);
+    const preferred = existing ? preferMigratedRecord(existing, candidate) : candidate;
+    const imageUrls = Array.from(new Set([
+      ...(preferred.imageUrls ?? []),
+      ...(preferred.imageUrl ? [preferred.imageUrl] : []),
+    ]));
+    byListingId.set(id, {
+      ...preferred,
+      imageUrl: imageUrls[0],
+      imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
     });
   }
 
   return [...byListingId.values()];
+}
+
+function preferMigratedRecord(
+  existing: ScrapedPropertyRecord,
+  incoming: ScrapedPropertyRecord,
+): ScrapedPropertyRecord {
+  const rank = { failed: 0, listing: 1, detailed: 2 } as const;
+  const existingRank = rank[existing.status];
+  const incomingRank = rank[incoming.status];
+
+  if (incomingRank !== existingRank) {
+    return incomingRank > existingRank ? incoming : existing;
+  }
+
+  return incoming.scrapedAt > existing.scrapedAt ? incoming : existing;
 }
 
 function getStorage<T extends Record<string, unknown>>(keys: string[]): Promise<T> {

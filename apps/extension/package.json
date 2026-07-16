@@ -9,6 +9,7 @@
     "zip": "wxt zip -b chrome",
     "test": "vitest",
     "test:run": "vitest run",
+    "test:coverage": "vitest run --coverage --coverage.include 'src/**/*.ts' --coverage.include 'src/**/*.tsx' --coverage.reporter text-summary --coverage.reportsDirectory ../../coverage/extension",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

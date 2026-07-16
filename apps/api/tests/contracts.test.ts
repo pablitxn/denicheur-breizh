@@ -12,6 +12,16 @@ describe("filterListingsRequestSchema", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts an absent title but still rejects a provided empty title", () => {
+    const withoutTitle = createRequest();
+    withoutTitle.listings[0]!.title = undefined;
+    const emptyTitle = createRequest();
+    emptyTitle.listings[0]!.title = "";
+
+    expect(filterListingsRequestSchema.safeParse(withoutTitle).success).toBe(true);
+    expect(filterListingsRequestSchema.safeParse(emptyTitle).success).toBe(false);
+  });
+
   it("rejects an empty listing batch", () => {
     const request = createRequest();
     request.listings = [];

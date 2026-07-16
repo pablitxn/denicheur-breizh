@@ -108,6 +108,26 @@ describe("intelligence filter API client", () => {
     });
   });
 
+  it("omits an absent title from the API payload instead of fabricating one", async () => {
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        listings: Array<Record<string, unknown>>;
+      };
+      expect(body.listings[0]).not.toHaveProperty("title");
+      return new Response(JSON.stringify(validPayload()), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+
+    await evaluateDetailedRecords("run-1", recipe, [{
+      ...detailedRecord(),
+      title: undefined,
+    }], { fetcher });
+
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
   it("rejects incomplete or mismatched API output", async () => {
     const payload = validPayload("unexpected-id");
     const fetcher = vi.fn(async () => new Response(JSON.stringify(payload), { status: 200 }));

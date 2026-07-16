@@ -9,6 +9,7 @@
     "preview": "vite preview",
     "test": "vitest",
     "test:run": "vitest run",
+    "test:coverage": "vitest run --coverage --coverage.include 'src/**/*.ts' --coverage.include 'src/**/*.tsx' --coverage.reporter text-summary --coverage.reportsDirectory ../../coverage/web",
     "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.node.json --noEmit"
   },
   "dependencies": {

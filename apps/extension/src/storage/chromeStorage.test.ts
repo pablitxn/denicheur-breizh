@@ -33,7 +33,7 @@ beforeEach(() => {
 });
 
 describe("crawler run recovery", () => {
-  it("marks a persisted active run as interrupted", () => {
+  it("cancels a persisted active run when the dashboard closed", () => {
     const run = reconcileInterruptedRun(
       { ...IDLE_RUN, id: "run-1", status: "collecting-details", startedAt: "2026-07-11T10:00:00.000Z" },
       "2026-07-11T10:10:00.000Z",
@@ -41,10 +41,11 @@ describe("crawler run recovery", () => {
 
     expect(run).toMatchObject({
       id: "run-1",
-      status: "failed",
+      status: "cancelled",
       finishedAt: "2026-07-11T10:10:00.000Z",
-      error: "The dashboard closed before the crawl finished.",
+      message: "Previous crawl was cancelled because the dashboard closed.",
     });
+    expect(run.error).toBeUndefined();
   });
 
   it("keeps terminal runs unchanged", () => {
@@ -52,14 +53,36 @@ describe("crawler run recovery", () => {
     expect(reconcileInterruptedRun(completed)).toBe(completed);
   });
 
-  it("marks an interrupted intelligence phase as failed instead of leaving it evaluating", () => {
+  it("does not preserve a paused captcha after the dashboard closes", () => {
+    const recovered = reconcileInterruptedRun(
+      { ...IDLE_RUN, id: "legacy-captcha", status: "paused-captcha" },
+      "2026-07-12T10:10:00.000Z",
+    );
+
+    expect(recovered).toMatchObject({
+      status: "cancelled",
+      finishedAt: "2026-07-12T10:10:00.000Z",
+      message: "Previous crawl was cancelled because the dashboard closed.",
+    });
+  });
+
+  it("treats native search configuration as an interruptible phase", () => {
+    const recovered = reconcileInterruptedRun(
+      { ...IDLE_RUN, id: "native-search", status: "configuring-search" },
+      "2026-07-12T10:10:00.000Z",
+    );
+
+    expect(recovered.status).toBe("cancelled");
+  });
+
+  it("marks interrupted intelligence as failed while cancelling the crawl", () => {
     const recovered = reconcileInterruptedRun(
       { ...IDLE_RUN, id: "run-2", status: "evaluating", intelligenceStatus: "evaluating" },
       "2026-07-12T10:10:00.000Z",
     );
 
     expect(recovered).toMatchObject({
-      status: "failed",
+      status: "cancelled",
       intelligenceStatus: "failed",
       intelligenceError: "The dashboard closed before intelligence evaluation finished.",
     });
@@ -83,8 +106,39 @@ describe("crawler run recovery", () => {
       relevant: 0,
       notRelevant: 0,
       review: 0,
+      filterWarnings: [],
       intelligenceStatus: "idle",
     });
+  });
+
+  it("migrates legacy filters in storage and discards URL-only fields", async () => {
+    storage["denicheur:crawler:filters"] = {
+      source: "leboncoin",
+      rawSearchUrl: "https://www.leboncoin.fr/recherche?category=9",
+      category: "9",
+      text: "maison",
+      locationToken: "Finistère__48.2_-4.0_50000",
+      propertyTypes: ["1"],
+      ownerType: "private",
+      sort: "time",
+      order: "desc",
+      maxListings: 1,
+      collectDetailPages: true,
+      minDelaySeconds: 25,
+      maxDelaySeconds: 55,
+      pauseAfterDetails: 5,
+      cooldownSeconds: 180,
+      closeDetailTabs: true,
+    };
+
+    const state = await loadCrawlerState();
+    const persisted = storage["denicheur:crawler:filters"] as Record<string, unknown>;
+
+    expect(state.filters.locationQuery).toBe("Finistère");
+    expect(persisted.locationQuery).toBe("Finistère");
+    expect(persisted).not.toHaveProperty("rawSearchUrl");
+    expect(persisted).not.toHaveProperty("locationToken");
+    expect(persisted).not.toHaveProperty("closeDetailTabs");
   });
 
   it("persists the normalized recipe under an observed crawler key", async () => {
@@ -131,5 +185,48 @@ describe("crawler run recovery", () => {
     expect(migrated).toHaveLength(2);
     expect(migrated.map((record) => record.id)).toEqual(["3007106066", "3007106077"]);
     expect(migrated[0].listingUrl).toBe("https://www.leboncoin.fr/ad/ventes_immobilieres/3007106066");
+  });
+
+  it("prefers a detailed duplicate without importing fields from its summary", () => {
+    const base = {
+      id: "3007106066",
+      source: "leboncoin" as const,
+      listingUrl: "https://www.leboncoin.fr/ad/ventes_immobilieres/3007106066",
+      scrapedAt: "2026-07-11T10:00:00.000Z",
+      searchRunId: "legacy-run",
+      rawTextSample: "Maison",
+    };
+
+    const migrated = migrateStoredRecords([
+      {
+        ...base,
+        title: "Maison",
+        priceEuros: 300000,
+        features: ["Jardin"],
+        status: "listing",
+      },
+      {
+        ...base,
+        title: undefined,
+        description: "Description détaillée",
+        imageUrls: ["https://img.leboncoin.fr/detail.jpg"],
+        features: ["Garage"],
+        scrapedAt: "2026-07-11T10:05:00.000Z",
+        status: "detailed",
+      },
+    ]);
+
+    expect(migrated).toEqual([
+      expect.objectContaining({
+        id: "3007106066",
+        status: "detailed",
+        title: undefined,
+        description: "Description détaillée",
+        imageUrl: "https://img.leboncoin.fr/detail.jpg",
+        imageUrls: ["https://img.leboncoin.fr/detail.jpg"],
+        features: ["Garage"],
+      }),
+    ]);
+    expect(migrated[0].priceEuros).toBeUndefined();
   });
 });

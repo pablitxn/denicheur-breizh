@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "search": {
+    "pageUrl": "https://www.leboncoin.fr/recherche?category=9",
+    "limit": 20,
+    "duplicateLinkId": "900000000001",
+    "sponsoredPlaceholderPresent": true,
+    "sponsoredDuplicatePresent": false,
+    "excludedIds": ["900000000099"],
+    "listings": [
+      {
+        "source": "leboncoin",
+        "id": "900000000001",
+        "url": "https://www.leboncoin.fr/ad/ventes_immobilieres/900000000001",
+        "title": "Maison, 2 pièces, 61 mètres carrés",
+        "priceText": "184 500 €",
+        "priceEuros": 184500,
+        "pricePerSquareMeterText": "3 025 € par mètres carrés",
+        "propertyType": "Maison",
+        "rooms": 2,
+        "bedrooms": null,
+        "surfaceM2": 61,
+        "landSurfaceM2": 910,
+        "location": "Ville-Fixture 29000 Quartier Exemple",
+        "sellerName": "AGENCE FIXTURE ARMOR",
+        "sellerType": "Vendeur professionnel",
+        "postedAt": null,
+        "energyClass": null,
+        "gesClass": null,
+        "imageUrl": "https://fixtures.invalid/leboncoin/search-primary-photo-1.jpg",
+        "imageUrls": [
+          "https://fixtures.invalid/leboncoin/search-primary-photo-1.jpg",
+          "https://fixtures.invalid/leboncoin/search-primary-photo-2.jpg"
+        ],
+        "features": []
+      },
+      {
+        "source": "leboncoin",
+        "id": "900000000002",
+        "url": "https://www.leboncoin.fr/ad/ventes_immobilieres/900000000002",
+        "title": "Terrain",
+        "priceText": "68 000 €",
+        "priceEuros": 68000,
+        "pricePerSquareMeterText": null,
+        "propertyType": "Terrain",
+        "rooms": null,
+        "bedrooms": null,
+        "surfaceM2": null,
+        "landSurfaceM2": 512,
+        "location": "Port-Fixture 29100",
+        "sellerName": null,
+        "sellerType": "Vendeur professionnel",
+        "postedAt": "hier à 21:17",
+        "energyClass": null,
+        "gesClass": null,
+        "imageUrl": null,
+        "imageUrls": null,
+        "features": ["Neuf"]
+      }
+    ]
+  },
+  "detail": {
+    "pageUrl": "https://www.leboncoin.fr/ad/ventes_immobilieres/900000000001",
+    "listing": {
+      "id": "900000000001",
+      "url": "https://www.leboncoin.fr/ad/ventes_immobilieres/900000000001",
+      "title": "Maison 2 pièces 61 m²",
+      "priceText": "184 500 €",
+      "priceEuros": 184500,
+      "pricePerSquareMeterText": "3 025 € par mètres carrés",
+      "propertyType": "Maison",
+      "rooms": 2,
+      "bedrooms": 2,
+      "surfaceM2": 61,
+      "landSurfaceM2": 910,
+      "location": "Ville-Fixture 29000 · Quartier Exemple",
+      "sellerName": "AGENCE FIXTURE ARMOR",
+      "sellerType": "Pro",
+      "postedAt": "12 juin 2026 à 18:42",
+      "description": "Maison 2 pièces 61 m². Bien en pierre à rénover entièrement, offrant plusieurs possibilités d’aménagement. La surface au sol est de 61 m² avec grenier. Un terrain non attenant de 910 m² se trouve en face. Travaux importants à prévoir et réseaux absents. Référence agence : REF-001.",
+      "energyClass": null,
+      "gesClass": null,
+      "imageUrl": "https://fixtures.invalid/leboncoin/detail-1.jpg",
+      "imageUrls": [
+        "https://fixtures.invalid/leboncoin/detail-1.jpg",
+        "https://fixtures.invalid/leboncoin/detail-2.jpg"
+      ],
+      "features": ["Jardin"]
+    }
+  }
+}

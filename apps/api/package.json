@@ -9,6 +9,7 @@
     "start": "node --env-file-if-exists=../../.env --env-file-if-exists=.env dist/server.js",
     "test": "vitest",
     "test:run": "vitest run",
+    "test:coverage": "vitest run --coverage --coverage.include 'src/**/*.ts' --coverage.reporter text-summary --coverage.reportsDirectory ../../coverage/api",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit"
   },
   "dependencies": {

@@ -9,7 +9,7 @@ const DEFAULT_FILTER_API_URL = "http://127.0.0.1:4310";
 interface FilterListingInput {
   id: string;
   url: string;
-  title: string;
+  title?: string;
   priceEuros?: number;
   propertyType?: string;
   rooms?: number;
@@ -149,7 +149,7 @@ function toFilterListingInput(record: ScrapedPropertyRecord): FilterListingInput
   return {
     id,
     url,
-    title: truncate(record.title, 300),
+    title: optionalTruncate(record.title, 300),
     priceEuros: record.priceEuros,
     propertyType: optionalTruncate(record.propertyType, 120),
     rooms: record.rooms,

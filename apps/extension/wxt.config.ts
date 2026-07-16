@@ -1,8 +1,11 @@
+import { env } from "node:process";
+
 import { defineConfig } from "wxt";
 
 export default defineConfig({
   browser: "chrome",
   manifestVersion: 3,
+  outDir: env.WXT_OUTPUT_DIR ?? ".output",
   modules: ["@wxt-dev/module-react"],
   manifest: {
     key: "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAuFcnz7Nr0VcF3Do+LuucBnnowhfT2835oocq7jJYyp7Y29y7WzfLIqczNmYXVQCsJSHUPt/+ysfLBJXs2d88W4Uhg6TKj0q+Yhva8CoLJtVUet2PkGrC9Sey3Nh9LfIjCImuRFtsre3LEf9jznbG4cubXHOg5tQ+cejdjLaN56WBkuuQheFLB5Z9czygefdQBLkUq5yFvKpKNEMFx0cJeqtW1V1Ds6rcimDFeCOuWMmkYcam+AqAe2dDlTqicZSGHDhOEycSKuWSV/Y/L48phhvSKmpxShDWjfte030/rrYI99s0TwJoRkH5y/Enasfi+AwSo6r7BsT8eqyi9BalHwIDAQAB",

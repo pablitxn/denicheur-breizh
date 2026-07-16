@@ -1,12 +1,16 @@
 node_modules
+.pnpm-store
 dist
 .turbo
 .output
+.output-e2e
 .wxt
 .env
 .env.*
 !.env.example
 .DS_Store
 coverage
+playwright-report
+test-results
 *.tsbuildinfo
 .playwright-mcp

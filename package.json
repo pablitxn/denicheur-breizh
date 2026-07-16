@@ -10,14 +10,25 @@
   "scripts": {
     "dev": "turbo run dev --filter=@denicheur-breizh/web",
     "build": "turbo run build",
+    "build:e2e": "WXT_OUTPUT_DIR=.output-e2e WXT_FILTER_API_URL=http://127.0.0.1:14310 turbo run build",
     "preview": "turbo run preview --filter=@denicheur-breizh/web",
     "test": "turbo run test",
     "test:run": "turbo run test:run",
-    "typecheck": "turbo run typecheck",
+    "test:coverage": "turbo run test:coverage",
+    "test:e2e": "pnpm build:e2e && playwright test --grep-invert @live",
+    "test:e2e:live": "pnpm build:e2e && RUN_LIVE_OPENAI_E2E=1 playwright test --grep @live",
+    "typecheck": "turbo run typecheck && pnpm typecheck:e2e",
+    "typecheck:e2e": "tsc -p tests/e2e/tsconfig.json --noEmit",
     "check": "pnpm typecheck && pnpm test:run && pnpm build",
+    "check:all": "pnpm check && pnpm test:e2e",
     "audit:prod": "pnpm audit --prod --audit-level=high"
   },
   "devDependencies": {
-    "turbo": "^2.10.4"
+    "@playwright/test": "^1.61.1",
+    "@types/chrome": "^0.1.43",
+    "@types/node": "^24.13.3",
+    "@vitest/coverage-v8": "^4.1.10",
+    "turbo": "^2.10.4",
+    "typescript": "~5.9.3"
   }
 }

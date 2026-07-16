@@ -1,83 +1,65 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildLeboncoinSearchUrl,
   clampMaxListings,
   createDefaultSearchFilters,
+  isLeboncoinSearchUrl,
+  isLeboncoinUrl,
+  migrateStoredSearchFilters,
   normalizeSearchFilters,
+  validateSearchFilters,
 } from "./leboncoinSearch";
 
-describe("leboncoin search URL builder", () => {
-  it("builds a search URL from structured real-estate filters", () => {
-    const filters = {
+describe("leboncoin search filters", () => {
+  it("defaults to native-search inputs and conservative pacing", () => {
+    const filters = createDefaultSearchFilters();
+
+    expect(filters).toMatchObject({
+      source: "leboncoin",
+      category: "9",
+      locationQuery: "",
+      maxListings: 20,
+      collectDetailPages: false,
+      minDelaySeconds: 25,
+      maxDelaySeconds: 55,
+    });
+    expect(filters).not.toHaveProperty("rawSearchUrl");
+    expect(filters).not.toHaveProperty("locationToken");
+    expect(filters).not.toHaveProperty("closeDetailTabs");
+  });
+
+  it("migrates the human-readable prefix of a legacy location token", () => {
+    const filters = migrateStoredSearchFilters({
       ...createDefaultSearchFilters(),
-      text: "maison vue mer",
+      locationQuery: undefined,
+      locationToken: " Quimper __47.996_-4.102_5000",
+      rawSearchUrl: "https://www.leboncoin.fr/recherche?category=10",
+      closeDetailTabs: true,
+      category: "10",
+    });
+
+    expect(filters.locationQuery).toBe("Quimper");
+    expect(filters.category).toBe("10");
+    expect(filters).not.toHaveProperty("rawSearchUrl");
+    expect(filters).not.toHaveProperty("locationToken");
+    expect(filters).not.toHaveProperty("closeDetailTabs");
+  });
+
+  it("preserves an explicit native location query instead of the legacy token", () => {
+    const filters = migrateStoredSearchFilters({
+      locationQuery: "Finistère",
       locationToken: "Quimper__47.996_-4.102_5000",
-      priceMin: 150000,
-      priceMax: 350000,
-      roomsMin: 4,
-      squareMin: 90,
-      ownerType: "private" as const,
-    };
+    });
 
-    const url = new URL(buildLeboncoinSearchUrl(filters));
-
-    expect(url.origin).toBe("https://www.leboncoin.fr");
-    expect(url.pathname).toBe("/recherche");
-    expect(url.searchParams.get("category")).toBe("9");
-    expect(url.searchParams.get("text")).toBe("maison vue mer");
-    expect(url.searchParams.get("locations")).toBe("Quimper__47.996_-4.102_5000");
-    expect(url.searchParams.get("real_estate_type")).toBe("1,2");
-    expect(url.searchParams.get("price")).toBe("150000-350000");
-    expect(url.searchParams.get("rooms")).toBe("4-max");
-    expect(url.searchParams.get("square")).toBe("90-max");
-    expect(url.searchParams.get("owner_type")).toBe("private");
+    expect(filters.locationQuery).toBe("Finistère");
   });
 
-  it("keeps a leboncoin raw search URL intact", () => {
-    const filters = {
-      ...createDefaultSearchFilters(),
-      rawSearchUrl: "https://www.leboncoin.fr/recherche?category=10&price=800-1200",
-    };
-
-    expect(buildLeboncoinSearchUrl(filters)).toBe(
-      "https://www.leboncoin.fr/recherche?category=10&price=800-1200",
-    );
-  });
-
-  it("rejects raw URLs outside leboncoin", () => {
-    expect(() =>
-      buildLeboncoinSearchUrl({
-        ...createDefaultSearchFilters(),
-        rawSearchUrl: "https://example.com/recherche?category=9",
-      }),
-    ).toThrow("Search URL must be an HTTPS leboncoin.fr search URL.");
-  });
-
-  it("rejects insecure, unsupported-host and non-search raw URLs", () => {
-    for (const rawSearchUrl of [
-      "http://www.leboncoin.fr/recherche?category=9",
-      "https://preview.leboncoin.fr/recherche?category=9",
-      "https://www.leboncoin.fr/ad/ventes_immobilieres/3007106066",
-    ]) {
-      expect(() => buildLeboncoinSearchUrl({ ...createDefaultSearchFilters(), rawSearchUrl })).toThrow(
-        "Search URL must be an HTTPS leboncoin.fr search URL.",
-      );
-    }
-  });
-
-  it("defaults the PoC scrape limit to 20 and clamps high values", () => {
-    expect(createDefaultSearchFilters().maxListings).toBe(20);
-    expect(createDefaultSearchFilters().collectDetailPages).toBe(false);
-    expect(createDefaultSearchFilters().minDelaySeconds).toBe(25);
-    expect(createDefaultSearchFilters().maxDelaySeconds).toBe(55);
-    expect(clampMaxListings(undefined)).toBe(20);
-    expect(clampMaxListings(250)).toBe(20);
-    expect(clampMaxListings(0)).toBe(1);
-  });
-
-  it("normalizes pacing settings conservatively", () => {
+  it("normalizes stored enums, ranges and pacing without retaining unknown fields", () => {
     const filters = normalizeSearchFilters({
-      ...createDefaultSearchFilters(),
+      category: "invalid",
+      propertyTypes: ["2", "2", "99"],
+      ownerType: "invalid",
+      priceMin: -1,
+      priceMax: 120_000.9,
       maxListings: 250,
       minDelaySeconds: 1,
       maxDelaySeconds: 2,
@@ -85,10 +67,96 @@ describe("leboncoin search URL builder", () => {
       cooldownSeconds: 5,
     });
 
-    expect(filters.maxListings).toBe(20);
-    expect(filters.minDelaySeconds).toBe(5);
-    expect(filters.maxDelaySeconds).toBe(5);
-    expect(filters.pauseAfterDetails).toBe(20);
-    expect(filters.cooldownSeconds).toBe(30);
+    expect(filters).toMatchObject({
+      category: "9",
+      propertyTypes: ["2"],
+      ownerType: "all",
+      priceMax: 120_000,
+      maxListings: 100,
+      minDelaySeconds: 5,
+      maxDelaySeconds: 5,
+      pauseAfterDetails: 20,
+      cooldownSeconds: 30,
+    });
+    expect(filters.priceMin).toBeUndefined();
+  });
+
+  it("clamps the crawl limit", () => {
+    expect(clampMaxListings(undefined)).toBe(20);
+    expect(clampMaxListings(250)).toBe(100);
+    expect(clampMaxListings(0)).toBe(1);
+  });
+
+  it("accepts valid ranges including a zero lower bound", () => {
+    const issues = validateSearchFilters({
+      ...createDefaultSearchFilters(),
+      priceMin: 0,
+      priceMax: 120_000,
+      roomsMin: 2,
+      roomsMax: 3,
+    });
+
+    expect(issues).toEqual([]);
+  });
+
+  it("reports invalid and reversed native ranges by field", () => {
+    const issues = validateSearchFilters({
+      ...createDefaultSearchFilters(),
+      priceMin: 200_000,
+      priceMax: 120_000,
+      roomsMin: 0,
+      bedroomsMax: 9,
+      squareMin: 90,
+      squareMax: 50,
+    });
+
+    expect(issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "priceMax", message: expect.stringContaining("Price maximum") }),
+      expect.objectContaining({ field: "roomsMin", message: expect.stringContaining("between 1 and 8") }),
+      expect.objectContaining({ field: "bedroomsMax", message: expect.stringContaining("between 1 and 8") }),
+      expect.objectContaining({ field: "squareMax", message: expect.stringContaining("Surface maximum") }),
+    ]));
+  });
+
+  it("reports out-of-bounds pacing and a reversed delay interval", () => {
+    const issues = validateSearchFilters({
+      ...createDefaultSearchFilters(),
+      maxListings: 101,
+      minDelaySeconds: 60,
+      maxDelaySeconds: 30,
+      pauseAfterDetails: 0,
+      cooldownSeconds: 1_801,
+    });
+
+    expect(issues.map((issue) => issue.field)).toEqual([
+      "maxListings",
+      "pauseAfterDetails",
+      "cooldownSeconds",
+      "maxDelaySeconds",
+    ]);
+  });
+});
+
+describe("leboncoin observed URL validation", () => {
+  it("accepts canonical HTTPS origins and the search path", () => {
+    expect(isLeboncoinUrl(new URL("https://leboncoin.fr/"))).toBe(true);
+    expect(isLeboncoinSearchUrl(new URL("https://www.leboncoin.fr/recherche?category=9"))).toBe(true);
+  });
+
+  it("rejects insecure, credentialed, ported, unsupported and non-search URLs", () => {
+    for (const value of [
+      "http://www.leboncoin.fr/recherche?category=9",
+      "https://preview.leboncoin.fr/recherche?category=9",
+      "https://user:password@www.leboncoin.fr/recherche?category=9",
+      "https://www.leboncoin.fr:444/recherche?category=9",
+    ]) {
+      expect(isLeboncoinUrl(new URL(value))).toBe(false);
+    }
+
+    expect(
+      isLeboncoinSearchUrl(
+        new URL("https://www.leboncoin.fr/ad/ventes_immobilieres/3007106066"),
+      ),
+    ).toBe(false);
   });
 });

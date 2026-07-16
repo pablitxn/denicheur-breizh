@@ -82,4 +82,13 @@ describe("buildFilterResponse", () => {
       "gesClass",
     ]);
   });
+
+  it("reports an absent title instead of requiring a fabricated placeholder", () => {
+    const request = createRequest();
+    request.listings[0]!.title = undefined;
+
+    const response = buildFilterResponse(request, createModelBatch(request), "gpt-fixed", "1.0.0", EVALUATED_AT);
+
+    expect(response.results[0]!.missingData).toContain("title");
+  });
 });

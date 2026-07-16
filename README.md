@@ -36,26 +36,75 @@ The optional `Voix` / `Voz` experiment starts a minimal WebRTC voice translator 
 ## Checks
 
 ```bash
-pnpm typecheck
-pnpm test:run
-pnpm build
+pnpm check          # types + unit/integration tests + production builds
+pnpm test:e2e       # web + extension in bundled Chromium, no OpenAI spend
+pnpm test:coverage  # per-app Vitest coverage summaries
+pnpm check:all      # deterministic gate: check + E2E
+```
+
+The opt-in live test exercises the complete extension → content script → local
+API → OpenAI → Chrome storage path. It reads the existing ignored root `.env`
+and makes a real API request:
+
+```bash
+pnpm test:e2e:live
 ```
 
 ## Chrome extension PoC
 
 The extension lives in `apps/extension` and writes crawler state to `chrome.storage.local`.
 
+For a stable manual smoke test, build once and load the production directory:
+
+```bash
+pnpm --filter @denicheur-breizh/extension build
+```
+
+In `chrome://extensions`, enable Developer mode, choose **Load unpacked**, and
+select `apps/extension/.output/chrome-mv3`. This build carries the pinned
+extension ID expected by the local API and does not require a WXT watcher.
+
+For active extension development instead, keep the following command running
+and load `apps/extension/.output/chrome-mv3-dev` only after it has regenerated:
+
 ```bash
 pnpm --filter @denicheur-breizh/extension dev
 ```
 
-Load the unpacked extension from `apps/extension/.output/chrome-mv3-dev`. The dashboard accepts structured LeBonCoin filters or a raw LeBonCoin search URL and collects up to 20 listings by default. It runs in slow mode, skips detail tabs unless explicitly enabled, pauses on CAPTCHA/DataDome screens, and stops on unusual-activity blocks so the session can be reviewed manually.
+The dashboard accepts native search filters instead of a copied Leboncoin URL.
+Each run creates and focuses its own home tab, completes the visible site form,
+submits the search once, applies the remaining filters on the results page, and
+uses the native pagination control until it reaches the requested cap (up to
+100 unique listings) or the site exposes no next page. Every observed page is
+checkpointed and cross-page duplicates are removed before details are opened.
+It opens detail pages sequentially in temporary tabs when **Collect detail pages**
+is enabled. Existing Leboncoin tabs are never reused or modified. The extension
+may accept one unambiguous cookie banner, but it does not bypass access controls.
+
+The crawler deliberately limits action and typing speed, waits between detail
+pages, and avoids concurrent extraction. This pacing is not a guarantee against
+restrictions. Optional filters that are unavailable in the current Leboncoin UI
+are reported as warnings and do not stop the run. A captcha pauses the run on
+the affected tab until the user solves it manually and explicitly chooses
+**Resume** in the dashboard. DataDome, temporary-restriction, and
+unusual-activity screens produce a terminal `blocked-activity` state with no
+reload or automatic retry.
+
+For any live smoke test, do not pre-open, construct, or navigate Leboncoin tabs;
+the extension owns its home, search, and detail tabs for the run. Do not reload
+a restriction or switch profiles/networks to work around it. The conservative
+one-listing Computer Use procedure is documented in
+[`tests/manual/leboncoin-one-listing-smoke.md`](tests/manual/leboncoin-one-listing-smoke.md).
+The long, multipage acceptance procedure is documented in
+[`tests/manual/leboncoin-seventy-listing-smoke.md`](tests/manual/leboncoin-seventy-listing-smoke.md).
 
 ## Intelligent listing filter
 
-The extension can send up to 20 detailed listings to a local Express API, which
-evaluates structured personal criteria through OpenAI. The API key remains in the
-server environment and is never bundled with the extension.
+The extension can collect up to 100 listings and sends detailed records to the
+local Express API in sequential batches of at most 20. The API evaluates
+structured personal criteria through OpenAI. Intelligence remains a
+backend-only capability: the API key stays in the server environment and is
+never bundled with the extension.
 
 ```bash
 # OPENAI_API_KEY is read from the ignored workspace .env
