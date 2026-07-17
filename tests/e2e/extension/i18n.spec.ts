@@ -21,7 +21,7 @@ test.describe("Denicheur MV3 interface locales", () => {
 
     await expect(popup.locator("html")).toHaveAttribute("lang", "fr-FR");
     await expect(dashboard.locator("html")).toHaveAttribute("lang", "fr-FR");
-    await expect(popup.getByRole("button", { name: "Ouvrir le crawler" })).toBeVisible();
+    await expect(popup.getByRole("button", { name: "Ouvrir le tableau de bord" })).toBeVisible();
     await expect(dashboard.getByRole("heading", { name: "Filtres de recherche" })).toBeVisible();
     await expectNoHorizontalOverflow(popup);
     await expectKeyboardFocusOnFirstLocaleControl(
@@ -32,7 +32,7 @@ test.describe("Denicheur MV3 interface locales", () => {
     await popup.getByRole("button", { name: /Español/u }).click();
     await expect(popup.locator("html")).toHaveAttribute("lang", "es-ES");
     await expect(dashboard.locator("html")).toHaveAttribute("lang", "es-ES");
-    await expect(popup.getByRole("button", { name: "Abrir crawler" })).toBeVisible();
+    await expect(popup.getByRole("button", { name: "Abrir panel" })).toBeVisible();
     await expect(dashboard.getByRole("heading", { name: "Filtros de búsqueda" })).toBeVisible();
     await expectNoHorizontalOverflow(popup);
     await popup.reload();
@@ -45,7 +45,7 @@ test.describe("Denicheur MV3 interface locales", () => {
     await dashboard.getByRole("button", { name: /English/u }).click();
     await expect(popup.locator("html")).toHaveAttribute("lang", "en-GB");
     await expect(dashboard.locator("html")).toHaveAttribute("lang", "en-GB");
-    await expect(popup.getByRole("button", { name: "Open crawler" })).toBeVisible();
+    await expect(popup.getByRole("button", { name: "Open dashboard" })).toBeVisible();
     await expect(dashboard.getByRole("heading", { name: "Search filters" })).toBeVisible();
     await expectNoHorizontalOverflow(popup);
     await popup.reload();
@@ -65,7 +65,7 @@ test.describe("Denicheur MV3 interface locales", () => {
     await reopenedPopup.setViewportSize({ width: 360, height: 640 });
     await reopenedPopup.goto(extensionUrl(extensionId, "popup.html"));
     await expect(reopenedPopup.locator("html")).toHaveAttribute("lang", "en-GB");
-    await expect(reopenedPopup.getByRole("button", { name: "Open crawler" })).toBeVisible();
+    await expect(reopenedPopup.getByRole("button", { name: "Open dashboard" })).toBeVisible();
     await expectNoHorizontalOverflow(reopenedPopup);
 
     const packaged = await reopenedPopup.evaluate(async () => {

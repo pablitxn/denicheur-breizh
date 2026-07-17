@@ -135,7 +135,7 @@ const scoringCopies: Record<LocaleCode, Record<ScoringMetric["id"], ScoringCopy>
     },
     weekend: {
       group: "Composite",
-      name: "Weekend retreat",
+      name: "Escapade week-end",
       short: "Score composite pour résidence secondaire en Bretagne nord.",
       formula: "0.35 x côte + 0.25 x calme + 0.20 x valeur + 0.10 x TER + 0.10 x DPE",
       inputs: ["Accès littoral", "Calme", "Valeur", "Mobilité", "DPE"],
@@ -279,7 +279,7 @@ const scoringCopies: Record<LocaleCode, Record<ScoringMetric["id"], ScoringCopy>
 const recipeCopies: Record<LocaleCode, Record<string, Pick<ScoringRecipe, "name" | "description">>> = {
   fr: {
     weekend: {
-      name: "Weekend retreat",
+      name: "Escapade week-end",
       description: "Résidence secondaire, accès mer rapide, calme la nuit, prix défendable.",
     },
     family: {
@@ -291,7 +291,7 @@ const recipeCopies: Record<LocaleCode, Record<string, Pick<ScoringRecipe, "name"
       description: "Rendement potentiel, transport et sous-valorisation locale.",
     },
     draft: {
-      name: "Weekend retreat",
+      name: "Escapade week-end",
       description: "Résidence secondaire, accès mer rapide, calme la nuit, prix défendable.",
     },
   },

@@ -47,22 +47,29 @@ function applyPropertyFilters(source: PropertyListing[], filters?: Partial<Prope
   }
 
   return source.filter((property) => {
-    const providerMatch = !filters.providers?.length || filters.providers.includes(property.provider);
+    const providerMatch = filters.providers === undefined || filters.providers.includes(property.provider);
+    const propertyTypeMatch =
+      filters.propertyTypes === undefined || filters.propertyTypes.includes(property.propertyType);
     const priceMatch =
       (filters.priceMin === undefined || property.price >= filters.priceMin) &&
       (filters.priceMax === undefined || property.price <= filters.priceMax);
     const surfaceMatch = filters.surfaceMin === undefined || property.surfaceM2 >= filters.surfaceMin;
     const dpeMatch = filters.dpeMax === undefined || property.dpe <= filters.dpeMax;
 
-    return providerMatch && priceMatch && surfaceMatch && dpeMatch;
+    return providerMatch && propertyTypeMatch && priceMatch && surfaceMatch && dpeMatch;
   });
 }
 
 export const denicheurApi = {
   async listProperties(filters?: Partial<PropertyFilters>, signal?: AbortSignal): Promise<PropertyListing[]> {
+    if (filters?.providers?.length === 0 || filters?.propertyTypes?.length === 0) {
+      return [];
+    }
+
     if (API_BASE_URL) {
       const params = new URLSearchParams();
       filters?.providers?.forEach((provider) => params.append("provider", provider));
+      filters?.propertyTypes?.forEach((propertyType) => params.append("propertyType", propertyType));
       if (filters?.priceMin !== undefined) params.set("priceMin", String(filters.priceMin));
       if (filters?.priceMax !== undefined) params.set("priceMax", String(filters.priceMax));
       if (filters?.surfaceMin !== undefined) params.set("surfaceMin", String(filters.surfaceMin));

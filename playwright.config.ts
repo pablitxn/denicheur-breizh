@@ -6,7 +6,7 @@ const runLiveOpenAi = process.env.RUN_LIVE_OPENAI_E2E === "1";
 const apiServer = {
   command: "FILTER_API_PORT=14310 pnpm --filter @denicheur-breizh/api start",
   url: "http://127.0.0.1:14310/health",
-  reuseExistingServer: false,
+  reuseExistingServer: !isCi,
   timeout: 30_000,
   stdout: "pipe" as const,
   stderr: "pipe" as const,
@@ -15,7 +15,7 @@ const apiServer = {
 const webServer = {
   command: "pnpm --filter @denicheur-breizh/web exec vite preview --host 127.0.0.1 --port 14173",
   url: "http://127.0.0.1:14173",
-  reuseExistingServer: false,
+  reuseExistingServer: !isCi,
   timeout: 30_000,
   stdout: "pipe" as const,
   stderr: "pipe" as const,

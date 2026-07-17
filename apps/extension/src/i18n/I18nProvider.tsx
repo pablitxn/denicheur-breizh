@@ -52,11 +52,16 @@ const ExtensionI18nContext = createContext<ExtensionI18nContextValue | undefined
 
 interface ExtensionI18nProviderProps {
   surface: ExtensionSurface;
+  initialLocale?: LocaleCode;
   children: ReactNode;
 }
 
-export function ExtensionI18nProvider({ surface, children }: ExtensionI18nProviderProps) {
-  const [locale, setLocaleState] = useState<LocaleCode>(() => detectBrowserLocale());
+export function ExtensionI18nProvider({
+  surface,
+  initialLocale,
+  children,
+}: ExtensionI18nProviderProps) {
+  const [locale, setLocaleState] = useState<LocaleCode>(() => initialLocale ?? detectBrowserLocale());
 
   useEffect(() => {
     let mounted = true;
@@ -92,9 +97,13 @@ export function ExtensionI18nProvider({ surface, children }: ExtensionI18nProvid
       ? "meta.dashboardDescription"
       : "meta.popupDescription";
     document.documentElement.lang = LOCALE_METADATA[locale].bcp47;
-    document.documentElement.dataset.theme = "dark";
     document.documentElement.dataset.accent = "sea";
-    document.documentElement.dataset.density = "compact";
+    document.documentElement.dataset.surface = surface;
+    if (surface === "popup") {
+      document.documentElement.dataset.density = "compact";
+    } else {
+      delete document.documentElement.dataset.density;
+    }
     document.title = t(titleId);
     document.querySelector<HTMLMetaElement>('meta[name="description"]')?.setAttribute(
       "content",

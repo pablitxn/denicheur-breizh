@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="fr-FR">
+<html lang="fr-FR" data-theme="dark" data-accent="lavender" data-density="comfortable">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -7,7 +7,29 @@
       name="description"
       content="Espace de décision immobilière pour comparer les biens, les zones et les scorings en Bretagne."
     />
-    <meta name="theme-color" content="#120e1c" />
+    <meta name="theme-color" content="#17141f" />
+    <script>
+      (() => {
+        const root = document.documentElement;
+        let theme = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+
+        try {
+          const persisted = JSON.parse(window.localStorage.getItem("denicheur:workspace") || "null");
+          const state = persisted && typeof persisted === "object" ? persisted.state : null;
+          if (state?.theme === "light" || state?.theme === "dark") theme = state.theme;
+          if (["lavender", "sunset", "sea"].includes(state?.accent)) root.dataset.accent = state.accent;
+          if (["comfortable", "compact"].includes(state?.density)) root.dataset.density = state.density;
+        } catch {
+          // Storage can be unavailable in hardened browsing modes; system preference remains the fallback.
+        }
+
+        root.dataset.theme = theme;
+        document.querySelector('meta[name="theme-color"]')?.setAttribute(
+          "content",
+          theme === "light" ? "#fbfaf7" : "#17141f",
+        );
+      })();
+    </script>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <title>dénicheur·breizh — Décision immobilière en Bretagne</title>
   </head>

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo } from "react";
 import {
   BatteryCharging,
   ChartNoAxesCombined,
@@ -11,11 +11,12 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { useScorings } from "../../api/hooks";
-import { Chip, EmptyState, SectionLabel, ScoreBadge } from "@denicheur-breizh/design-system";
+import { Button, Chip, EmptyState, SectionLabel, ScoreBadge } from "@denicheur-breizh/design-system";
 import { localizeScoring, localizeScoringGroup } from "../../intl/domain";
 import { useAppIntl } from "../../intl/IntlContext";
 import type { ScoringMetric } from "../../types";
 import { formatDecimal } from "../../utils/format";
+import { stringUrlCodec, useUrlState } from "../../utils/useUrlState";
 import styles from "./ScoringsView.module.css";
 
 const iconMap: Record<string, LucideIcon> = {
@@ -31,22 +32,38 @@ const iconMap: Record<string, LucideIcon> = {
 
 export function ScoringsView() {
   const { locale, t } = useAppIntl();
-  const { data: scorings = [], isLoading, error } = useScorings();
-  const [group, setGroup] = useState("all");
-  const [activeId, setActiveId] = useState("coast");
+  const { data: scorings = [], isLoading, error, refetch } = useScorings();
+  const [requestedGroup, setGroup] = useUrlState("sgroup", "all", {
+    ...stringUrlCodec,
+    isDefault: (value) => value === "all",
+  });
+  const [activeId, setActiveId] = useUrlState("sid", "coast", {
+    ...stringUrlCodec,
+    isDefault: (value) => value === "coast",
+  });
 
   const groups = useMemo(() => ["all", ...Array.from(new Set(scorings.map((scoring) => scoring.group)))], [scorings]);
+  const group = groups.includes(requestedGroup) ? requestedGroup : "all";
   const filteredRaw = group === "all" ? scorings : scorings.filter((scoring) => scoring.group === group);
   const filtered = useMemo(() => filteredRaw.map((scoring) => localizeScoring(scoring, locale)), [filteredRaw, locale]);
-  const selectedRaw = scorings.find((scoring) => scoring.id === activeId) ?? filteredRaw[0] ?? scorings[0];
+  const selectedRaw = filteredRaw.find((scoring) => scoring.id === activeId) ?? filteredRaw[0];
   const selected = selectedRaw ? localizeScoring(selectedRaw, locale) : undefined;
 
+  useEffect(() => {
+    if (!isLoading && !error && requestedGroup !== group) setGroup(group);
+  }, [error, group, isLoading, requestedGroup, setGroup]);
+
+  useEffect(() => {
+    if (selectedRaw && selectedRaw.id !== activeId) setActiveId(selectedRaw.id);
+  }, [activeId, selectedRaw, setActiveId]);
+
   return (
-    <section className={styles.view}>
+    <section className={styles.view} aria-labelledby="scorings-view-title">
       <aside className={styles.groups}>
         <div className={styles.panelIntro}>
           <SectionLabel>{t("scorings.library")}</SectionLabel>
-          <strong>{t("scorings.blocks", { count: scorings.length })}</strong>
+          <h1 id="scorings-view-title">{t("scorings.title")}</h1>
+          <span>{t("scorings.blocks", { count: scorings.length })}</span>
         </div>
         <nav className={styles.groupList} aria-label={t("scorings.groups")}>
           {groups.map((item) => (
@@ -69,9 +86,17 @@ export function ScoringsView() {
           <SectionLabel>{group === "all" ? t("scorings.allScorings") : localizeScoringGroup(group, locale)}</SectionLabel>
           <span>{filtered.length}</span>
         </header>
-        {error && <EmptyState role="alert">{t("scorings.error")}</EmptyState>}
+        {error && (
+          <EmptyState role="alert">
+            <div className={styles.stateContent}>
+              <strong>{t("scorings.error")}</strong>
+              <Button onClick={() => void refetch()}>{t("common.retry")}</Button>
+            </div>
+          </EmptyState>
+        )}
         {!error && isLoading && <EmptyState role="status">{t("scorings.loading")}</EmptyState>}
-        {!error && !isLoading && (
+        {!error && !isLoading && filtered.length === 0 && <EmptyState>{t("scorings.empty")}</EmptyState>}
+        {!error && !isLoading && filtered.length > 0 && (
           <div className={styles.metricList}>
             {filtered.map((scoring) => (
               <MetricListItem
@@ -131,7 +156,7 @@ function ScoringDocs({ scoring }: { scoring: ScoringMetric }) {
             ))}
             {!scoring.builtIn && <Chip active>{t("common.custom")}</Chip>}
           </div>
-          <h1>{scoring.name}</h1>
+          <h2>{scoring.name}</h2>
         </div>
       </header>
 
@@ -151,12 +176,12 @@ function ScoringDocs({ scoring }: { scoring: ScoringMetric }) {
       </section>
 
       <section className={styles.docSection}>
-        <h2>{t("scorings.formula")}</h2>
+        <h3>{t("scorings.formula")}</h3>
         <pre>{scoring.formula}</pre>
       </section>
 
       <section className={styles.docSection}>
-        <h2>{t("scorings.inputs")}</h2>
+        <h3>{t("scorings.inputs")}</h3>
         <ul>
           {scoring.inputs.map((input) => (
             <li key={input}>

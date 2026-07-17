@@ -12,20 +12,22 @@ import {
 } from "./format";
 
 describe("format utilities", () => {
-  it("formats property prices in French compact thousands", () => {
-    expect(formatPrice(264000)).toBe("264 k€");
-    expect(formatPrice(1250000)).toBe("1,3 M€");
-    expect(formatPrice(1250000, "en")).toBe("1.3 M€");
+  it("formats compact property prices with locale-correct currency placement", () => {
+    expect(formatPrice(264000)).toBe("264\u00a0k\u00a0€");
+    expect(formatPrice(1250000)).toBe("1,3\u00a0M\u00a0€");
+    expect(formatPrice(264000, "es")).toBe("264\u00a0mil\u00a0€");
+    expect(formatPrice(1250000, "en")).toBe("€1.3m");
   });
 
   it("formats price per square meter", () => {
-    expect(formatPricePerM2(264000, 96).replace(/\s/g, " ")).toBe("2 750 €/m²");
+    expect(formatPricePerM2(264000, 96)).toBe("2 750\u00a0€\u00a0/m²");
+    expect(formatPricePerM2(264000, 96, "en")).toBe("€2,750\u00a0/m²");
   });
 
   it("formats listing recency", () => {
-    expect(formatPostedDays(1)).toBe("il y a 1 jour");
+    expect(formatPostedDays(1)).toBe("hier");
     expect(formatPostedDays(4)).toBe("il y a 4 jours");
-    expect(formatPostedDays(1, "es")).toBe("hace 1 día");
+    expect(formatPostedDays(1, "es")).toBe("ayer");
     expect(formatPostedDays(4, "es")).toBe("hace 4 días");
     expect(formatPostedDays(0, "en")).toBe("today");
     expect(formatPostedDays(4, "en")).toBe("4 days ago");

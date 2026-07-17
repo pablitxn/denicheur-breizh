@@ -1,28 +1,29 @@
 import { formatNumber as formatIntlNumber } from "@denicheur-breizh/i18n";
-import type { LocaleCode } from "../intl/locales";
+import { bcp47Locales, type LocaleCode } from "../intl/locales";
 
 export function formatPrice(value: number, locale: LocaleCode = "fr") {
-  if (value >= 1000000) {
-    return `${formatIntlNumber(value / 1000000, locale, { maximumFractionDigits: 1 })} M€`;
-  }
-
-  return `${formatIntlNumber(Math.round(value / 1000), locale)} k€`;
+  return new Intl.NumberFormat(bcp47Locales[locale], {
+    style: "currency",
+    currency: "EUR",
+    currencyDisplay: "narrowSymbol",
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(value);
 }
 
 export function formatPricePerM2(price: number, surfaceM2: number, locale: LocaleCode = "fr") {
-  return `${formatIntlNumber(Math.round(price / surfaceM2), locale)} €/m²`;
+  const pricePerSquareMeter = new Intl.NumberFormat(bcp47Locales[locale], {
+    style: "currency",
+    currency: "EUR",
+    currencyDisplay: "narrowSymbol",
+    maximumFractionDigits: 0,
+  }).format(price / surfaceM2);
+  return `${pricePerSquareMeter}\u00a0/m²`;
 }
 
 export function formatPostedDays(days: number, locale: LocaleCode = "fr") {
-  if (locale === "en") {
-    return days === 0 ? "today" : `${days} day${days === 1 ? "" : "s"} ago`;
-  }
-
-  if (locale === "es") {
-    return days === 0 ? "hoy" : `hace ${days} día${days === 1 ? "" : "s"}`;
-  }
-
-  return days === 0 ? "aujourd’hui" : `il y a ${days} jour${days === 1 ? "" : "s"}`;
+  return new Intl.RelativeTimeFormat(bcp47Locales[locale], { numeric: "auto" })
+    .format(-Math.max(0, Math.round(days)), "day");
 }
 
 export function formatRooms(count: number, locale: LocaleCode = "fr") {
@@ -61,7 +62,12 @@ export function formatInteger(value: number, locale: LocaleCode = "fr") {
 }
 
 export function formatDistanceKm(value: number, locale: LocaleCode = "fr") {
-  return `${formatIntlNumber(value, locale, { maximumFractionDigits: 1 })} km`;
+  return formatIntlNumber(value, locale, {
+    style: "unit",
+    unit: "kilometer",
+    unitDisplay: "short",
+    maximumFractionDigits: 1,
+  });
 }
 
 export function formatPercentage(value: number, locale: LocaleCode = "fr", fractionDigits = 0) {

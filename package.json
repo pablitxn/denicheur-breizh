@@ -15,11 +15,12 @@
     "test": "turbo run test",
     "test:run": "turbo run test:run",
     "test:coverage": "turbo run test:coverage",
+    "check:tokens": "node scripts/check-design-tokens.mjs",
     "test:e2e": "pnpm build:e2e && playwright test --grep-invert @live",
     "test:e2e:live": "pnpm build:e2e && RUN_LIVE_OPENAI_E2E=1 playwright test --grep @live",
     "typecheck": "turbo run typecheck && pnpm typecheck:e2e",
     "typecheck:e2e": "tsc -p tests/e2e/tsconfig.json --noEmit",
-    "check": "pnpm typecheck && pnpm test:run && pnpm build",
+    "check": "pnpm typecheck && pnpm check:tokens && pnpm test:run && pnpm build",
     "check:all": "pnpm check && pnpm test:e2e",
     "audit:prod": "pnpm audit --prod --audit-level=high"
   },

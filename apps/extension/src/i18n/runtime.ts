@@ -296,7 +296,7 @@ function filterFieldLabel(field: keyof SearchFilters, t: ExtensionTranslate): st
 }
 
 function rangeGroupLabel(field: keyof SearchFilters, t: ExtensionTranslate): string {
-  if (field === "priceMax") return t("search.priceMin").replace(/\s+[^\s]+$/, "");
+  if (field === "priceMax") return t("search.priceMin").replace(/\s+[^\s]+$/, "").toLocaleLowerCase();
   if (field === "roomsMax") return t("record.rooms").toLocaleLowerCase();
   if (field === "bedroomsMax") return t("record.beds").toLocaleLowerCase();
   return t("record.surface").toLocaleLowerCase();

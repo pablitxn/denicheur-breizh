@@ -1,9 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import { IDLE_RUN } from "../storage/chromeStorage";
-import type { ScrapeRun } from "../lib/types";
+import { createDefaultIntelligenceRecipe } from "../intelligence/recipe";
+import type { ScrapeRun, ScrapedPropertyRecord } from "../lib/types";
 import {
   hasLiveDashboardRunner,
+  parseResultsViewState,
+  recipeFromDrafts,
   reconcileDashboardRun,
+  recordMatchesQuery,
+  resolveResultsPage,
   withDashboardRunnerLease,
 } from "./DashboardApp";
 
@@ -98,5 +103,67 @@ describe("dashboard runner ownership recovery", () => {
     await expect(withDashboardRunnerLease(deniedOperation, deniedLockManager))
       .rejects.toThrow("Another dashboard already owns the crawler run.");
     expect(deniedOperation).not.toHaveBeenCalled();
+  });
+});
+
+describe("dashboard result and recipe drafts", () => {
+  const record: ScrapedPropertyRecord = {
+    id: "listing-1",
+    source: "leboncoin",
+    listingUrl: "https://www.leboncoin.fr/ad/ventes_immobilieres/listing-1",
+    title: "Maison avec jardin",
+    location: "Quimper",
+    priceText: "320 000 €",
+    propertyType: "Maison",
+    sellerName: "Agence du port",
+    features: ["Garage", "Vue mer"],
+    scrapedAt: FINISHED_AT,
+    searchRunId: "run-1",
+    status: "detailed",
+    rawTextSample: "Maison avec jardin",
+  };
+
+  it("parses shareable result filters and rejects invalid page values", () => {
+    expect(parseResultsViewState("?decision=review&q=jardin&page=3")).toEqual({
+      decision: "review",
+      query: "jardin",
+      page: 3,
+    });
+    expect(parseResultsViewState("?decision=unknown&page=-2")).toEqual({
+      decision: "all",
+      query: "",
+      page: 1,
+    });
+  });
+
+  it("preserves the requested page through hydration, then clamps against loaded records", () => {
+    expect(resolveResultsPage(3, 1, false)).toBe(3);
+    expect(resolveResultsPage(3, 5, true)).toBe(3);
+    expect(resolveResultsPage(8, 5, true)).toBe(5);
+  });
+
+  it("searches across visible listing metadata without case sensitivity", () => {
+    expect(recordMatchesQuery(record, "JARDIN", "fr")).toBe(true);
+    expect(recordMatchesQuery(record, "vue mer", "fr")).toBe(true);
+    expect(recordMatchesQuery(record, "agence du port", "fr")).toBe(true);
+    expect(recordMatchesQuery(record, "Brest", "fr")).toBe(false);
+  });
+
+  it("preserves empty numeric drafts as invalid values until validation", () => {
+    const recipe = {
+      ...createDefaultIntelligenceRecipe(),
+      enabled: true,
+      criteria: [{
+        id: "garden",
+        name: "Garden",
+        description: "A private garden is explicitly described.",
+        weight: 20,
+        required: false,
+      }],
+    };
+
+    const draft = recipeFromDrafts(recipe, "", { garden: "" });
+    expect(Number.isNaN(draft.threshold)).toBe(true);
+    expect(Number.isNaN(draft.criteria[0].weight)).toBe(true);
   });
 });

@@ -69,6 +69,7 @@ export interface ScoringRecipe {
 
 export interface PropertyFilters {
   providers: ProviderName[];
+  propertyTypes: PropertyType[];
   priceMin: number;
   priceMax: number;
   surfaceMin: number;

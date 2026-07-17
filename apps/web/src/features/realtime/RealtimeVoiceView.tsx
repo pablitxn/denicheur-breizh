@@ -14,9 +14,18 @@ type ChipTone = "default" | "good" | "danger" | "sunset";
 
 interface RealtimeServerEvent {
   type?: string;
+  delta?: string;
+  text?: string;
+  transcript?: string;
   error?: {
     message?: string;
   };
+}
+
+interface TranscriptUpdate {
+  channel: "source" | "translation";
+  text: string;
+  replace: boolean;
 }
 
 interface LocalizedMessage {
@@ -66,17 +75,36 @@ function getEventMessage(event: RealtimeServerEvent): LocalizedMessage {
   return { id: "realtime.event.server", values: { type: event.type ?? "event" } };
 }
 
+export function getTranscriptUpdate(event: RealtimeServerEvent): TranscriptUpdate | undefined {
+  const type = event.type ?? "";
+  if (type.includes("input_audio_transcription") && event.transcript) {
+    return { channel: "source", text: event.transcript, replace: true };
+  }
+
+  if (type.includes("audio_transcript") || type.includes("output_text")) {
+    const text = event.delta ?? event.transcript ?? event.text;
+    if (!text) return undefined;
+    return { channel: "translation", text, replace: type.endsWith(".done") };
+  }
+
+  return undefined;
+}
+
 export function RealtimeVoiceView() {
   const { locale, t } = useAppIntl();
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
+  const connectionAttemptRef = useRef(0);
+  const sessionRequestRef = useRef<AbortController | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>("idle");
   const [error, setError] = useState<LocalizedMessage | null>(null);
   const [events, setEvents] = useState<RealtimeLogEntry[]>([]);
   const [isMuted, setIsMuted] = useState(false);
   const [prompt, setPrompt] = useState("Hola, quiero visitar una casa mañana por la tarde.");
+  const [sourceTranscript, setSourceTranscript] = useState("");
+  const [translatedTranscript, setTranslatedTranscript] = useState("");
 
   const statusTone = useMemo<ChipTone>(() => {
     if (status === "connected") return "good";
@@ -93,6 +121,9 @@ export function RealtimeVoiceView() {
   }, []);
 
   const closeConnection = useCallback(() => {
+    connectionAttemptRef.current += 1;
+    sessionRequestRef.current?.abort();
+    sessionRequestRef.current = null;
     dataChannelRef.current?.close();
     dataChannelRef.current = null;
     peerRef.current?.close();
@@ -127,30 +158,42 @@ export function RealtimeVoiceView() {
 
   const handleServerEvent = useCallback(
     (event: RealtimeServerEvent) => {
+      const transcriptUpdate = getTranscriptUpdate(event);
+      if (transcriptUpdate) {
+        const updateTranscript = (current: string) => transcriptUpdate.replace ? transcriptUpdate.text : `${current}${transcriptUpdate.text}`;
+        if (transcriptUpdate.channel === "source") setSourceTranscript(updateTranscript);
+        else setTranslatedTranscript(updateTranscript);
+      }
       pushEvent(getEventMessage(event));
     },
     [pushEvent],
   );
 
   const connect = useCallback(async () => {
+    closeConnection();
+    const attempt = connectionAttemptRef.current;
+    const isCurrentAttempt = () => connectionAttemptRef.current === attempt;
     setStatus("connecting");
     setError(null);
     setEvents([]);
-    closeConnection();
+    setSourceTranscript("");
+    setTranslatedTranscript("");
 
     try {
       const peerConnection = new RTCPeerConnection();
       peerRef.current = peerConnection;
 
       peerConnection.ontrack = (event) => {
-        if (audioRef.current) {
+        if (isCurrentAttempt() && audioRef.current) {
           audioRef.current.srcObject = event.streams[0];
         }
       };
 
       peerConnection.addEventListener("connectionstatechange", () => {
+        if (!isCurrentAttempt()) return;
         pushEvent({ id: "realtime.event.peer", values: { state: peerConnection.connectionState } });
         if (peerConnection.connectionState === "failed") {
+          closeConnection();
           setStatus("error");
           setError({ id: "realtime.error.peer" });
         } else if (peerConnection.connectionState === "closed" || peerConnection.connectionState === "disconnected") {
@@ -161,9 +204,16 @@ export function RealtimeVoiceView() {
       const dataChannel = peerConnection.createDataChannel("oai-events");
       dataChannelRef.current = dataChannel;
       dataChannel.addEventListener("open", () => {
+        if (!isCurrentAttempt()) return;
         sendRealtimeEvent(buildSessionUpdateEvent());
+        setStatus("connected");
+        pushEvent({ id: "realtime.event.connected" });
+      });
+      dataChannel.addEventListener("close", () => {
+        if (isCurrentAttempt()) setStatus("idle");
       });
       dataChannel.addEventListener("message", (message) => {
+        if (!isCurrentAttempt()) return;
         try {
           handleServerEvent(JSON.parse(message.data) as RealtimeServerEvent);
         } catch {
@@ -172,27 +222,39 @@ export function RealtimeVoiceView() {
       });
 
       const localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!isCurrentAttempt()) {
+        localStream.getTracks().forEach((track) => track.stop());
+        peerConnection.close();
+        return;
+      }
       localStreamRef.current = localStream;
       localStream.getAudioTracks().forEach((track) => {
         peerConnection.addTrack(track, localStream);
       });
 
       const offer = await peerConnection.createOffer();
+      if (!isCurrentAttempt()) return;
       await peerConnection.setLocalDescription(offer);
+      if (!isCurrentAttempt()) return;
 
       if (!offer.sdp) {
         throw new RealtimeUiError({ id: "realtime.error.sdp" });
       }
 
+      const sessionRequest = new AbortController();
+      sessionRequestRef.current = sessionRequest;
       const sdpResponse = await fetch(realtimeSessionEndpoint, {
         method: "POST",
         body: offer.sdp,
+        signal: sessionRequest.signal,
         headers: {
           "Content-Type": "application/sdp",
         },
       });
 
       const answerSdp = await sdpResponse.text();
+      if (!isCurrentAttempt()) return;
+      sessionRequestRef.current = null;
       if (!sdpResponse.ok) {
         throw new RealtimeUiError(
           answerSdp
@@ -205,10 +267,8 @@ export function RealtimeVoiceView() {
         type: "answer",
         sdp: answerSdp,
       });
-
-      setStatus("connected");
-      pushEvent({ id: "realtime.event.connected" });
     } catch (connectError) {
+      if (!isCurrentAttempt()) return;
       closeConnection();
       setStatus("error");
       if (connectError instanceof RealtimeUiError) {
@@ -256,6 +316,8 @@ export function RealtimeVoiceView() {
       });
 
       if (created) {
+        setSourceTranscript(text);
+        setTranslatedTranscript("");
         sendRealtimeEvent({ type: "response.create" });
         setPrompt("");
       }
@@ -308,7 +370,7 @@ export function RealtimeVoiceView() {
             </div>
           </dl>
 
-          <audio ref={audioRef} autoPlay className={styles.remoteAudio} aria-label={t("realtime.session.remoteAudio")} />
+          <audio ref={audioRef} autoPlay controls className={styles.remoteAudio} aria-label={t("realtime.session.remoteAudio")} />
 
           <div className={styles.controls}>
             <Button variant="primary" onClick={connect} disabled={status === "connecting" || status === "connected"}>
@@ -319,9 +381,9 @@ export function RealtimeVoiceView() {
               {isMuted ? <MicOff size={16} /> : <Mic size={16} />}
               {isMuted ? t("realtime.action.muted") : t("realtime.action.micOn")}
             </Button>
-            <Button variant="ghost" onClick={disconnect} disabled={status === "idle" || status === "connecting"}>
+            <Button variant="ghost" onClick={disconnect} disabled={status === "idle"}>
               <PhoneOff size={16} />
-              {t("realtime.action.disconnect")}
+              {t(status === "connecting" ? "realtime.action.cancel" : "realtime.action.disconnect")}
             </Button>
           </div>
 
@@ -342,6 +404,17 @@ export function RealtimeVoiceView() {
             <span>{t("realtime.translation.inputValue")}</span>
             <span>{t("realtime.translation.output")}</span>
             <span>{t("realtime.translation.outputValue")}</span>
+          </div>
+
+          <div className={styles.transcript} role="region" aria-live="polite" aria-label={t("realtime.transcriptAria")}>
+            <div>
+              <span>{t("realtime.transcript.source")}</span>
+              <p>{sourceTranscript || t("realtime.transcript.empty")}</p>
+            </div>
+            <div>
+              <span>{t("realtime.transcript.translation")}</span>
+              <p>{translatedTranscript || t("realtime.transcript.empty")}</p>
+            </div>
           </div>
 
           <div className={styles.slots} aria-label={t("realtime.samplesAria")}>

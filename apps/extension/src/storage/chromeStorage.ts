@@ -15,10 +15,17 @@ import type {
   StoredCrawlerState,
 } from "../lib/types";
 
-const FILTERS_KEY = "denicheur:crawler:filters";
-const RUN_KEY = "denicheur:crawler:run";
-const RECORDS_KEY = "denicheur:crawler:records";
-const RECIPE_KEY = "denicheur:intelligence:recipe";
+export const CRAWLER_STORAGE_KEYS = {
+  filters: "denicheur:crawler:filters",
+  run: "denicheur:crawler:run",
+  records: "denicheur:crawler:records",
+  recipe: "denicheur:intelligence:recipe",
+} as const;
+
+const FILTERS_KEY = CRAWLER_STORAGE_KEYS.filters;
+const RUN_KEY = CRAWLER_STORAGE_KEYS.run;
+const RECORDS_KEY = CRAWLER_STORAGE_KEYS.records;
+const RECIPE_KEY = CRAWLER_STORAGE_KEYS.recipe;
 const INTERRUPTIBLE_RUN_STATUSES = new Set<ScrapeRun["status"]>([
   "opening-search",
   "configuring-search",

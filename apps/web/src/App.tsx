@@ -1,9 +1,10 @@
 import { lazy, Suspense, useEffect } from "react";
 import { EmptyState } from "@denicheur-breizh/design-system";
 import { Shell } from "./components/Shell";
+import { WorkspaceErrorBoundary } from "./components/WorkspaceErrorBoundary";
 import { features } from "./config/features";
 import { useAppIntl } from "./intl/IntlContext";
-import { useWorkspaceStore } from "./state/workspaceStore";
+import { useWorkspaceStore, workspaceStorageKey } from "./state/workspaceStore";
 import type { WorkspaceView } from "./types";
 import { parseWorkspaceView, workspaceViewHref } from "./utils/workspaceNavigation";
 import styles from "./App.module.css";
@@ -48,6 +49,17 @@ export function App() {
     return () => window.removeEventListener("popstate", handlePopState);
   }, [setActiveView]);
 
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === workspaceStorageKey) {
+        void useWorkspaceStore.persist.rehydrate();
+      }
+    };
+
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, []);
+
   const resolvedView = activeView === "realtime" && !features.realtimeVoice ? "map" : activeView;
   const ActiveView = workspaceViews[resolvedView];
 
@@ -61,9 +73,15 @@ export function App() {
   return (
     <Shell>
       <main id="workspace-content" className={styles.workspace}>
-        <Suspense fallback={<EmptyState role="status">{t("common.loading")}</EmptyState>}>
-          <ActiveView />
-        </Suspense>
+        <WorkspaceErrorBoundary
+          message={t("common.loadError")}
+          resetKey={resolvedView}
+          retryLabel={t("common.retry")}
+        >
+          <Suspense fallback={<EmptyState role="status" aria-live="polite">{t("common.loading")}</EmptyState>}>
+            <ActiveView />
+          </Suspense>
+        </WorkspaceErrorBoundary>
       </main>
     </Shell>
   );

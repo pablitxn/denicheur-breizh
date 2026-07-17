@@ -57,7 +57,7 @@ Configure these visible dashboard controls:
 - `Delay max sec`: `55`.
 - `Intelligence filter`: disabled.
 
-Verify every value visually, then click **Start crawl** exactly once. Do not
+Verify every value visually, then click **Start collection** exactly once. Do not
 interact with any Leboncoin tab while the extension runs. The extension uses
 bounded action and typing delays plus the configured detail delay; this reduces
 request rate but does not guarantee that Leboncoin will allow the run.

@@ -103,8 +103,16 @@ export default defineConfig(({ mode }) => {
       host: "127.0.0.1",
       port: 5173,
     },
+    build: {
+      chunkSizeWarningLimit: 1100,
+    },
     test: {
       environment: "jsdom",
+      environmentOptions: {
+        jsdom: {
+          url: "http://localhost/",
+        },
+      },
       globals: true,
       setupFiles: "./src/test/setup.ts",
     },

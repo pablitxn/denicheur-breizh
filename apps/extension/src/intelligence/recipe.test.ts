@@ -3,13 +3,19 @@ import {
   createDefaultIntelligenceRecipe,
   normalizeIntelligenceRecipe,
   recipeValidationError,
+  validateIntelligenceRecipe,
 } from "./recipe";
 
 describe("intelligence recipe", () => {
   it("keeps intelligence disabled by default so existing crawling still works", () => {
     const recipe = createDefaultIntelligenceRecipe();
 
-    expect(recipe).toMatchObject({ enabled: false, threshold: 70, version: 1 });
+    expect(recipe).toMatchObject({
+      enabled: false,
+      threshold: 70,
+      version: 1,
+      name: "Denicheur Breizh",
+    });
     expect(recipe.criteria).toEqual([]);
     expect(recipeValidationError(recipe)).toBeUndefined();
   });
@@ -44,10 +50,55 @@ describe("intelligence recipe", () => {
     expect(normalized.version).toBe(1);
     expect(normalized.criteria[0]).toMatchObject({
       id: "criterion-1",
-      name: "Unnamed criterion",
+      name: "",
       description: "evidence",
       weight: 0,
       required: true,
     });
+  });
+
+  it("migrates the legacy English default recipe name to the neutral product name", () => {
+    const normalized = normalizeIntelligenceRecipe({
+      ...createDefaultIntelligenceRecipe(),
+      name: "Personal fit",
+    });
+
+    expect(normalized.name).toBe("Denicheur Breizh");
+  });
+
+  it("returns field-addressable issues for inline validation and focus", () => {
+    const recipe = {
+      ...createDefaultIntelligenceRecipe(),
+      enabled: true,
+      name: "",
+      threshold: Number.NaN,
+      criteria: [{
+        id: "garden",
+        name: "",
+        description: "",
+        weight: Number.NaN,
+        required: true,
+      }],
+    };
+
+    expect(validateIntelligenceRecipe(recipe)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "name-required", field: "name" }),
+      expect.objectContaining({ code: "threshold-range", field: "threshold" }),
+      expect.objectContaining({
+        code: "criterion-name-required",
+        field: "criterion-name",
+        criterionId: "garden",
+      }),
+      expect.objectContaining({
+        code: "criterion-description-required",
+        field: "criterion-description",
+        criterionId: "garden",
+      }),
+      expect.objectContaining({
+        code: "criterion-weight-range",
+        field: "criterion-weight",
+        criterionId: "garden",
+      }),
+    ]));
   });
 });

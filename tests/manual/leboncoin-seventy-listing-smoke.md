@@ -29,7 +29,7 @@ unusual-activity evidence.
 - Cooldown: `180` seconds
 - Intelligence filter: disabled
 
-Verify every visible value before pressing **Start crawl** exactly once. After
+Verify every visible value before pressing **Start collection** exactly once. After
 that click, Computer may only observe. The extension owns all Leboncoin tab
 creation, navigation, focus, pagination, and successful-detail closure.
 

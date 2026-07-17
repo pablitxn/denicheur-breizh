@@ -5,6 +5,7 @@ test.describe("Denicheur web workspace", () => {
     const pageErrors: string[] = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
 
+    await page.emulateMedia({ colorScheme: "dark" });
     await page.goto("/?view=map");
 
     for (const locale of localeScenarios) {
@@ -20,7 +21,7 @@ test.describe("Denicheur web workspace", () => {
 
       for (const [view, label] of Object.entries(locale.views)) {
         await page.getByRole("link", { name: label }).click();
-        await expect(page).toHaveURL(new RegExp(`\\?view=${view}$`));
+        await expect.poll(() => new URL(page.url()).searchParams.get("view")).toBe(view);
         await expect(page.getByRole("link", { name: label })).toHaveAttribute("aria-current", "page");
 
         if (view === "map") {
@@ -53,7 +54,7 @@ test.describe("Denicheur web workspace", () => {
     await expect(peer.locator("html")).toHaveAttribute("lang", "fr-FR");
     await expect(peer).toHaveTitle(/Décision immobilière/u);
 
-    await page.getByRole("button", { name: "Changer le thème" }).click();
+    await page.getByRole("button", { name: "Passer au thème clair", exact: true }).click();
     await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
     expect(pageErrors).toEqual([]);
     await peer.close();
@@ -85,7 +86,7 @@ test.describe("Denicheur web workspace", () => {
     await nameInput.fill("Escapade bretonne E2E");
     await page.getByRole("button", { name: "Enregistrer" }).click();
 
-    await expect(page.getByText("Sauvé", { exact: true })).toBeVisible();
+    await expect(page.getByText("Enregistré", { exact: true })).toBeVisible();
     await expect(nameInput).toHaveValue("Escapade bretonne E2E");
     await expect(page.getByRole("tab", { name: "Pondération" })).toHaveAttribute("aria-selected", "true");
   });
@@ -99,7 +100,7 @@ const localeScenarios = [
     description: /Espace de décision immobilière/u,
     navigation: "Vue principale",
     skipLink: "Aller au contenu",
-    views: { map: "Carte", properties: "Biens", scorings: "Scorings", builder: "Builder", realtime: "Voix" },
+    views: { map: "Carte", properties: "Biens", scorings: "Scores", builder: "Atelier", realtime: "Voix" },
     mapTitle: "Carte des biens immobiliers",
     zoomIn: "Zoomer",
     table: "Table",
@@ -213,8 +214,10 @@ async function expectNoUnexpectedHorizontalOverflow(page: Page, context: string)
         const style = getComputedStyle(element);
         const clipsHorizontally = style.overflowX === "hidden" || style.overflowX === "clip";
         const intentionallyEllipsized = style.textOverflow === "ellipsis";
+        const isFormControl = element.matches("input, textarea, select");
         if (
           clipsHorizontally &&
+          !isFormControl &&
           !intentionallyEllipsized &&
           !insideHorizontalScroller &&
           element.scrollWidth > element.clientWidth + tolerance

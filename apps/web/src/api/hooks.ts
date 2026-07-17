@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { denicheurApi } from "./denicheurApi";
 import { queryKeys } from "./queryKeys";
 import type { PropertyFilters, ScoringRecipe } from "../types";
@@ -7,6 +7,7 @@ export function useProperties(filters?: Partial<PropertyFilters>) {
   return useQuery({
     queryKey: queryKeys.properties.list(filters),
     queryFn: ({ signal }) => denicheurApi.listProperties(filters, signal),
+    placeholderData: keepPreviousData,
   });
 }
 

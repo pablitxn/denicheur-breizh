@@ -23,9 +23,24 @@
   min-width: 0;
 }
 
-.toolbarRight span {
+.toolbarTitle {
+  display: flex;
+  min-width: max-content;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.toolbarTitle h1 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-body-lg);
+  line-height: 1.1;
+  text-wrap: balance;
+}
+
+.toolbarTitle span {
   color: var(--color-text-muted);
-  font-size: 12px;
+  font-size: var(--fs-body-sm);
 }
 
 .providerFilters {
@@ -93,15 +108,10 @@
   white-space: nowrap;
 }
 
-.table tbody tr {
-  cursor: pointer;
-}
-
-.table tbody tr:hover {
+.table tbody tr:has(.titleCell:hover) {
   background: var(--color-surface);
 }
 
-.table tbody tr:focus-visible,
 .propertyCard:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
@@ -119,7 +129,14 @@
   display: flex;
   align-items: center;
   gap: 10px;
+  width: 100%;
   min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
 }
 
 .titleCell > div {
@@ -156,11 +173,16 @@
 }
 
 .propertyCard {
+  display: block;
+  width: 100%;
   overflow: hidden;
   border: 1px solid var(--color-border);
   border-radius: 8px;
   background: var(--color-surface);
+  color: var(--color-text);
   cursor: pointer;
+  padding: 0;
+  text-align: left;
   transition:
     border-color 120ms ease,
     transform 120ms ease;
@@ -189,7 +211,7 @@
 .cardProvider {
   left: 10px;
   border-radius: 999px;
-  background: rgb(0 0 0 / 42%);
+  background: var(--overlay-scrim);
   color: white;
   padding: 3px 9px;
   font-size: 12px;
@@ -211,6 +233,17 @@
   align-items: baseline;
   justify-content: space-between;
   gap: 10px;
+}
+
+.cardTitle strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cardTitle span {
+  flex: 0 0 auto;
 }
 
 .cardTitle span {
@@ -253,9 +286,11 @@
   line-height: 1;
 }
 
-.detailHeader h1 {
+.detailHeader h2 {
   margin: 8px 0 3px;
   font-size: 16px;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
 }
 
 .detailHeader p {
@@ -340,6 +375,23 @@
   gap: 9px;
 }
 
+.stateContent {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.loadMore {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  color: var(--color-text-muted);
+  font-size: var(--fs-body-sm);
+}
+
 @media (max-width: 1120px) {
   .body {
     display: flex;
@@ -369,5 +421,30 @@
     width: 100%;
     justify-content: flex-start;
     margin-left: 0;
+  }
+
+  .toolbarTitle {
+    min-width: 0;
+  }
+
+  .providerFilters {
+    width: 100%;
+  }
+
+  .cardGrid {
+    grid-template-columns: minmax(0, 1fr);
+    padding: var(--space-4);
+  }
+
+  .loadMore {
+    flex-direction: column;
+  }
+}
+
+@media (pointer: coarse) {
+  .table th button,
+  .titleCell {
+    min-height: 44px;
+    height: auto;
   }
 }

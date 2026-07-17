@@ -57,6 +57,10 @@ describe("extension catalogs", () => {
   it("interpolates and pluralizes UI messages", () => {
     expect(translateExtension("es", "popup.records", { count: 1 })).toBe("1 anuncio");
     expect(translateExtension("es", "popup.records", { count: 3 })).toBe("3 anuncios");
+    expect(translateExtension("fr", "results.showing", { count: 1, visible: 1, total: 12 }))
+      .toBe("1 annonce affichée sur 12 enregistrées.");
+    expect(translateExtension("en", "validation.recipeCriteriaTooMany", { max: 12 }))
+      .toBe("Use at most 12 criteria.");
     expect(translateExtension("en", "run.openingListing", { current: 2, total: 5 }))
       .toBe("Opening listing 2 of 5.");
   });
@@ -117,5 +121,11 @@ describe("localized runtime messages", () => {
     };
     expect(translateFilterValidationIssue(issue, filters, t))
       .toBe("Estancias mínimas debe ser un entero entre 1 y 8.");
+
+    const reversedPriceFilters = { ...createDefaultSearchFilters(), priceMin: 200_000, priceMax: 120_000 };
+    expect(translateFilterValidationIssue({
+      field: "priceMax",
+      message: "Maximum price must be greater than or equal to minimum price.",
+    }, reversedPriceFilters, t)).toBe("El máximo de precio debe ser mayor o igual que el mínimo.");
   });
 });

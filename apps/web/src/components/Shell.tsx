@@ -2,7 +2,6 @@ import type { MouseEvent, ReactNode } from "react";
 import { Gauge, Languages, List, Map, Mic2, Moon, SlidersHorizontal, Sun } from "lucide-react";
 import { Button, Chip } from "@denicheur-breizh/design-system";
 import { usesMockApi } from "../api/denicheurApi";
-import { useProperties } from "../api/hooks";
 import { features } from "../config/features";
 import { supportedLocales, localeLabels } from "../intl/locales";
 import { useAppIntl } from "../intl/IntlContext";
@@ -17,13 +16,12 @@ export function Shell({ children }: { children: ReactNode }) {
   const setActiveView = useWorkspaceStore((state) => state.setActiveView);
   const theme = useWorkspaceStore((state) => state.theme);
   const toggleTheme = useWorkspaceStore((state) => state.toggleTheme);
-  const { data: properties = [] } = useProperties();
   const tabs: Array<{ id: WorkspaceView; label: string; icon: ReactNode }> = [
-    { id: "map", label: t("nav.map"), icon: <Map size={16} /> },
-    { id: "properties", label: t("nav.properties"), icon: <List size={16} /> },
-    { id: "scorings", label: t("nav.scorings"), icon: <Gauge size={16} /> },
-    { id: "builder", label: t("nav.builder"), icon: <SlidersHorizontal size={16} /> },
-    ...(features.realtimeVoice ? [{ id: "realtime" as const, label: t("nav.realtime"), icon: <Mic2 size={16} /> }] : []),
+    { id: "map", label: t("nav.map"), icon: <Map size={16} aria-hidden="true" /> },
+    { id: "properties", label: t("nav.properties"), icon: <List size={16} aria-hidden="true" /> },
+    { id: "scorings", label: t("nav.scorings"), icon: <Gauge size={16} aria-hidden="true" /> },
+    { id: "builder", label: t("nav.builder"), icon: <SlidersHorizontal size={16} aria-hidden="true" /> },
+    ...(features.realtimeVoice ? [{ id: "realtime" as const, label: t("nav.realtime"), icon: <Mic2 size={16} aria-hidden="true" /> }] : []),
   ];
 
   const navigateToView = (event: MouseEvent<HTMLAnchorElement>, view: WorkspaceView) => {
@@ -35,15 +33,24 @@ export function Shell({ children }: { children: ReactNode }) {
     setActiveView(view);
   };
 
+  const focusWorkspaceContent = () => {
+    requestAnimationFrame(() => {
+      const content = document.getElementById("workspace-content");
+      if (!(content instanceof HTMLElement)) return;
+      content.tabIndex = -1;
+      content.focus({ preventScroll: true });
+    });
+  };
+
   return (
     <div className={styles.shell}>
-      <a className={styles.skipLink} href="#workspace-content">
+      <a className={styles.skipLink} href="#workspace-content" onClick={focusWorkspaceContent}>
         {t("shell.skipToContent")}
       </a>
       <header className={styles.topbar}>
         <div className={styles.brandBlock}>
           <div className={styles.brandMark} aria-hidden="true" />
-          <div className={styles.brandName}>
+          <div className={styles.brandName} translate="no">
             dénicheur<span>·</span>breizh
           </div>
         </div>
@@ -59,18 +66,17 @@ export function Shell({ children }: { children: ReactNode }) {
             >
               {tab.icon}
               <span>{tab.label}</span>
-              {tab.id === "properties" && <small>{properties.length}</small>}
             </a>
           ))}
         </nav>
 
         <div className={styles.toolbar}>
-          <Chip active tone={usesMockApi ? "sunset" : "good"}>
-            <span className={styles.liveDot} />
+          <Chip className={styles.apiStatus} active tone={usesMockApi ? "sunset" : "good"}>
+            <span className={styles.liveDot} aria-hidden="true" />
             {t(usesMockApi ? "shell.mockApi" : "shell.liveApi")}
           </Chip>
           <div className={styles.localeSwitch} role="group" aria-label={t("app.language.label")} title={`${t("app.language.label")}: ${localeName}`}>
-            <Languages size={15} />
+            <Languages size={15} aria-hidden="true" />
             {supportedLocales.map((item) => (
               <button
                 key={item}
@@ -84,8 +90,13 @@ export function Shell({ children }: { children: ReactNode }) {
               </button>
             ))}
           </div>
-          <Button variant="ghost" iconOnly onClick={toggleTheme} aria-label={t("shell.theme")}>
-            {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+          <Button
+            variant="ghost"
+            iconOnly
+            onClick={toggleTheme}
+            aria-label={t(theme === "dark" ? "shell.theme.toLight" : "shell.theme.toDark")}
+          >
+            {theme === "dark" ? <Sun size={16} aria-hidden="true" /> : <Moon size={16} aria-hidden="true" />}
           </Button>
         </div>
       </header>

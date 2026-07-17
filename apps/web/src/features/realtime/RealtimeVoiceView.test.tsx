@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { AppIntlProvider, localeStorageKey } from "../../intl/IntlContext";
-import { buildSessionUpdateEvent, RealtimeVoiceView } from "./RealtimeVoiceView";
+import { buildSessionUpdateEvent, getTranscriptUpdate, RealtimeVoiceView } from "./RealtimeVoiceView";
 
 function setStoredLocale(locale: string) {
   const values = new Map([[localeStorageKey, locale]]);
@@ -22,6 +22,23 @@ describe("RealtimeVoiceView localisation", () => {
     expect(buildSessionUpdateEvent().session.instructions).toContain("only provide the French translation");
   });
 
+  it("extracts source and translated transcript updates from realtime events", () => {
+    expect(getTranscriptUpdate({
+      type: "conversation.item.input_audio_transcription.completed",
+      transcript: "Quiero visitar la casa.",
+    })).toEqual({ channel: "source", text: "Quiero visitar la casa.", replace: true });
+    expect(getTranscriptUpdate({ type: "response.audio_transcript.delta", delta: "Je veux " })).toEqual({
+      channel: "translation",
+      text: "Je veux ",
+      replace: false,
+    });
+    expect(getTranscriptUpdate({ type: "response.audio_transcript.done", transcript: "Je veux visiter la maison." })).toEqual({
+      channel: "translation",
+      text: "Je veux visiter la maison.",
+      replace: true,
+    });
+  });
+
   it("localises the interface while retaining Spanish sample input and translation direction", () => {
     setStoredLocale("en");
     render(
@@ -34,6 +51,8 @@ describe("RealtimeVoiceView localisation", () => {
     expect(screen.getByRole("region", { name: "Translation mode" })).toHaveTextContent("Spanish to French");
     expect(screen.getByText("Hola, quiero visitar una casa mañana por la tarde.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Send text" })).toBeDisabled();
+    expect(screen.getByLabelText("Translated audio output")).toHaveAttribute("controls");
+    expect(screen.getByRole("region", { name: "Live transcript" })).toBeInTheDocument();
   });
 
   it.each([

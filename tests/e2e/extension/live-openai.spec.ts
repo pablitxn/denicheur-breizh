@@ -37,9 +37,11 @@ test("@live crawls search and detail pages, calls the local API and stores OpenA
   await page.getByRole("textbox", { name: "Location", exact: true }).fill("Finistère");
   const apartment = page.getByRole("button", { name: "Flat", exact: true });
   if (await apartment.getAttribute("aria-pressed") === "true") await apartment.click();
+  await page.locator("details.advanced-panel > summary").click();
   await page.getByLabel("Max listings").fill("1");
   await page.getByLabel("Delay min sec").fill("5");
   await page.getByLabel("Delay max sec").fill("5");
+  await page.locator("details.intelligence-panel > summary").click();
   await page.getByText("Enable", { exact: true }).click();
   await page.getByRole("button", { name: "Add criterion" }).click();
   await page.getByLabel("Recipe name").fill("Live extension integration");
@@ -48,7 +50,7 @@ test("@live crawls search and detail pages, calls the local API and stores OpenA
   await page.getByLabel("Criterion 1 weight").fill("10");
   await page.getByText("Required evidence", { exact: true }).click();
 
-  await page.getByRole("button", { name: "Start crawl" }).click();
+  await page.getByRole("button", { name: "Start collection" }).click();
 
   await expect(page.getByText("completed", { exact: true })).toBeVisible({ timeout: 130_000 });
   await expect(page.getByText("Collected 1 listings and evaluated 1.", { exact: true })).toBeVisible();

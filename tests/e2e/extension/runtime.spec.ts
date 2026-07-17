@@ -51,21 +51,32 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     expect(context.serviceWorkers()).toHaveLength(1);
 
     const dashboardPromise = context.waitForEvent("page");
-    await page.getByRole("button", { name: "Open crawler" }).click();
+    await page.getByRole("button", { name: "Open dashboard" }).click();
     const dashboard = await dashboardPromise;
     await expect(dashboard).toHaveURL(extensionUrl(extensionId, "dashboard.html"));
     await expect(dashboard.getByRole("heading", { name: "Search filters" })).toBeVisible();
     await expect(dashboard.getByRole("textbox", { name: "Location", exact: true })).toBeVisible();
+    await dashboard.locator("details.advanced-panel > summary").click();
     await expect(dashboard.getByRole("checkbox", { name: "Collect detail pages" })).toBeVisible();
     await expect(dashboard.getByLabel("Source URL")).toHaveCount(0);
-    await expect(dashboard.getByRole("button", { name: "Start crawl" })).toBeEnabled();
+    await expect(dashboard.getByRole("button", { name: "Start collection" })).toBeEnabled();
 
     await dashboard.getByLabel("Price min").fill("200000");
-    await dashboard.getByLabel("Price max").fill("120000");
-    await expect(dashboard.getByRole("alert")).toContainText(
-      "Price maximum must be greater than or equal to its minimum.",
-    );
-    await expect(dashboard.getByRole("button", { name: "Start crawl" })).toBeDisabled();
+    const priceMax = dashboard.getByLabel("Price max");
+    await priceMax.fill("120000");
+    await expect(priceMax).toHaveAttribute("aria-invalid", "true");
+    await expect(dashboard.getByText(
+      "The price maximum must be greater than or equal to its minimum.",
+      { exact: true },
+    )).toBeVisible();
+    const start = dashboard.getByRole("button", { name: "Start collection" });
+    await expect(start).toBeEnabled();
+    await start.click();
+    await expect(priceMax).toBeFocused();
+    await expect(dashboard.getByText(
+      "Fix the invalid search filters before starting collection.",
+      { exact: true },
+    )).toBeVisible();
     expect(runtimeErrors).toEqual([]);
   });
 
@@ -143,7 +154,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     expect(context.pages().some((candidate) => candidate.url().startsWith("https://www.leboncoin.fr/"))).toBe(false);
     const pageCountBeforeRun = context.pages().length;
 
-    const start = page.getByRole("button", { name: "Start crawl" });
+    const start = page.locator('button[type="submit"]');
     await start.click();
     await expect(start).toBeDisabled();
 
@@ -253,7 +264,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     await page.bringToFront();
     await installTabFocusJournal(page);
 
-    await expect(page.getByLabel("Mode")).toHaveValue("9");
+    await expect(page.getByLabel("Transaction")).toHaveValue("9");
     await expect(page.getByRole("textbox", { name: "Location", exact: true })).toHaveValue("Finistère");
     await expect(page.getByRole("button", { name: "House", exact: true })).toHaveAttribute("aria-pressed", "true");
     for (const type of ["Flat", "Land", "Parking", "Other"]) {
@@ -266,6 +277,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     await expect(page.getByRole("checkbox", { name: "Collect detail pages" })).toBeChecked();
     await expect(page.getByLabel("Delay min sec")).toHaveValue("25");
     await expect(page.getByLabel("Delay max sec")).toHaveValue("55");
+    await page.locator("details.intelligence-panel > summary").click();
     await expect(page.getByRole("checkbox", { name: "Enable", exact: true })).not.toBeChecked();
 
     const dashboardTab = await page.evaluate(async () => chrome.tabs.getCurrent());
@@ -274,7 +286,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     expect(tracker.searchRequests).toBe(0);
     expect(tracker.detailRequests).toEqual([]);
 
-    const start = page.getByRole("button", { name: "Start crawl" });
+    const start = page.locator('button[type="submit"]');
     await start.click();
     await expect(start).toBeDisabled();
 
@@ -387,7 +399,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     await openCleanDashboard(page, extensionId);
     await configureNativeSearch(page, { keywords: "maison bretonne" });
 
-    await page.getByRole("button", { name: "Start crawl" }).click();
+    await page.getByRole("button", { name: "Start collection" }).click();
     await expect(page.getByText("completed", { exact: true })).toBeVisible({ timeout: 55_000 });
 
     expect(tracker.homeRequests).toBe(1);
@@ -462,7 +474,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
 
     const dashboardTab = await page.evaluate(async () => chrome.tabs.getCurrent());
     const pageCountBeforeRun = context.pages().length;
-    const start = page.getByRole("button", { name: "Start crawl" });
+    const start = page.locator('button[type="submit"]');
     await start.click();
     await expect(start).toBeDisabled();
 
@@ -551,7 +563,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     await openCleanDashboard(page, extensionId);
     await configureNativeSearch(page, { details: true });
 
-    const start = page.getByRole("button", { name: "Start crawl" });
+    const start = page.locator('button[type="submit"]');
     await start.click();
     await expect(start).toBeDisabled();
 
@@ -594,7 +606,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     await openCleanDashboard(page, extensionId);
     await configureNativeSearch(page, { keywords: "maison" });
 
-    await page.getByRole("button", { name: "Start crawl" }).click();
+    await page.getByRole("button", { name: "Start collection" }).click();
     await expect(page.getByText("failed", { exact: true })).toBeVisible({ timeout: 20_000 });
     await expect(page.getByRole("alert")).toContainText(/home search controls did not open|native search submit control was not found/iu);
     expect(tracker.homeRequests).toBe(1);
@@ -612,7 +624,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     await openCleanDashboard(page, extensionId);
     await configureNativeSearch(page, { maxListings: 2, details: true });
 
-    await page.getByRole("button", { name: "Start crawl" }).click();
+    await page.getByRole("button", { name: "Start collection" }).click();
     await expect(page.getByText("completed", { exact: true })).toBeVisible({ timeout: 65_000 });
     await expect(page.getByText("Collected 2 detailed listings.")).toBeVisible();
 
@@ -637,7 +649,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     await openCleanDashboard(page, extensionId);
     await configureNativeSearch(page, { ownerType: "private" });
 
-    await page.getByRole("button", { name: "Start crawl" }).click();
+    await page.getByRole("button", { name: "Start collection" }).click();
     await expect(page.getByText("completed", { exact: true })).toBeVisible({ timeout: 55_000 });
     await expect(page.getByRole("status")).toContainText("Seller");
     await expect(page.getByRole("status")).toContainText("seller control");
@@ -658,7 +670,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     await openCleanDashboard(page, extensionId);
     await configureNativeSearch(page, { location: "Paris" });
 
-    await page.getByRole("button", { name: "Start crawl" }).click();
+    await page.getByRole("button", { name: "Start collection" }).click();
     await expect(page.getByText("failed", { exact: true })).toBeVisible({ timeout: 20_000 });
     await expect(page.getByRole("alert")).toContainText("Location \"Paris\" is ambiguous");
     expect(tracker.homeRequests).toBe(1);
@@ -689,7 +701,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     await foreign.evaluate(() => { document.body.dataset.foreignMarker = "untouched"; });
     const foreignUrl = foreign.url();
     const searchRequestsBeforeRun = tracker.searchRequests;
-    const start = page.getByRole("button", { name: "Start crawl" });
+    const start = page.locator('button[type="submit"]');
     await start.click();
     await expect(start).toBeDisabled();
     await expect(page.getByText("configuring search", { exact: true })).toBeVisible({ timeout: 10_000 });
@@ -712,7 +724,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     await openCleanDashboard(page, extensionId);
     await configureNativeSearch(page);
 
-    await page.getByRole("button", { name: "Start crawl" }).click();
+    await page.getByRole("button", { name: "Start collection" }).click();
     await expect(page.getByText("CAPTCHA pending", { exact: true })).toBeVisible({ timeout: 15_000 });
     await expect(page.getByRole("button", { name: "Resume" })).toBeVisible();
     expect(tracker.searchRequests).toBe(0);
@@ -736,7 +748,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     await openCleanDashboard(page, extensionId);
     await configureNativeSearch(page);
 
-    await page.getByRole("button", { name: "Start crawl" }).click();
+    await page.getByRole("button", { name: "Start collection" }).click();
     await expect(page.getByText("CAPTCHA pending", { exact: true })).toBeVisible({ timeout: 20_000 });
     const searchUrl = context.pages().find((candidate) => candidate.url().includes("/recherche?"))?.url();
     await page.getByRole("button", { name: "Resume" }).click();
@@ -757,9 +769,9 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     await openCleanDashboard(page, extensionId);
     await configureNativeSearch(page, { details: true });
 
-    await page.getByRole("button", { name: "Start crawl" }).click();
+    await page.getByRole("button", { name: "Start collection" }).click();
     await expect(page.getByText("activity blocked", { exact: true })).toBeVisible({ timeout: 55_000 });
-    await expect(page.getByRole("button", { name: "Start crawl" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Start collection" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "Cancel" })).toBeDisabled();
     expect(context.pages().some((candidate) => candidate.url() === DETAIL_URL)).toBe(true);
     await expect.poll(() => activeTabUrl(page)).toBe(DETAIL_URL);
@@ -884,6 +896,10 @@ async function configureNativeSearch(page: Page, options: ConfigureSearchOptions
   await page.getByLabel("Price max").fill("120000");
   await page.getByLabel("Rooms min").fill("2");
   await page.getByLabel("Rooms max").fill("3");
+  const advancedSettings = page.locator("details.advanced-panel");
+  if (await advancedSettings.getAttribute("open") === null) {
+    await advancedSettings.locator("summary").click();
+  }
   await page.getByLabel("Max listings").fill(String(options.maxListings ?? 1));
   await page.getByLabel("Seller").selectOption(options.ownerType ?? "all");
   await page.getByLabel("Delay min sec").fill(String(options.minDelaySeconds ?? 5));
@@ -895,7 +911,7 @@ async function openCleanDashboard(page: Page, extensionId: string): Promise<void
   await page.goto(extensionUrl(extensionId, "dashboard.html"));
   await clearExtensionStorage(page);
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Denicheur Breizh Crawler" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Denicheur Breizh" })).toBeVisible();
 }
 
 async function readStoredRecords(page: Page): Promise<Array<Record<string, unknown>>> {
