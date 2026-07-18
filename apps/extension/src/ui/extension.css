@@ -11,6 +11,11 @@ body {
   background: var(--color-bg);
 }
 
+body.popup-document {
+  width: 360px;
+  min-width: 360px;
+}
+
 button,
 input,
 select,
@@ -858,7 +863,7 @@ a {
   display: flex;
   flex-direction: column;
   width: min(360px, 100vw);
-  min-height: 280px;
+  min-height: 420px;
   max-height: min(580px, 100vh);
   padding: var(--space-5);
   background: var(--color-bg);

@@ -1,12 +1,10 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const isCi = Boolean(process.env.CI);
-const runLiveOpenAi = process.env.RUN_LIVE_OPENAI_E2E === "1";
-
 const apiServer = {
-  command: "FILTER_API_PORT=14310 pnpm --filter @denicheur-breizh/api start",
+  command: "DENICHEUR_DB_PATH=:memory: FILTER_API_PORT=14310 FILTER_API_ALLOWED_ORIGINS=http://127.0.0.1:14173,chrome-extension://oekklajlieiinmjcmhdfeodpdhahhjdi pnpm --filter @denicheur-breizh/api start",
   url: "http://127.0.0.1:14310/health",
-  reuseExistingServer: !isCi,
+  reuseExistingServer: false,
   timeout: 30_000,
   stdout: "pipe" as const,
   stderr: "pipe" as const,
@@ -47,5 +45,5 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"] },
     },
   ],
-  webServer: runLiveOpenAi ? [apiServer, webServer] : [webServer],
+  webServer: [apiServer, webServer],
 });

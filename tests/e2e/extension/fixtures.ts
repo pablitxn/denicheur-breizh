@@ -69,16 +69,15 @@ export const test = base.extend<ExtensionFixtures>({
     });
     await context.route("**/*", async (route) => {
       const url = new URL(route.request().url());
-      const liveApiRequest =
-        process.env.RUN_LIVE_OPENAI_E2E === "1" &&
+      const localProductRequest =
         url.protocol === "http:" &&
         url.hostname === "127.0.0.1" &&
-        url.port === "14310";
+        (url.port === "14310" || url.port === "14173");
       if (
         url.protocol === "chrome-extension:" ||
         url.protocol === "data:" ||
         url.protocol === "about:" ||
-        liveApiRequest
+        localProductRequest
       ) {
         await route.continue();
         return;

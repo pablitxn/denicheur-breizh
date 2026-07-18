@@ -7,7 +7,6 @@ import {
   ExternalLink,
   LoaderCircle,
   Play,
-  Plus,
   RefreshCw,
   Save,
   Search,
@@ -35,11 +34,6 @@ import {
 } from "../intelligence/filterApi";
 import {
   createDefaultIntelligenceRecipe,
-  createEmptyCriterion,
-  MAX_INTELLIGENCE_CRITERIA,
-  normalizeIntelligenceRecipe,
-  validateIntelligenceRecipe,
-  type RecipeValidationIssue,
 } from "../intelligence/recipe";
 import {
   CATEGORY_OPTIONS,
@@ -52,7 +46,6 @@ import {
   validateSearchFilters,
 } from "../lib/leboncoinSearch";
 import type {
-  IntelligenceCriterion,
   IntelligenceRecipe,
   ListingEvaluation,
   ScrapeRun,
@@ -67,9 +60,16 @@ import {
   reconcileInterruptedRun,
   saveCrawlerState,
   saveFilters,
-  saveRecipe,
   saveRun,
 } from "../storage/chromeStorage";
+import {
+  requestActiveRecipeRefresh,
+  requestImmediateSync,
+} from "../sync/runtime";
+import {
+  loadExtensionSyncState,
+  SYNC_STORAGE_KEY,
+} from "../sync/storage";
 import {
   useThemePreference,
   type ThemePreference,
@@ -124,10 +124,7 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
   const [run, setRun] = useState<ScrapeRun>(IDLE_RUN);
   const [records, setRecords] = useState<ScrapedPropertyRecord[]>([]);
   const [recipe, setRecipe] = useState<IntelligenceRecipe>(createDefaultIntelligenceRecipe);
-  const [thresholdDraft, setThresholdDraft] = useState("70");
-  const [criterionWeightDrafts, setCriterionWeightDrafts] = useState<Record<string, string>>({});
   const [filtersDirty, setFiltersDirty] = useState(false);
-  const [recipeDirty, setRecipeDirty] = useState(false);
   const [hydrationState, setHydrationState] = useState<"loading" | "ready" | "error">("loading");
   const [hydrationRetry, setHydrationRetry] = useState(0);
   const [loadError, setLoadError] = useState<unknown>();
@@ -137,7 +134,7 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
   const [resultsPage, setResultsPage] = useState(initialResultsState.page);
   const [intelligenceExpanded, setIntelligenceExpanded] = useState(false);
   const [savingFilters, setSavingFilters] = useState(false);
-  const [savingRecipe, setSavingRecipe] = useState(false);
+  const [refreshingRecipe, setRefreshingRecipe] = useState(false);
   const [reevaluationPending, setReevaluationPending] = useState(false);
   const [startPending, setStartPending] = useState(false);
   const [draftConflict, setDraftConflict] = useState(false);
@@ -149,14 +146,13 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
   const startPendingRef = useRef(false);
   const reevaluationPendingRef = useRef(false);
   const filtersDirtyRef = useRef(false);
-  const recipeDirtyRef = useRef(false);
   const formRef = useRef<HTMLFormElement>(null);
   const reevaluationAbortRef = useRef<AbortController | undefined>(undefined);
   const isRunning = RUNNING_STATUSES.has(run.status);
   const isRunActive = isRunning || run.status === "paused-captcha";
   const canControlActiveRun = Boolean(runnerRef.current || reevaluationAbortRef.current);
   const requiresReset = run.status === "blocked-captcha" || run.status === "blocked-activity";
-  const formPending = savingFilters || savingRecipe || reevaluationPending || startPending;
+  const formPending = savingFilters || refreshingRecipe || reevaluationPending || startPending;
   const filterIssues = useMemo(() => validateSearchFilters(filters), [filters]);
   const filterIssueMessages = useMemo(
     () => new Map(filterIssues.map((issue) => [
@@ -164,21 +160,6 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
       translateFilterValidationIssue(issue, filters, t),
     ])),
     [filterIssues, filters, t],
-  );
-  const recipeDraft = useMemo(
-    () => recipeFromDrafts(recipe, thresholdDraft, criterionWeightDrafts),
-    [criterionWeightDrafts, recipe, thresholdDraft],
-  );
-  const recipeIssues = useMemo(
-    () => validateIntelligenceRecipe(recipeDraft),
-    [recipeDraft],
-  );
-  const recipeIssueMessages = useMemo(
-    () => new Map(recipeIssues.map((issue) => [
-      recipeIssueKey(issue.field, issue.criterionId),
-      t(recipeValidationMessageId(issue.code), { max: MAX_INTELLIGENCE_CRITERIA }),
-    ])),
-    [recipeIssues, t],
   );
   const filteredRecords = useMemo(
     () => records.filter((record) => {
@@ -202,8 +183,8 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
     setHydrationState("loading");
     setLoadError(undefined);
 
-    void loadCrawlerState()
-      .then(async (snapshot) => {
+    void Promise.all([loadCrawlerState(), loadExtensionSyncState()])
+      .then(async ([snapshot, syncState]) => {
         const hasLiveRunner = await hasLiveDashboardRunner(
           Boolean(runnerRef.current),
         );
@@ -214,13 +195,13 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
         setFilters(snapshot.filters);
         setRun(recoveredRun);
         setRecords(snapshot.records);
-        setRecipe(snapshot.recipe);
-        setThresholdDraft(String(snapshot.recipe.threshold));
-        setCriterionWeightDrafts(weightDraftsFromRecipe(snapshot.recipe));
+        const activeRecipe = syncState.activeRecipe.status === "cached"
+          ? snapshot.recipe
+          : createDefaultIntelligenceRecipe();
+        setRecipe(activeRecipe);
         setFiltersDirtyState(false);
-        setRecipeDirtyState(false);
         setDraftConflict(false);
-        setIntelligenceExpanded(snapshot.recipe.enabled);
+        setIntelligenceExpanded(activeRecipe.enabled);
         setHydrationState("ready");
       })
       .catch((caught) => {
@@ -233,15 +214,16 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
     const listener = (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => {
       if (
         areaName !== "local" ||
-        !Object.keys(changes).some((key) => Object.values(CRAWLER_STORAGE_KEYS).includes(
-          key as (typeof CRAWLER_STORAGE_KEYS)[keyof typeof CRAWLER_STORAGE_KEYS],
-        ))
+        !Object.keys(changes).some((key) =>
+          key === SYNC_STORAGE_KEY || Object.values(CRAWLER_STORAGE_KEYS).includes(
+            key as (typeof CRAWLER_STORAGE_KEYS)[keyof typeof CRAWLER_STORAGE_KEYS],
+          ))
       ) {
         return;
       }
 
-      void loadCrawlerState()
-        .then((snapshot) => {
+      void Promise.all([loadCrawlerState(), loadExtensionSyncState()])
+        .then(([snapshot, syncState]) => {
           if (!mounted) return;
           if (CRAWLER_STORAGE_KEYS.filters in changes) {
             if (filtersDirtyRef.current) {
@@ -250,14 +232,10 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
               setFilters(snapshot.filters);
             }
           }
-          if (CRAWLER_STORAGE_KEYS.recipe in changes) {
-            if (recipeDirtyRef.current) {
-              setDraftConflict(true);
-            } else {
-              setRecipe(snapshot.recipe);
-              setThresholdDraft(String(snapshot.recipe.threshold));
-              setCriterionWeightDrafts(weightDraftsFromRecipe(snapshot.recipe));
-            }
+          if (CRAWLER_STORAGE_KEYS.recipe in changes || SYNC_STORAGE_KEY in changes) {
+            setRecipe(syncState.activeRecipe.status === "cached"
+              ? snapshot.recipe
+              : createDefaultIntelligenceRecipe());
           }
           if (CRAWLER_STORAGE_KEYS.run in changes) setRun(snapshot.run);
           if (CRAWLER_STORAGE_KEYS.records in changes) setRecords(snapshot.records);
@@ -321,32 +299,22 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
   }, [currentResultsPage, decisionFilter, hydrationState, recordQuery]);
 
   useEffect(() => {
-    if (!filtersDirty && !recipeDirty) return;
+    if (!filtersDirty) return;
     const warnAboutUnsavedChanges = (event: BeforeUnloadEvent) => {
       event.preventDefault();
       event.returnValue = "";
     };
     window.addEventListener("beforeunload", warnAboutUnsavedChanges);
     return () => window.removeEventListener("beforeunload", warnAboutUnsavedChanges);
-  }, [filtersDirty, recipeDirty]);
+  }, [filtersDirty]);
 
   function setFiltersDirtyState(nextDirty: boolean) {
     filtersDirtyRef.current = nextDirty;
     setFiltersDirty(nextDirty);
   }
 
-  function setRecipeDirtyState(nextDirty: boolean) {
-    recipeDirtyRef.current = nextDirty;
-    setRecipeDirty(nextDirty);
-  }
-
   function markFiltersDirty() {
     setFiltersDirtyState(true);
-    setActionFeedback(undefined);
-  }
-
-  function markRecipeDirty() {
-    setRecipeDirtyState(true);
     setActionFeedback(undefined);
   }
 
@@ -373,85 +341,8 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
     markFiltersDirty();
   }
 
-  function patchRecipe(patch: Partial<IntelligenceRecipe>) {
-    setRecipe((current) => ({ ...current, ...patch }));
-    if (patch.enabled) setIntelligenceExpanded(true);
-    markRecipeDirty();
-  }
-
-  function patchCriterion(id: string, patch: Partial<IntelligenceCriterion>) {
-    setRecipe((current) => ({
-      ...current,
-      criteria: current.criteria.map((criterion) =>
-        criterion.id === id ? { ...criterion, ...patch } : criterion,
-      ),
-    }));
-    markRecipeDirty();
-  }
-
-  function addCriterion() {
-    const criterion = createEmptyCriterion();
-    setRecipe((current) => ({ ...current, criteria: [...current.criteria, criterion] }));
-    setCriterionWeightDrafts((current) => ({ ...current, [criterion.id]: String(criterion.weight) }));
-    markRecipeDirty();
-    requestAnimationFrame(() => document.getElementById(`criterion-name-${criterion.id}`)?.focus());
-  }
-
-  function removeCriterion(id: string) {
-    const index = recipe.criteria.findIndex((criterion) => criterion.id === id);
-    if (!window.confirm(t("confirm.removeCriterion", { index: index + 1 }))) return;
-    const nextFocusId = recipe.criteria[index + 1]?.id ?? recipe.criteria[index - 1]?.id;
-    setRecipe((current) => ({
-      ...current,
-      criteria: current.criteria.filter((criterion) => criterion.id !== id),
-    }));
-    setCriterionWeightDrafts((current) => {
-      const next = { ...current };
-      delete next[id];
-      return next;
-    });
-    markRecipeDirty();
-    requestAnimationFrame(() => {
-      if (nextFocusId) {
-        document.getElementById(`criterion-name-${nextFocusId}`)?.focus();
-      } else {
-        document.getElementById("add-criterion")?.focus();
-      }
-    });
-  }
-
-  function patchThresholdDraft(value: string) {
-    setThresholdDraft(value);
-    markRecipeDirty();
-  }
-
-  function patchCriterionWeightDraft(id: string, value: string) {
-    setCriterionWeightDrafts((current) => ({ ...current, [id]: value }));
-    markRecipeDirty();
-  }
-
-  async function persistRecipeForUse(): Promise<IntelligenceRecipe> {
-    const issues = validateIntelligenceRecipe(recipeDraft);
-    if (issues.length > 0) {
-      focusRecipeIssue(issues[0]);
-      throw new Error(t(recipeValidationMessageId(issues[0].code), { max: MAX_INTELLIGENCE_CRITERIA }));
-    }
-    const versionedRecipe = recipeDirty
-      ? { ...recipeDraft, version: recipeDraft.version + 1 }
-      : recipeDraft;
-    const nextRecipe = normalizeIntelligenceRecipe(versionedRecipe);
-    setRecipeDirtyState(false);
-    try {
-      await saveRecipe(nextRecipe);
-      setRecipe(nextRecipe);
-      setThresholdDraft(String(nextRecipe.threshold));
-      setCriterionWeightDrafts(weightDraftsFromRecipe(nextRecipe));
-      setDraftConflict(false);
-      return nextRecipe;
-    } catch (caught) {
-      setRecipeDirtyState(true);
-      throw caught;
-    }
+  function activeRecipeForUse(): IntelligenceRecipe {
+    return recipe;
   }
 
   async function persistFiltersForUse(): Promise<SearchFilters> {
@@ -472,18 +363,23 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
     }
   }
 
-  async function handleSaveRecipe() {
+  async function handleRefreshRecipe() {
     setError(undefined);
-    setSavingRecipe(true);
-    setActionFeedback(t("action.saving"));
+    setRefreshingRecipe(true);
+    setActionFeedback(t("intelligence.refreshingRecipe"));
     try {
-      await persistRecipeForUse();
-      setActionFeedback(t("feedback.recipeSaved"));
+      const response = await requestActiveRecipeRefresh();
+      if (!response.ok || !response.recipe) {
+        throw new Error(response.error ?? "No active API recipe is available.");
+      }
+      setRecipe(response.recipe);
+      setIntelligenceExpanded(true);
+      setActionFeedback(t("feedback.recipeRefreshed"));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
       setActionFeedback(undefined);
     } finally {
-      setSavingRecipe(false);
+      setRefreshingRecipe(false);
     }
   }
 
@@ -517,13 +413,6 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
     });
   }
 
-  function focusRecipeIssue(issue: RecipeValidationIssue | undefined) {
-    if (!issue) return;
-    setIntelligenceExpanded(true);
-    const id = recipeIssueControlId(issue);
-    requestAnimationFrame(() => document.getElementById(id)?.focus());
-  }
-
   async function handleStart(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (hydrationState !== "ready" || startPendingRef.current || isRunActive) return;
@@ -545,7 +434,7 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
 
     try {
       await withDashboardRunnerLease(async () => {
-        const recipeForRun = await persistRecipeForUse();
+        const recipeForRun = activeRecipeForUse();
         const normalizedFilters = await persistFiltersForUse();
         const runnableFilters = normalizeSearchFilters({
           ...normalizedFilters,
@@ -588,12 +477,11 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
     setError(undefined);
     setActionFeedback(t("intelligence.reevaluating"));
     try {
-      const recipeForRun = await persistRecipeForUse();
+      const recipeForRun = activeRecipeForUse();
       if (!recipeForRun.enabled) throw extensionMessage("error.enableRecipe");
       const detailedRecords = records.filter((record) => record.status === "detailed");
       if (detailedRecords.length === 0) throw extensionMessage("error.noDetailedRecords");
 
-      const reevaluationRunId = `reevaluation-${Date.now()}`;
       const abortController = new AbortController();
       reevaluationAbortRef.current = abortController;
       const evaluatingRun: ScrapeRun = {
@@ -606,18 +494,43 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
       setRun(evaluatingRun);
       await saveCrawlerState({ run: evaluatingRun });
 
+      let persistedRecords = records;
+      const persistedEvaluations: ListingEvaluation[] = [];
       try {
-        const evaluations = await evaluateDetailedRecordsInBatches(
-          reevaluationRunId,
-          recipeForRun,
-          detailedRecords,
-          { locale, signal: abortController.signal },
-        );
-        const nextRecords = mergeRecordEvaluations(records, evaluations);
-        const nextRun = runWithEvaluations(evaluatingRun, evaluations);
-        setRecords(nextRecords);
+        const syncResponse = await requestImmediateSync();
+        if (!syncResponse.ok) {
+          throw new Error(syncResponse.error ?? "Listings could not be synchronized before evaluation.");
+        }
+        const recordsByRun = groupRecordsByRun(detailedRecords);
+        for (const [sourceRunId, sourceRecords] of recordsByRun) {
+          await evaluateDetailedRecordsInBatches(
+            sourceRunId,
+            recipeForRun,
+            sourceRecords,
+            {
+              locale,
+              signal: abortController.signal,
+              onBatchComplete: async (batch) => {
+                persistedEvaluations.push(...batch);
+                persistedRecords = mergeRecordEvaluations(persistedRecords, batch);
+                const progressRun: ScrapeRun = {
+                  ...evaluatingRun,
+                  evaluated: persistedEvaluations.length,
+                  relevant: persistedEvaluations.filter((item) => item.decision === "relevant").length,
+                  notRelevant: persistedEvaluations.filter((item) => item.decision === "not-relevant").length,
+                  review: persistedEvaluations.filter((item) => item.decision === "review").length,
+                };
+                setRun(progressRun);
+                setRecords(persistedRecords);
+                await saveCrawlerState({ run: progressRun, records: persistedRecords });
+              },
+            },
+          );
+        }
+        const nextRun = runWithEvaluations(evaluatingRun, persistedEvaluations);
         setRun(nextRun);
-        await saveCrawlerState({ run: nextRun, records: nextRecords });
+        setRecords(persistedRecords);
+        await saveCrawlerState({ run: nextRun, records: persistedRecords });
       } catch (caught) {
         const intelligenceError = filterApiErrorDescriptor(caught);
         const nextRun: ScrapeRun = {
@@ -628,7 +541,7 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
           message: extensionMessage("run.reevaluationFailed"),
         };
         setRun(nextRun);
-        await saveCrawlerState({ run: nextRun });
+        await saveCrawlerState({ run: nextRun, records: persistedRecords });
         throw intelligenceError;
       } finally {
         reevaluationAbortRef.current = undefined;
@@ -747,7 +660,7 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
               <h2>{t("search.title")}</h2>
               <p>{t("search.description")}</p>
             </div>
-            {(filtersDirty || recipeDirty) && (
+            {filtersDirty && (
               <Chip tone="sunset">{t("feedback.unsavedChanges")}</Chip>
             )}
           </div>
@@ -912,182 +825,69 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
                 </Chip>
               </span>
             </summary>
-            <fieldset
-              className="intelligence-content"
-              disabled={hydrationState !== "ready" || isRunActive || formPending}
-              aria-labelledby="intelligence-title"
-            >
-              <legend className="sr-only">{t("intelligence.title")}</legend>
+            <div className="intelligence-content" aria-labelledby="intelligence-title">
               <div className="intelligence-head">
-                <p>{t("intelligence.description")}</p>
-              <label className="toggle">
-                <input
-                  type="checkbox"
-                  name="intelligence-enabled"
-                  checked={recipe.enabled}
-                  onChange={(event) => patchRecipe({ enabled: event.target.checked })}
-                />
-                <span className="track" />
-                <span>{t("intelligence.enable")}</span>
-              </label>
+                <p>{t("intelligence.activeRecipeDescription")}</p>
               </div>
 
-            <div className="recipe-grid">
-              <label className="field wide">
-                <SectionLabel>{t("intelligence.recipeName")}</SectionLabel>
-                <input
-                  id="recipe-name"
-                  className="input"
-                  name="recipe-name"
-                  autoComplete="off"
-                  maxLength={160}
-                  value={recipe.name}
-                  aria-invalid={Boolean(recipeIssueMessages.get("name"))}
-                  aria-describedby={recipeIssueMessages.get("name") ? "recipe-name-error" : undefined}
-                  onChange={(event) => patchRecipe({ name: event.target.value })}
-                />
-                {recipeIssueMessages.get("name") && (
-                  <small id="recipe-name-error" className="field-error">
-                    {recipeIssueMessages.get("name")}
-                  </small>
+              <div className="recipe-grid">
+                <div className="field wide">
+                  <SectionLabel>{t("intelligence.recipeName")}</SectionLabel>
+                  <strong>{recipe.name}</strong>
+                </div>
+                <div className="field">
+                  <SectionLabel>{t("intelligence.threshold")}</SectionLabel>
+                  <strong>{formatNumber(recipe.threshold)}%</strong>
+                </div>
+                <div className="recipe-version">
+                  <SectionLabel>{t("intelligence.version")}</SectionLabel>
+                  <strong>v{formatNumber(recipe.version)}</strong>
+                </div>
+              </div>
+
+              <div className="criteria-list">
+                {recipe.criteria.length === 0 && (
+                  <p className="criteria-empty">{t("intelligence.noActiveCriteria")}</p>
                 )}
-              </label>
-              <NumberField
-                label={t("intelligence.threshold")}
-                name="relevance-threshold"
-                value={thresholdDraft}
-                max={100}
-                error={recipeIssueMessages.get("threshold")}
-                onChange={patchThresholdDraft}
-              />
-              <div className="recipe-version">
-                <SectionLabel>{t("intelligence.version")}</SectionLabel>
-                <strong>
-                  v{formatNumber(recipe.version)}
-                  {recipeDirty ? ` · ${t("intelligence.unsaved")}` : ""}
-                </strong>
-              </div>
-            </div>
-
-            {recipeIssueMessages.get("criteria") && (
-              <p id="criteria-error" className="field-error" role="alert">
-                {recipeIssueMessages.get("criteria")}
-              </p>
-            )}
-            <div className="criteria-list" aria-describedby={recipeIssueMessages.get("criteria") ? "criteria-error" : undefined}>
-              {recipe.criteria.length === 0 && (
-                <p className="criteria-empty">{t("intelligence.emptyCriteria")}</p>
-              )}
-              {recipe.criteria.map((criterion, index) => (
-                <article className="criterion-row" key={criterion.id}>
-                  <div className="criterion-index">{index + 1}</div>
-                  <div className="criterion-fields">
-                    <input
-                      id={`criterion-name-${criterion.id}`}
-                      className="input"
-                      name={`criterion-name-${criterion.id}`}
-                      autoComplete="off"
-                      maxLength={160}
-                      value={criterion.name}
-                      placeholder={t("intelligence.criterionName")}
-                      aria-label={t("intelligence.criterionNameAria", { index: index + 1 })}
-                      aria-invalid={Boolean(recipeIssueMessages.get(recipeIssueKey("criterion-name", criterion.id)))}
-                      aria-describedby={recipeIssueMessages.get(recipeIssueKey("criterion-name", criterion.id)) ? `criterion-name-${criterion.id}-error` : undefined}
-                      onChange={(event) => patchCriterion(criterion.id, { name: event.target.value })}
-                    />
-                    {recipeIssueMessages.get(recipeIssueKey("criterion-name", criterion.id)) && (
-                      <small id={`criterion-name-${criterion.id}-error`} className="field-error">
-                        {recipeIssueMessages.get(recipeIssueKey("criterion-name", criterion.id))}
-                      </small>
-                    )}
-                    <textarea
-                      id={`criterion-description-${criterion.id}`}
-                      className="input criterion-description"
-                      name={`criterion-description-${criterion.id}`}
-                      value={criterion.description}
-                      maxLength={2000}
-                      placeholder={t("intelligence.criterionDescription")}
-                      aria-label={t("intelligence.criterionDescriptionAria", { index: index + 1 })}
-                      aria-invalid={Boolean(recipeIssueMessages.get(recipeIssueKey("criterion-description", criterion.id)))}
-                      aria-describedby={recipeIssueMessages.get(recipeIssueKey("criterion-description", criterion.id)) ? `criterion-description-${criterion.id}-error` : undefined}
-                      onChange={(event) => patchCriterion(criterion.id, { description: event.target.value })}
-                    />
-                    {recipeIssueMessages.get(recipeIssueKey("criterion-description", criterion.id)) && (
-                      <small id={`criterion-description-${criterion.id}-error`} className="field-error">
-                        {recipeIssueMessages.get(recipeIssueKey("criterion-description", criterion.id))}
-                      </small>
-                    )}
-                    <div className="criterion-options">
-                      <label>
-                        <span>{t("intelligence.weight")}</span>
-                        <input
-                          id={`criterion-weight-${criterion.id}`}
-                          className="input criterion-weight"
-                          type="number"
-                          name={`criterion-weight-${criterion.id}`}
-                          autoComplete="off"
-                          inputMode="numeric"
-                          min={0}
-                          max={100}
-                          value={criterionWeightDrafts[criterion.id] ?? String(criterion.weight)}
-                          aria-label={t("intelligence.weightAria", { index: index + 1 })}
-                          aria-invalid={Boolean(recipeIssueMessages.get(recipeIssueKey("criterion-weight", criterion.id)))}
-                          aria-describedby={recipeIssueMessages.get(recipeIssueKey("criterion-weight", criterion.id)) ? `criterion-weight-${criterion.id}-error` : undefined}
-                          onChange={(event) => patchCriterionWeightDraft(criterion.id, event.target.value)}
-                        />
-                        {recipeIssueMessages.get(recipeIssueKey("criterion-weight", criterion.id)) && (
-                          <small id={`criterion-weight-${criterion.id}-error`} className="field-error">
-                            {recipeIssueMessages.get(recipeIssueKey("criterion-weight", criterion.id))}
-                          </small>
-                        )}
-                      </label>
-                      <label className="criterion-required">
-                        <input
-                          type="checkbox"
-                          name={`criterion-required-${criterion.id}`}
-                          checked={criterion.required}
-                          onChange={(event) => patchCriterion(criterion.id, { required: event.target.checked })}
-                        />
-                        {t("intelligence.required")}
-                      </label>
+                {recipe.criteria.map((criterion, index) => (
+                  <article className="criterion-row" key={criterion.id}>
+                    <div className="criterion-index">{index + 1}</div>
+                    <div className="criterion-fields">
+                      <strong>{criterion.name}</strong>
+                      <p>{criterion.description}</p>
+                      <div className="criterion-options">
+                        <span>{t("intelligence.weight")}: {formatNumber(criterion.weight)}</span>
+                        {criterion.required && <Chip tone="sunset">{t("intelligence.required")}</Chip>}
+                      </div>
                     </div>
-                  </div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    iconOnly
-                    aria-label={t("intelligence.removeCriterion", { index: index + 1 })}
-                    onClick={() => removeCriterion(criterion.id)}
-                  >
-                    <X size={14} />
-                  </Button>
-                </article>
-              ))}
-            </div>
+                  </article>
+                ))}
+              </div>
 
-            <div className="intelligence-actions">
-              <Button id="add-criterion" type="button" size="sm" onClick={addCriterion} disabled={recipe.criteria.length >= 12}>
-                <Plus size={14} />
-                {t("intelligence.addCriterion")}
-              </Button>
-              <Button type="button" size="sm" variant="ghost" onClick={handleSaveRecipe} disabled={!recipeDirty || savingRecipe}>
-                {savingRecipe ? <LoaderCircle className="spin" size={14} /> : <Save size={14} />}
-                {savingRecipe ? t("action.saving") : t("intelligence.saveRecipe")}
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                onClick={handleReevaluate}
-                disabled={reevaluationPending || isRunActive || !recipe.enabled || records.every((record) => record.status !== "detailed")}
-              >
-                {reevaluationPending ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}
-                {reevaluationPending ? t("intelligence.reevaluating") : t("intelligence.reevaluate")}
-              </Button>
+              <div className="intelligence-actions">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={handleRefreshRecipe}
+                  disabled={refreshingRecipe || isRunActive}
+                >
+                  {refreshingRecipe ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}
+                  {refreshingRecipe ? t("intelligence.refreshingRecipe") : t("intelligence.refreshRecipe")}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={handleReevaluate}
+                  disabled={reevaluationPending || isRunActive || !recipe.enabled || records.every((record) => record.status !== "detailed")}
+                >
+                  {reevaluationPending ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}
+                  {reevaluationPending ? t("intelligence.reevaluating") : t("intelligence.reevaluate")}
+                </Button>
+              </div>
+              {recipe.enabled && <p className="intelligence-note">{t("intelligence.autoDetails")}</p>}
             </div>
-            {recipe.enabled && <p className="intelligence-note">{t("intelligence.autoDetails")}</p>}
-            </fieldset>
           </details>
 
           <div className="guardrail-panel">
@@ -1439,49 +1239,6 @@ function numericDraftValue(value: string): number {
   return value.trim() === "" ? Number.NaN : Number(value);
 }
 
-function weightDraftsFromRecipe(recipe: IntelligenceRecipe): Record<string, string> {
-  return Object.fromEntries(recipe.criteria.map((criterion) => [criterion.id, String(criterion.weight)]));
-}
-
-function recipeIssueKey(field: RecipeValidationIssue["field"], criterionId?: string): string {
-  return criterionId ? `${field}:${criterionId}` : field;
-}
-
-function recipeValidationMessageId(
-  code: RecipeValidationIssue["code"],
-): ExtensionMessageId {
-  const ids: Record<RecipeValidationIssue["code"], ExtensionMessageId> = {
-    "name-required": "validation.recipeNameRequired",
-    "name-too-long": "validation.recipeNameTooLong",
-    "threshold-range": "validation.recipeThresholdRange",
-    "criteria-required": "validation.recipeCriteriaRequired",
-    "criteria-too-many": "validation.recipeCriteriaTooMany",
-    "criterion-id-invalid": "validation.criterionIdInvalid",
-    "criterion-name-required": "validation.criterionNameRequired",
-    "criterion-name-too-long": "validation.criterionNameTooLong",
-    "criterion-description-required": "validation.criterionDescriptionRequired",
-    "criterion-description-too-long": "validation.criterionDescriptionTooLong",
-    "criterion-weight-range": "validation.criterionWeightRange",
-    "positive-weight-required": "validation.positiveWeightRequired",
-  };
-  return ids[code];
-}
-
-function recipeIssueControlId(issue: RecipeValidationIssue): string {
-  if (issue.field === "name") return "recipe-name";
-  if (issue.field === "threshold") return "relevance-threshold";
-  if (issue.field === "criterion-name" && issue.criterionId) {
-    return `criterion-name-${issue.criterionId}`;
-  }
-  if (issue.field === "criterion-description" && issue.criterionId) {
-    return `criterion-description-${issue.criterionId}`;
-  }
-  if (issue.field === "criterion-weight" && issue.criterionId) {
-    return `criterion-weight-${issue.criterionId}`;
-  }
-  return "add-criterion";
-}
-
 export function reconcileDashboardRun(
   run: ScrapeRun,
   hasLiveRunner: boolean,
@@ -1757,6 +1514,18 @@ function runWithEvaluations(run: ScrapeRun, evaluations: ListingEvaluation[]): S
     review: evaluations.filter((evaluation) => evaluation.decision === "review").length,
     message: extensionMessage("run.reevaluated", { count: evaluations.length }),
   };
+}
+
+function groupRecordsByRun(
+  records: ScrapedPropertyRecord[],
+): Array<[string, ScrapedPropertyRecord[]]> {
+  const byRun = new Map<string, ScrapedPropertyRecord[]>();
+  for (const record of records) {
+    const runRecords = byRun.get(record.searchRunId) ?? [];
+    runRecords.push(record);
+    byRun.set(record.searchRunId, runRecords);
+  }
+  return [...byRun.entries()];
 }
 
 interface LocalizedMessageViewProps {

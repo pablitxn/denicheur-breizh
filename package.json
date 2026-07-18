@@ -8,10 +8,13 @@
     "node": ">=24 <27"
   },
   "scripts": {
-    "dev": "turbo run dev --filter=@denicheur-breizh/web",
+    "dev": "turbo run dev --filter=@denicheur-breizh/api --filter=@denicheur-breizh/web",
+    "dev:extension": "turbo run dev --filter=@denicheur-breizh/extension",
+    "dev:all": "turbo run dev --filter=@denicheur-breizh/api --filter=@denicheur-breizh/web --filter=@denicheur-breizh/extension",
     "build": "turbo run build",
-    "build:e2e": "VITE_ENABLE_REALTIME=true WXT_OUTPUT_DIR=.output-e2e WXT_FILTER_API_URL=http://127.0.0.1:14310 turbo run build",
+    "build:e2e": "VITE_API_BASE_URL=http://127.0.0.1:14310 VITE_ENABLE_REALTIME=true WXT_OUTPUT_DIR=.output-e2e WXT_FILTER_API_URL=http://127.0.0.1:14310 turbo run build",
     "preview": "turbo run preview --filter=@denicheur-breizh/web",
+    "db:clean": "node scripts/clear-extension-db.mjs",
     "test": "turbo run test",
     "test:run": "turbo run test:run",
     "test:coverage": "turbo run test:coverage",

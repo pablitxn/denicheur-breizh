@@ -1,7 +1,7 @@
 import type { MouseEvent, ReactNode } from "react";
 import { Gauge, Languages, List, Map, Mic2, Moon, SlidersHorizontal, Sun } from "lucide-react";
 import { Button, Chip } from "@denicheur-breizh/design-system";
-import { usesMockApi } from "../api/denicheurApi";
+import { useHealth } from "../api/hooks";
 import { features } from "../config/features";
 import { supportedLocales, localeLabels } from "../intl/locales";
 import { useAppIntl } from "../intl/IntlContext";
@@ -16,6 +16,13 @@ export function Shell({ children }: { children: ReactNode }) {
   const setActiveView = useWorkspaceStore((state) => state.setActiveView);
   const theme = useWorkspaceStore((state) => state.theme);
   const toggleTheme = useWorkspaceStore((state) => state.toggleTheme);
+  const health = useHealth();
+  const apiConnected = health.data?.status === "ok";
+  const apiStatusLabel = health.isLoading
+    ? t("shell.apiChecking")
+    : apiConnected
+      ? t("shell.liveApi")
+      : t("shell.apiOffline");
   const tabs: Array<{ id: WorkspaceView; label: string; icon: ReactNode }> = [
     { id: "map", label: t("nav.map"), icon: <Map size={16} aria-hidden="true" /> },
     { id: "properties", label: t("nav.properties"), icon: <List size={16} aria-hidden="true" /> },
@@ -71,9 +78,9 @@ export function Shell({ children }: { children: ReactNode }) {
         </nav>
 
         <div className={styles.toolbar}>
-          <Chip className={styles.apiStatus} active tone={usesMockApi ? "sunset" : "good"}>
+          <Chip className={styles.apiStatus} active tone={apiConnected ? "good" : "danger"} title={health.data && !health.data.openAiConfigured ? t("shell.openAiUnavailable") : undefined}>
             <span className={styles.liveDot} aria-hidden="true" />
-            {t(usesMockApi ? "shell.mockApi" : "shell.liveApi")}
+            {apiStatusLabel}
           </Chip>
           <div className={styles.localeSwitch} role="group" aria-label={t("app.language.label")} title={`${t("app.language.label")}: ${localeName}`}>
             <Languages size={15} aria-hidden="true" />

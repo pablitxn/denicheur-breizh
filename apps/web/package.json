@@ -13,6 +13,7 @@
     "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.node.json --noEmit"
   },
   "dependencies": {
+    "@denicheur-breizh/contracts": "workspace:*",
     "@denicheur-breizh/design-system": "workspace:*",
     "@denicheur-breizh/i18n": "workspace:*",
     "@tanstack/react-query": "^5.101.2",

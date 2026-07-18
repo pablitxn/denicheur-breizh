@@ -12,6 +12,7 @@ import {
 
 const liveEnabled = process.env.RUN_LIVE_OPENAI_E2E === "1";
 const DETAIL_URL = "https://www.leboncoin.fr/ad/ventes_immobilieres/3007106066";
+const API_BASE_URL = "http://127.0.0.1:14310";
 
 test("@live crawls search and detail pages, calls the local API and stores OpenAI results", async ({
   context,
@@ -31,6 +32,27 @@ test("@live crawls search and detail pages, calls the local API and stores OpenA
     route.fulfill({ status: 200, headers: htmlHeaders(), body: DETAIL_PAGE_HTML }),
   );
 
+  const recipeId = "live-extension-integration";
+  const savedRecipe = await context.request.put(`${API_BASE_URL}/v1/recipes/${recipeId}`, {
+    data: {
+      name: "Live extension integration",
+      threshold: 70,
+      criteria: [{
+        id: "minimum-surface",
+        name: "Surface minimale",
+        description: "La surface habitable doit être au moins 80 m².",
+        weight: 10,
+        required: true,
+        evidenceRequired: true,
+      }],
+    },
+  });
+  expect(savedRecipe.status()).toBe(201);
+  const activation = await context.request.post(`${API_BASE_URL}/v1/recipes/${recipeId}/activate`, {
+    data: { version: 1 },
+  });
+  expect(activation.ok()).toBe(true);
+
   await page.goto(extensionUrl(extensionId, "dashboard.html"));
   await clearExtensionStorage(page);
   await page.reload();
@@ -42,13 +64,10 @@ test("@live crawls search and detail pages, calls the local API and stores OpenA
   await page.getByLabel("Delay min sec").fill("5");
   await page.getByLabel("Delay max sec").fill("5");
   await page.locator("details.intelligence-panel > summary").click();
-  await page.getByText("Enable", { exact: true }).click();
-  await page.getByRole("button", { name: "Add criterion" }).click();
-  await page.getByLabel("Recipe name").fill("Live extension integration");
-  await page.getByLabel("Criterion 1 name").fill("Surface minimale");
-  await page.getByLabel("Criterion 1 description").fill("La surface habitable doit être au moins 80 m².");
-  await page.getByLabel("Criterion 1 weight").fill("10");
-  await page.getByText("Required evidence", { exact: true }).click();
+  await page.getByRole("button", { name: "Refresh active recipe" }).click();
+  await expect(page.getByText("Active recipe refreshed from the API.", { exact: true })).toBeVisible();
+  await expect(page.getByText("Live extension integration", { exact: true })).toBeVisible();
+  await expect(page.getByText("v1", { exact: true })).toBeVisible();
 
   await page.getByRole("button", { name: "Start collection" }).click();
 

@@ -1,7 +1,12 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { AppIntlProvider, localeStorageKey } from "../../intl/IntlContext";
-import { buildSessionUpdateEvent, getTranscriptUpdate, RealtimeVoiceView } from "./RealtimeVoiceView";
+import {
+  buildSessionUpdateEvent,
+  getTranscriptUpdate,
+  realtimeSessionEndpoint,
+  RealtimeVoiceView,
+} from "./RealtimeVoiceView";
 
 function setStoredLocale(locale: string) {
   const values = new Map([[localeStorageKey, locale]]);
@@ -20,6 +25,7 @@ describe("RealtimeVoiceView localisation", () => {
   it("keeps the Spanish-to-French interpreter instruction unchanged", () => {
     expect(buildSessionUpdateEvent().session.instructions).toContain("Spanish-to-French interpreter");
     expect(buildSessionUpdateEvent().session.instructions).toContain("only provide the French translation");
+    expect(realtimeSessionEndpoint).toBe("http://127.0.0.1:4310/v1/realtime/session");
   });
 
   it("extracts source and translated transcript updates from realtime events", () => {

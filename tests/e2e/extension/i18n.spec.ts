@@ -103,7 +103,7 @@ test.describe("Denicheur MV3 interface locales", () => {
   }) => {
     let apiRequests = 0;
     context.on("request", (request) => {
-      if (request.url().includes("/v1/listings/filter")) apiRequests += 1;
+      if (/\/v1\/runs\/[^/]+\/evaluations$/u.test(new URL(request.url()).pathname)) apiRequests += 1;
     });
 
     await dashboard.goto(extensionUrl(extensionId, "dashboard.html"));
@@ -116,14 +116,12 @@ test.describe("Denicheur MV3 interface locales", () => {
 
     await expect(dashboard.getByText("Résumé français immuable.", { exact: true })).toBeVisible();
     await expect(dashboard.getByText(/Esta evaluación se generó en francés/u)).toBeVisible();
-    await expect(dashboard.getByRole("button", { name: "Reevaluar guardados" })).toBeEnabled();
     await dashboard.getByText("Evidencia por criterio", { exact: true }).click();
     await expect(dashboard.getByText("Raison française immuable.", { exact: true })).toBeVisible();
     await expect(dashboard.getByText("jardin privatif", { exact: true })).toBeVisible();
 
     await dashboard.getByRole("button", { name: /English/u }).click();
     await expect(dashboard.getByText(/This evaluation was generated in French/u)).toBeVisible();
-    await expect(dashboard.getByRole("button", { name: "Reevaluate stored" })).toBeEnabled();
     expect(apiRequests).toBe(0);
   });
 });

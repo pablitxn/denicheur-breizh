@@ -3,6 +3,7 @@ import { loadConfig } from "./config.js";
 import { FilterListingsService } from "./filterService.js";
 import { jsonLogger } from "./logger.js";
 import { OpenAiListingEvaluator } from "./openAiEvaluator.js";
+import { DenicheurRepository } from "./repository.js";
 
 function main(): void {
   const config = loadConfig();
@@ -15,7 +16,8 @@ function main(): void {
     logger: jsonLogger,
   });
   const filterService = new FilterListingsService(evaluator);
-  const app = createApp({ config, filterService, logger: jsonLogger });
+  const repository = new DenicheurRepository({ path: config.databasePath });
+  const app = createApp({ config, filterService, repository, logger: jsonLogger });
   const server = app.listen(config.port, config.host, () => {
     jsonLogger.info({
       event: "server_started",
@@ -33,6 +35,7 @@ function main(): void {
         return;
       }
 
+      repository.close();
       jsonLogger.info({ event: "server_stopped" });
     });
   };

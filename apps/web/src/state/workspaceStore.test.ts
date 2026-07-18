@@ -9,15 +9,12 @@ describe("workspaceStore persistence", () => {
       theme: "dark",
       accent: "lavender",
       density: "comfortable",
-      selectedPropertyId: "",
-      shortlistedPropertyIds: [],
     });
   });
 
-  it("persists user preferences and shortlist but leaves navigation to the URL", () => {
+  it("persists only display preferences and leaves navigation to the URL", () => {
     useWorkspaceStore.getState().setActiveView("builder");
     useWorkspaceStore.getState().setTheme("light");
-    useWorkspaceStore.getState().toggleShortlist("listing-42");
 
     const persisted = JSON.parse(window.localStorage.getItem(workspaceStorageKey) ?? "{}") as {
       state?: Record<string, unknown>;
@@ -25,9 +22,10 @@ describe("workspaceStore persistence", () => {
 
     expect(persisted.state).toMatchObject({
       theme: "light",
-      shortlistedPropertyIds: ["listing-42"],
     });
     expect(persisted.state).not.toHaveProperty("activeView");
+    expect(persisted.state).not.toHaveProperty("selectedPropertyId");
+    expect(persisted.state).not.toHaveProperty("shortlistedPropertyIds");
   });
 
   it("rehydrates preferences written by another tab", async () => {
@@ -36,10 +34,8 @@ describe("workspaceStore persistence", () => {
         theme: "light",
         accent: "sea",
         density: "compact",
-        selectedPropertyId: "listing-7",
-        shortlistedPropertyIds: ["listing-7"],
       },
-      version: 1,
+      version: 2,
     }));
 
     await useWorkspaceStore.persist.rehydrate();
@@ -48,8 +44,6 @@ describe("workspaceStore persistence", () => {
       theme: "light",
       accent: "sea",
       density: "compact",
-      selectedPropertyId: "listing-7",
-      shortlistedPropertyIds: ["listing-7"],
     });
   });
 });

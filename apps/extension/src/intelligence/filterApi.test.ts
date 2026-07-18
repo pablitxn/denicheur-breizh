@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import type { IntelligenceRecipe, ScrapedPropertyRecord } from "../lib/types";
+import type {
+  IntelligenceRecipe,
+  ListingEvaluation,
+  ScrapedPropertyRecord,
+} from "../lib/types";
 import {
   evaluateDetailedRecords,
   evaluateDetailedRecordsInBatches,
@@ -44,7 +48,7 @@ function detailedRecord(id = "listing-1"): ScrapedPropertyRecord {
   };
 }
 
-function validPayload(listingId = "listing-1", locale: "fr" | "es" | "en" = "fr") {
+function validPayload(listingId = "leboncoin:listing-1", locale: "fr" | "es" | "en" = "fr") {
   return {
     runId: "run-1",
     locale,
@@ -74,23 +78,16 @@ function validPayload(listingId = "listing-1", locale: "fr" | "es" | "en" = "fr"
 
 describe("intelligence filter API client", () => {
   it("serializes detailed records and returns validated evaluations", async () => {
-    const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
-      expect(body).toMatchObject({
-        runId: "run-1",
+      expect(String(input)).toBe("http://127.0.0.1:4310/v1/runs/run-1/evaluations");
+      expect(body).toEqual({
         locale: "es",
-        recipe: { id: recipe.id, version: 2 },
+        recipeId: recipe.id,
+        recipeVersion: 2,
+        listingIds: ["leboncoin:listing-1"],
       });
-      expect(body.listings).toEqual([
-        expect.objectContaining({
-          id: "listing-1",
-          url: "https://www.leboncoin.fr/ad/ventes_immobilieres/listing-1",
-          title: "Maison avec jardin",
-          location: "x".repeat(300),
-          features: ["Jardin"],
-        }),
-      ]);
-      return new Response(JSON.stringify(validPayload("listing-1", "es")), {
+      return new Response(JSON.stringify(validPayload("leboncoin:listing-1", "es")), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
@@ -116,12 +113,16 @@ describe("intelligence filter API client", () => {
     });
   });
 
-  it("omits an absent title from the API payload instead of fabricating one", async () => {
+  it("sends identities only because listings must already be persisted", async () => {
     const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body)) as {
-        listings: Array<Record<string, unknown>>;
-      };
-      expect(body.listings[0]).not.toHaveProperty("title");
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      expect(body).toEqual({
+        locale: "fr",
+        recipeId: recipe.id,
+        recipeVersion: recipe.version,
+        listingIds: ["leboncoin:listing-1"],
+      });
+      expect(body).not.toHaveProperty("listings");
       return new Response(JSON.stringify(validPayload()), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -137,7 +138,7 @@ describe("intelligence filter API client", () => {
   });
 
   it("rejects incomplete or mismatched API output", async () => {
-    const payload = validPayload("unexpected-id");
+    const payload = validPayload("leboncoin:unexpected-id");
     const fetcher = vi.fn(async () => new Response(JSON.stringify(payload), { status: 200 }));
 
     await expect(
@@ -206,13 +207,12 @@ describe("intelligence filter API client", () => {
     const records = Array.from({ length: 21 }, (_, index) => detailedRecord(`listing-${index + 1}`));
     const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as {
-        runId: string;
-        listings: Array<{ id: string }>;
+        listingIds: string[];
       };
       return new Response(JSON.stringify({
         ...validPayload(),
-        runId: body.runId,
-        results: body.listings.map(({ id }) => ({ ...validPayload(id).results[0], listingId: id })),
+        runId: "reevaluation-1",
+        results: body.listingIds.map((id) => ({ ...validPayload(id).results[0], listingId: id })),
       }), { status: 200 });
     });
 
@@ -221,5 +221,30 @@ describe("intelligence filter API client", () => {
     expect(fetcher).toHaveBeenCalledTimes(2);
     expect(evaluations).toHaveLength(21);
     expect(evaluations.at(-1)?.listingId).toBe("listing-21");
+  });
+
+  it("reports each completed batch before a later batch fails", async () => {
+    const records = Array.from({ length: 21 }, (_, index) => detailedRecord(`listing-${index + 1}`));
+    const completed: ListingEvaluation[][] = [];
+    let attempt = 0;
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      attempt += 1;
+      if (attempt === 2) throw new TypeError("API offline");
+      const body = JSON.parse(String(init?.body)) as { listingIds: string[] };
+      return new Response(JSON.stringify({
+        ...validPayload(),
+        results: body.listingIds.map((id) => ({ ...validPayload(id).results[0], listingId: id })),
+      }), { status: 200 });
+    });
+
+    await expect(evaluateDetailedRecordsInBatches("run-1", recipe, records, {
+      fetcher,
+      onBatchComplete(batch) {
+        completed.push(batch);
+      },
+    })).rejects.toThrow("API offline");
+
+    expect(completed).toHaveLength(1);
+    expect(completed[0]).toHaveLength(20);
   });
 });

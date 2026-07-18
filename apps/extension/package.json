@@ -13,6 +13,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@denicheur-breizh/contracts": "workspace:*",
     "@denicheur-breizh/design-system": "workspace:*",
     "@denicheur-breizh/i18n": "workspace:*",
     "lucide-react": "^0.554.0",

@@ -1,5 +1,10 @@
 import { MAX_LISTINGS_PER_PAGE } from "./leboncoinSearch";
-import type { ListingDetail, ListingSummary, SiteChallenge } from "./types";
+import type {
+  CoordinateEvidence,
+  ListingDetail,
+  ListingSummary,
+  SiteChallenge,
+} from "./types";
 
 const LISTING_PATH_PATTERN =
   /^\/(?:ad\/)?(ventes_immobilieres|locations|colocations|bureaux_commerces|immobilier_neuf)\/(\d{6,20})\/?$/i;
@@ -27,6 +32,17 @@ const LISTING_LINK_SELECTOR = [
   'a[href*="/bureaux_commerces/"]',
   'a[href*="/immobilier_neuf/"]',
 ].join(",");
+const NEXT_DATA_LOCATION_PATH = "props.pageProps.ad.location";
+const SOURCE_LOCALITY_TYPES = new Set([
+  "city",
+  "commune",
+  "locality",
+  "municipality",
+  "postal",
+  "postal_code",
+  "postcode",
+  "zipcode",
+]);
 
 const FEATURE_DEFINITIONS: Array<{ label: string; aliases: string[] }> = [
   { label: "Balcon", aliases: ["balcon"] },
@@ -384,12 +400,77 @@ export function collectListingDetail(doc: Document = document): ListingDetail {
     id: url ? listingIdFromUrl(url) : undefined,
     url,
     ...common,
+    coordinateEvidence: extractCoordinateEvidenceFromPage(doc),
     title: title?.slice(0, 240),
     description: description?.slice(0, 5_000),
     imageUrl: imageUrls?.[0],
     imageUrls,
     features: extractFeatures(text),
     rawTextSample: sampleText(text),
+  };
+}
+
+/**
+ * Reads only the application-state path observed on a real Leboncoin detail
+ * page. It deliberately does not infer coordinates from visible city/postcode
+ * text, and it does not add a timestamp while the page is being polled.
+ */
+export function extractCoordinateEvidenceFromPage(
+  doc: Document = document,
+): CoordinateEvidence | undefined {
+  const raw = doc.querySelector<HTMLScriptElement>("script#__NEXT_DATA__")?.textContent;
+  if (!raw?.trim()) return undefined;
+
+  let nextData: unknown;
+  try {
+    nextData = JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+
+  const location = valueAtObjectPath(nextData, ["props", "pageProps", "ad", "location"]);
+  if (!location) return undefined;
+
+  const latitude = ownFiniteNumber(location, "lat");
+  const longitude = ownFiniteNumber(location, "lng");
+  if (
+    latitude === undefined ||
+    longitude === undefined ||
+    latitude < -90 ||
+    latitude > 90 ||
+    longitude < -180 ||
+    longitude > 180
+  ) return undefined;
+
+  const locationSource = ownNormalizedToken(location, "source");
+  const locationType = ownNormalizedToken(location, "type");
+  const originType = ownNormalizedToken(location, "origin_type");
+  const semanticTypes = [locationSource, locationType, originType].filter(
+    (value): value is string => value !== undefined,
+  );
+  if (
+    semanticTypes.length === 0 ||
+    semanticTypes.some((value) => !SOURCE_LOCALITY_TYPES.has(value))
+  ) return undefined;
+
+  const provider = ownNormalizedToken(location, "provider");
+  const isShape = ownBoolean(location, "is_shape");
+  const provenance = JSON.stringify({
+    site: "leboncoin",
+    container: "#__NEXT_DATA__",
+    path: NEXT_DATA_LOCATION_PATH,
+    ...(locationSource ? { locationSource } : {}),
+    ...(provider ? { provider } : {}),
+    ...(locationType ? { locationType } : {}),
+    ...(originType ? { originType } : {}),
+    ...(isShape !== undefined ? { isShape } : {}),
+  });
+
+  return {
+    latitude,
+    longitude,
+    locationKind: "source-locality",
+    provenance,
   };
 }
 
@@ -594,6 +675,7 @@ function mergeListingSummaries(
     surfaceM2: preferred.surfaceM2 ?? fallback.surfaceM2,
     landSurfaceM2: preferred.landSurfaceM2 ?? fallback.landSurfaceM2,
     location: preferred.location ?? fallback.location,
+    coordinateEvidence: preferred.coordinateEvidence ?? fallback.coordinateEvidence,
     sellerName: preferred.sellerName ?? fallback.sellerName,
     sellerType: preferred.sellerType ?? fallback.sellerType,
     postedAt: preferred.postedAt ?? fallback.postedAt,
@@ -619,6 +701,7 @@ function summaryCompletenessScore(summary: ListingSummary): number {
     summary.surfaceM2,
     summary.landSurfaceM2,
     summary.location,
+    summary.coordinateEvidence,
     summary.sellerName,
     summary.sellerType,
     summary.postedAt,
@@ -631,6 +714,49 @@ function summaryCompletenessScore(summary: ListingSummary): number {
     + Math.min(summary.features.length, 3)
     + (summary.imageUrls && summary.imageUrls.length > 0 ? 1 : 0)
     - sponsoredPenalty;
+}
+
+function valueAtObjectPath(
+  root: unknown,
+  path: readonly string[],
+): Record<string, unknown> | undefined {
+  let current = root;
+  for (const segment of path) {
+    if (!isObjectRecord(current) || !Object.prototype.hasOwnProperty.call(current, segment)) {
+      return undefined;
+    }
+    current = current[segment];
+  }
+  return isObjectRecord(current) ? current : undefined;
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function ownFiniteNumber(
+  value: Record<string, unknown>,
+  key: string,
+): number | undefined {
+  const candidate = value[key];
+  return typeof candidate === "number" && Number.isFinite(candidate) ? candidate : undefined;
+}
+
+function ownNormalizedToken(
+  value: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const candidate = value[key];
+  if (typeof candidate !== "string") return undefined;
+  const normalized = candidate.trim().toLowerCase().replace(/[ -]+/gu, "_");
+  return normalized || undefined;
+}
+
+function ownBoolean(
+  value: Record<string, unknown>,
+  key: string,
+): boolean | undefined {
+  return typeof value[key] === "boolean" ? value[key] : undefined;
 }
 
 function findListingCard(anchor: HTMLAnchorElement): Element | undefined {

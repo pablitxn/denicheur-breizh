@@ -13,6 +13,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit"
   },
   "dependencies": {
+    "@denicheur-breizh/contracts": "workspace:*",
     "@denicheur-breizh/i18n": "workspace:*",
     "cors": "^2.8.6",
     "express": "^5.2.1",

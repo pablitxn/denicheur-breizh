@@ -11,7 +11,7 @@ import { invalidModelOutput } from "./errors.js";
 
 const modelListingResultSchema = z
   .object({
-    listingId: z.string().min(1).max(128),
+    listingId: z.string().min(1).max(260),
     summary: z.string().trim().min(1).max(1_000),
     criteria: z.array(criterionEvaluationSchema).min(1).max(MAX_CRITERIA_PER_RECIPE),
   })
@@ -164,6 +164,7 @@ function evidenceBelongsToListing(evidence: readonly string[], listing: FilterLi
   const sourceValues = listingEvidenceValues(listing);
 
   return evidence.every((excerpt) => {
+    if (isUrl(excerpt)) return listing.imageUrls?.includes(excerpt) ?? false;
     return sourceValues.some((value) => (excerpt.length < 3 ? value === excerpt : value.includes(excerpt)));
   });
 }
@@ -185,7 +186,16 @@ function listingEvidenceValues(listing: FilterListingInput): string[] {
     listing.gesClass,
     listing.description,
     ...listing.features,
+    ...(listing.imageUrls ?? []),
   ];
 
   return values.filter((value): value is string | number => value !== undefined).map(String);
+}
+
+function isUrl(value: string): boolean {
+  try {
+    return new URL(value).protocol === "https:";
+  } catch {
+    return false;
+  }
 }

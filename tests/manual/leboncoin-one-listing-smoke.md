@@ -1,28 +1,34 @@
 # Leboncoin one-listing Computer Use smoke test
 
-This procedure visually validates the installed Denicheur Breizh extension's
-native-search flow without attempting to bypass Leboncoin, DataDome, a captcha,
-or an unusual-activity restriction. It is a smoke test of the installed
-extension, not a replacement for the deterministic Playwright suite.
+This procedure visually validates the installed Denicheur Breizh product from
+native capture through the local API and the web app, without attempting to
+bypass Leboncoin, DataDome, a captcha, or an unusual-activity restriction. It is
+not a replacement for the deterministic Playwright suite.
 
 ## Preconditions
 
-1. Build the extension before starting the Chrome smoke:
+1. Build the product before starting the Chrome smoke:
 
    ```bash
-   pnpm --filter @denicheur-breizh/extension build
+   pnpm build
    ```
 
-2. Use only the Computer Use skill to operate `com.google.Chrome`; do not open
+2. Start `apps/api` and `apps/web` locally with `pnpm dev`. Confirm the web
+   connection indicator reports the API and SQLite ready before visiting
+   Leboncoin. Keep both processes running for the entire smoke.
+3. In the web **Atelier**, save and activate the recipe intended for this run.
+   In the extension dashboard, refresh the active recipe and verify the same
+   recipe id and version are shown.
+4. Use only the Computer Use skill to operate `com.google.Chrome`; do not open
    the extension dashboard with Browser.
-3. If the current production build is already installed, Computer Use may bring
+5. If the current production build is already installed, Computer Use may bring
    its dashboard to the foreground or reload it. If a new unpacked build must
    be loaded, ask the user for confirmation immediately before doing so, then
    select only `apps/extension/.output/chrome-mv3`.
-4. Do not pre-open a Leboncoin search or detail page. Keep any unrelated Chrome
+6. Do not pre-open a Leboncoin search or detail page. Keep any unrelated Chrome
    tabs outside the smoke untouched.
-5. Keep the intelligence filter disabled. Intelligence is evaluated only by
-   the local backend and is not part of this smoke.
+7. OpenAI is optional for the capture-to-web proof. If evaluation fails, record
+   the visible error and continue verifying that the listing was persisted.
 
 ## Computer Use operating discipline
 
@@ -55,7 +61,7 @@ Configure these visible dashboard controls:
 - `Collect detail pages`: enabled.
 - `Delay min sec`: `25`.
 - `Delay max sec`: `55`.
-- `Intelligence filter`: disabled.
+- `Intelligence filter`: enabled only when the local API has OpenAI configured.
 
 Verify every value visually, then click **Start collection** exactly once. Do not
 interact with any Leboncoin tab while the extension runs. The extension uses
@@ -83,18 +89,37 @@ restriction, unusual activity, or another access interstitial, stop immediately:
   another workaround;
 - leave the affected tab unchanged for manual review.
 
-## Visual acceptance and report
+## Synchronization and visual acceptance
 
-On an unrestricted successful run, verify only what is visible in the
-dashboard:
+On an unrestricted successful run:
+
+1. Verify the extension dashboard shows the final run state, found/detailed/
+   stored counts, the captured external id, listing URL, and any warning.
+2. Use **Synchroniser maintenant** / **Sincronizar ahora** / **Sync now** and
+   wait until the persistent queue reports no pending batch.
+3. Open the web app's **Biens** view. Wait for its five-second refresh or reload
+   it once. Locate the listing by `leboncoin:<externalId>`.
+4. Verify the web view shows exactly the same external id and listing URL as the
+   extension, plus the fields that were visibly captured. Missing fields must
+   say `Non disponible`, `No disponible`, or `Not available`; they must not be
+   displayed as zero.
+5. Restart the local API and web processes, return to **Biens**, and verify the
+   same listing remains present. Do not clear the extension buffer as part of
+   this check.
+
+Record:
 
 - final run state;
 - found, detailed, and stored counts;
+- pending synchronization count after the explicit sync;
+- recipe id and version shown by Atelier and the extension;
+- the exact `source + externalId` and listing URL shown by both surfaces;
 - the observed search URL, if displayed;
 - optional filter warnings;
-- visible run records or logs.
+- evaluation state, including an honest OpenAI failure if one occurred.
 
 Report only those visually verified values. Do not claim to have inspected
-`chrome.storage`, the service worker, the page DOM, or internal messages unless
-Computer Use displayed direct evidence of them. A synthetic fixture or a green
-Playwright run must remain clearly distinguished from this live-site smoke.
+the SQLite file, `chrome.storage`, the service worker, the page DOM, or internal
+messages unless Computer Use displayed direct evidence of them. A synthetic
+fixture or a green Playwright run must remain clearly distinguished from this
+live-site smoke.

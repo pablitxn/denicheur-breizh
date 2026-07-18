@@ -21,6 +21,17 @@ describe("parseAndValidateModelOutput", () => {
     expect(result.results[1]!.criteria[0]!.evidence).toEqual(["85"]);
   });
 
+  it("accepts the full 260-character stable listing key supported by the shared contract", () => {
+    const request = createRequest();
+    const listingId = `leboncoin:${"1".repeat(250)}`;
+    request.listings[0]!.id = listingId;
+    const batch = createModelBatch(request);
+
+    const result = parseAndValidateModelOutput(JSON.stringify(batch), request);
+
+    expect(result.results[0]?.listingId).toBe(listingId);
+  });
+
   it("rejects non-JSON output", () => {
     expectInvalid("not json", createRequest());
   });
@@ -90,6 +101,47 @@ describe("parseAndValidateModelOutput", () => {
     const parsed = parseAndValidateModelOutput(JSON.stringify(batch), request);
 
     expect(parsed.results[0]!.criteria[1]!.evidence).toEqual(["très lumineuse"]);
+  });
+
+  it("accepts an exact supplied image URL as visual evidence", () => {
+    const request = createRequest();
+    const imageUrl = "https://img.leboncoin.fr/white-house.jpg?rule=classified-1200x800-webp";
+    request.listings[0]!.imageUrls = [imageUrl];
+    const batch = createModelBatch(request);
+    batch.results[0]!.criteria[0]!.evidence = [imageUrl];
+
+    const parsed = parseAndValidateModelOutput(JSON.stringify(batch), request);
+
+    expect(parsed.results[0]!.criteria[0]!.evidence).toEqual([imageUrl]);
+  });
+
+  it("rejects visual evidence copied from another listing", () => {
+    const request = createRequest(2);
+    const firstImage = "https://img.leboncoin.fr/first-house.jpg";
+    const secondImage = "https://img.leboncoin.fr/second-house.jpg";
+    request.listings[0]!.imageUrls = [firstImage];
+    request.listings[1]!.imageUrls = [secondImage];
+    const batch = createModelBatch(request);
+    batch.results[0]!.criteria[0]!.evidence = [secondImage];
+
+    expectInvalid(JSON.stringify(batch), request);
+  });
+
+  it("rejects a shortened image URL instead of treating it as a text excerpt", () => {
+    const request = createRequest();
+    request.listings[0]!.imageUrls = ["https://img.leboncoin.fr/white-house.jpg?rule=ad-large"];
+    const batch = createModelBatch(request);
+    batch.results[0]!.criteria[0]!.evidence = ["https://img.leboncoin.fr/white-house.jpg"];
+
+    expectInvalid(JSON.stringify(batch), request);
+  });
+
+  it("rejects the listing page URL as visual evidence when no image was supplied", () => {
+    const request = createRequest();
+    const batch = createModelBatch(request);
+    batch.results[0]!.criteria[0]!.evidence = [request.listings[0]!.url];
+
+    expectInvalid(JSON.stringify(batch), request);
   });
 
   it.each(["Très lumineuse", "tres lumineuse", "très  lumineuse", "  très lumineuse "])(

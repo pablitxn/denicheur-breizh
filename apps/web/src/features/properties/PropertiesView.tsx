@@ -1,170 +1,60 @@
-import { useEffect, useMemo, useRef } from "react";
-import { ArrowDown, ArrowUp, Grid2X2, List, Star } from "lucide-react";
-import { useProperties } from "../../api/hooks";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { ArrowDown, ArrowUp, ExternalLink, Grid2X2, List } from "lucide-react";
+import { Button, Chip, EmptyState, Meter, SectionLabel } from "@denicheur-breizh/design-system";
+import { useListing, useListings } from "../../api/hooks";
 import { PropertyVisual } from "../../components/PropertyVisual";
-import { Button, Chip, EmptyState, SectionLabel, Meter, ScoreBadge } from "@denicheur-breizh/design-system";
-import { getPropertyTitle, scoreMessageIds } from "../../intl/domain";
 import { useAppIntl } from "../../intl/IntlContext";
-import { bcp47Locales } from "../../intl/locales";
-import type { MessageId } from "../../intl/messages";
-import { useWorkspaceStore } from "../../state/workspaceStore";
-import type { PropertyListing, ProviderName, ScoreKey } from "../../types";
 import type { LocaleCode } from "../../intl/locales";
-import {
-  formatDecimal,
-  formatDistanceKm,
-  formatInteger,
-  formatPercentage,
-  formatPostedDays,
-  formatPrice,
-  formatPricePerM2,
-  formatRooms,
-  percentDelta,
-} from "../../utils/format";
-import { getPropertySortValue, type PropertySortKey } from "../../utils/propertySort";
-import {
-  enumUrlCodec,
-  numberUrlCodec,
-  stringArrayUrlCodec,
-  stringUrlCodec,
-  useUrlState,
-} from "../../utils/useUrlState";
+import type { ListingDecision, PropertyListing } from "../../types";
+import { formatDecimal, formatInteger, formatPrice, formatRooms } from "../../utils/format";
+import { enumUrlCodec, stringUrlCodec, useUrlState } from "../../utils/useUrlState";
 import { useMediaQuery } from "../shared/useMediaQuery";
 import styles from "./PropertiesView.module.css";
 
 type ViewMode = "table" | "cards";
-interface Column {
-  key: PropertySortKey;
-  labelId: MessageId;
-  align?: "left" | "right" | "center";
-  width: number;
-}
+type SortKey = "title" | "price" | "surface" | "score" | "source" | "updated";
 
-const columns: Column[] = [
-  { key: "title", labelId: "properties.column.title", width: 280 },
-  { key: "price", labelId: "properties.column.price", align: "right", width: 96 },
-  { key: "surfaceM2", labelId: "properties.column.surface", align: "right", width: 66 },
-  { key: "overall", labelId: "properties.column.overall", align: "right", width: 78 },
-  { key: "coast", labelId: "properties.column.coast", align: "right", width: 70 },
-  { key: "quiet", labelId: "properties.column.quiet", align: "right", width: 74 },
-  { key: "value", labelId: "properties.column.value", align: "right", width: 76 },
-  { key: "family", labelId: "properties.column.family", align: "right", width: 78 },
-  { key: "transit", labelId: "properties.column.transit", align: "right", width: 68 },
-  { key: "dpe", labelId: "property.dpe", align: "center", width: 58 },
-  { key: "provider", labelId: "properties.column.provider", width: 110 },
-  { key: "postedDaysAgo", labelId: "properties.column.posted", align: "right", width: 82 },
-];
-
-const providerOptions: ProviderName[] = ["SeLoger", "Bien'ici", "Leboncoin", "Ouest-France"];
-const sortKeys = columns.map((column) => column.key);
-const propertyProviderUrlOptions = {
-  ...stringArrayUrlCodec(providerOptions),
-  isDefault: (value: ProviderName[]) => sameMembers(value, providerOptions),
-};
-const propertyViewUrlOptions = {
-  ...enumUrlCodec(["table", "cards"] as const),
-};
-const propertySortUrlOptions = {
-  ...enumUrlCodec(sortKeys),
-  isDefault: (value: PropertySortKey) => value === "overall",
-};
-const propertySortDirectionUrlOptions = {
-  ...enumUrlCodec(["asc", "desc"] as const),
-  isDefault: (value: "asc" | "desc") => value === "desc",
-};
-const propertyLimitUrlOptions = {
-  parse: (value: string | null) => {
-    const parsed = numberUrlCodec.parse(value);
-    return parsed === undefined ? undefined : Math.min(500, Math.max(50, Math.round(parsed / 50) * 50));
-  },
-  serialize: numberUrlCodec.serialize,
-  isDefault: (value: number) => value === 50,
-};
-const selectedPropertyUrlOptions = {
-  ...stringUrlCodec,
-  isDefault: (value: string) => value === "",
-};
+const sortKeys = ["title", "price", "surface", "score", "source", "updated"] as const;
+const emptyListings: PropertyListing[] = [];
 
 export function PropertiesView() {
   const { locale, t } = useAppIntl();
-  const storedSelectedPropertyId = useWorkspaceStore((state) => state.selectedPropertyId);
-  const setSelectedPropertyId = useWorkspaceStore((state) => state.setSelectedPropertyId);
-  const shortlisted = useWorkspaceStore((state) => state.shortlistedPropertyIds);
-  const toggleShortlist = useWorkspaceStore((state) => state.toggleShortlist);
   const isMobile = useMediaQuery("(max-width: 760px)");
   const shouldScrollToDetail = useMediaQuery("(max-width: 1120px)");
   const detailRef = useRef<HTMLElement | null>(null);
-  const [viewMode, setViewMode] = useUrlState<ViewMode>(
-    "pmode",
-    isMobile ? "cards" : "table",
-    propertyViewUrlOptions,
-  );
-  const [activeProviders, setActiveProviders] = useUrlState(
-    "pprov",
-    providerOptions,
-    propertyProviderUrlOptions,
-  );
-  const [sortKey, setSortKey] = useUrlState<PropertySortKey>("psort", "overall", propertySortUrlOptions);
-  const [sortDirection, setSortDirection] = useUrlState<"asc" | "desc">(
-    "pdir",
-    "desc",
-    propertySortDirectionUrlOptions,
-  );
-  const [visibleLimit, setVisibleLimit] = useUrlState("plim", 50, propertyLimitUrlOptions);
-  const [urlSelectedPropertyId, setUrlSelectedPropertyId] = useUrlState(
-    "pid",
-    storedSelectedPropertyId,
-    selectedPropertyUrlOptions,
-  );
-  const { data: properties = [], isLoading, error, refetch } = useProperties();
-  const sortDir = sortDirection === "asc" ? 1 : -1;
-
-  const sortedProperties = useMemo(() => {
-    return [...properties]
-      .filter((property) => activeProviders.includes(property.provider))
-      .sort((a, b) => {
-        if (sortKey === "title") {
-          return sortDir * getPropertyTitle(a, locale).localeCompare(getPropertyTitle(b, locale), bcp47Locales[locale]);
-        }
-        const av = getPropertySortValue(a, sortKey);
-        const bv = getPropertySortValue(b, sortKey);
-        if (typeof av === "number" && typeof bv === "number") return sortDir * (av - bv);
-        return sortDir * String(av).localeCompare(String(bv));
-      });
-  }, [activeProviders, locale, properties, sortDir, sortKey]);
-
-  const visibleProperties = sortedProperties.slice(0, visibleLimit);
-  const selectedProperty =
-    sortedProperties.find((property) => property.id === urlSelectedPropertyId) ?? sortedProperties[0];
+  const [viewMode, setViewMode] = useUrlState<ViewMode>("pmode", isMobile ? "cards" : "table", enumUrlCodec(["table", "cards"] as const));
+  const [sortKey, setSortKey] = useUrlState<SortKey>("psort", "updated", enumUrlCodec(sortKeys));
+  const [sortDirection, setSortDirection] = useUrlState<"asc" | "desc">("pdir", "desc", enumUrlCodec(["asc", "desc"] as const));
+  const [selectedKey, setSelectedKey] = useUrlState("pid", "", stringUrlCodec);
+  const [activeSources, setActiveSources] = useState<string[]>([]);
+  const listingsQuery = useListings({ limit: 100 });
+  const listings = listingsQuery.data?.items ?? emptyListings;
+  const sources = useMemo(() => Array.from(new Set(listings.map((listing) => listing.source))).sort(), [listings]);
 
   useEffect(() => {
-    if (!selectedProperty) return;
-    if (storedSelectedPropertyId !== selectedProperty.id) setSelectedPropertyId(selectedProperty.id);
-    if (urlSelectedPropertyId !== selectedProperty.id) setUrlSelectedPropertyId(selectedProperty.id);
-  }, [
-    selectedProperty,
-    setSelectedPropertyId,
-    setUrlSelectedPropertyId,
-    storedSelectedPropertyId,
-    urlSelectedPropertyId,
-  ]);
+    setActiveSources((current) => {
+      const next = current.filter((source) => sources.includes(source));
+      return next.length === current.length && next.every((source, index) => source === current[index]) ? current : next;
+    });
+  }, [sources]);
 
-  const sortBy = (key: PropertySortKey) => {
-    if (key === sortKey) {
-      setSortDirection((current) => (current === "desc" ? "asc" : "desc"));
-    } else {
-      setSortKey(key);
-      setSortDirection(key === "title" ? "asc" : "desc");
-    }
-  };
+  const sortedListings = useMemo(() => {
+    const direction = sortDirection === "asc" ? 1 : -1;
+    return listings
+      .filter((listing) => activeSources.length === 0 || activeSources.includes(listing.source))
+      .sort((left, right) => compareListings(left, right, sortKey, locale) * direction);
+  }, [activeSources, listings, locale, sortDirection, sortKey]);
 
-  const toggleProvider = (provider: ProviderName) => {
-    setActiveProviders((current) => (current.includes(provider) ? current.filter((item) => item !== provider) : [...current, provider]));
-  };
+  const selectedSummary = sortedListings.find((listing) => listing.key === selectedKey) ?? sortedListings[0];
+  const detailQuery = useListing(selectedSummary?.source, selectedSummary?.externalId);
+  const selected = detailQuery.data ?? selectedSummary;
 
-  const selectProperty = (propertyId: string) => {
-    setSelectedPropertyId(propertyId);
-    setUrlSelectedPropertyId(propertyId);
+  useEffect(() => {
+    if (selectedSummary && selectedSummary.key !== selectedKey) setSelectedKey(selectedSummary.key);
+  }, [selectedKey, selectedSummary, setSelectedKey]);
+
+  const selectListing = (key: string) => {
+    setSelectedKey(key);
     if (shouldScrollToDetail) {
       window.requestAnimationFrame(() => {
         const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
@@ -173,9 +63,16 @@ export function PropertiesView() {
     }
   };
 
-  const resetFilters = () => {
-    setActiveProviders(providerOptions);
-    setVisibleLimit(50);
+  const sortBy = (next: SortKey) => {
+    if (next === sortKey) setSortDirection((current) => current === "asc" ? "desc" : "asc");
+    else {
+      setSortKey(next);
+      setSortDirection(next === "title" || next === "source" ? "asc" : "desc");
+    }
+  };
+
+  const toggleSource = (source: string) => {
+    setActiveSources((current) => current.includes(source) ? current.filter((item) => item !== source) : [...current, source]);
   };
 
   return (
@@ -183,295 +80,250 @@ export function PropertiesView() {
       <header className={styles.toolbar}>
         <div className={styles.toolbarTitle}>
           <h1 id="properties-view-title">{t("properties.title")}</h1>
-          <span aria-live="polite">{t("properties.count", { count: sortedProperties.length })}</span>
+          <span aria-live="polite">{t("properties.count", { count: sortedListings.length })}</span>
         </div>
         <div className={styles.providerFilters} role="group" aria-label={t("properties.filters")}>
-          {providerOptions.map((provider) => (
-            <Chip key={provider} active={activeProviders.includes(provider)} onClick={() => toggleProvider(provider)}>
-              {provider}
+          {sources.map((source) => (
+            <Chip key={source} active={activeSources.length === 0 || activeSources.includes(source)} onClick={() => toggleSource(source)}>
+              {source}
             </Chip>
           ))}
         </div>
-
         <div className={styles.toolbarRight} role="group" aria-label={t("properties.viewModes")}>
           <Button size="sm" variant={viewMode === "table" ? "default" : "ghost"} iconOnly onClick={() => setViewMode("table")} aria-label={t("properties.table")} aria-pressed={viewMode === "table"}>
-            <List size={14} />
+            <List size={14} aria-hidden="true" />
           </Button>
           <Button size="sm" variant={viewMode === "cards" ? "default" : "ghost"} iconOnly onClick={() => setViewMode("cards")} aria-label={t("properties.cards")} aria-pressed={viewMode === "cards"}>
-            <Grid2X2 size={14} />
+            <Grid2X2 size={14} aria-hidden="true" />
           </Button>
         </div>
       </header>
 
       <div className={styles.body}>
         <div className={styles.results}>
-          {error && (
-            <EmptyState role="alert">
-              <div className={styles.stateContent}>
-                <strong>{t("properties.error")}</strong>
-                <Button onClick={() => void refetch()}>{t("common.retry")}</Button>
-              </div>
-            </EmptyState>
+          {listingsQuery.error && <LoadState kind="error" onRetry={() => void listingsQuery.refetch()} />}
+          {!listingsQuery.error && listingsQuery.isLoading && <EmptyState role="status">{t("properties.loading")}</EmptyState>}
+          {!listingsQuery.error && !listingsQuery.isLoading && sortedListings.length === 0 && <EmptyState>{t("properties.empty")}</EmptyState>}
+          {!listingsQuery.error && sortedListings.length > 0 && viewMode === "table" && (
+            <ListingTable
+              listings={sortedListings}
+              selectedKey={selected?.key}
+              locale={locale}
+              sortKey={sortKey}
+              sortDirection={sortDirection}
+              onSort={sortBy}
+              onSelect={selectListing}
+            />
           )}
-          {!error && isLoading && <EmptyState role="status">{t("properties.loading")}</EmptyState>}
-          {!error && !isLoading && sortedProperties.length === 0 && (
-            <EmptyState>
-              <div className={styles.stateContent}>
-                <strong>{t("properties.empty")}</strong>
-                <Button onClick={resetFilters}>{t("common.reset")}</Button>
-              </div>
-            </EmptyState>
-          )}
-          {!error && !isLoading && sortedProperties.length > 0 && viewMode === "table" && (
-            <div className={styles.tableWrap}>
-              <table className={styles.table} aria-label={t("properties.table")}>
-                <thead>
-                  <tr>
-                    {columns.map((column) => (
-                      <th
-                        key={column.key}
-                        style={{ minWidth: column.width, textAlign: column.align ?? "left" }}
-                        aria-sort={sortKey === column.key ? (sortDir === -1 ? "descending" : "ascending") : "none"}
-                      >
-                        <button type="button" onClick={() => sortBy(column.key)}>
-                          <span>{t(column.labelId)}</span>
-                          {sortKey === column.key && (sortDir === -1 ? <ArrowDown size={12} /> : <ArrowUp size={12} />)}
-                        </button>
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {visibleProperties.map((property) => (
-                    <tr
-                      key={property.id}
-                      className={property.id === selectedProperty?.id ? styles.selectedRow : ""}
-                    >
-                      {columns.map((column) => (
-                        <td key={column.key} style={{ textAlign: column.align ?? "left" }}>
-                          <Cell
-                            property={property}
-                            column={column}
-                            shortlisted={shortlisted.includes(property.id)}
-                            selected={property.id === selectedProperty?.id}
-                            locale={locale}
-                            onSelect={() => selectProperty(property.id)}
-                          />
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {!error && !isLoading && sortedProperties.length > 0 && viewMode === "cards" && (
+          {!listingsQuery.error && sortedListings.length > 0 && viewMode === "cards" && (
             <div className={styles.cardGrid}>
-              {visibleProperties.map((property) => (
+              {sortedListings.map((listing) => (
                 <button
-                  key={property.id}
+                  key={listing.key}
                   type="button"
-                  className={[styles.propertyCard, property.id === selectedProperty?.id ? styles.propertyCardActive : ""].join(" ")}
-                  onClick={() => selectProperty(property.id)}
-                  aria-pressed={property.id === selectedProperty?.id}
-                  aria-labelledby={`property-card-${property.id}-title`}
-                  aria-describedby={`property-card-${property.id}-price property-card-${property.id}-facts property-card-${property.id}-score`}
+                  className={[styles.propertyCard, listing.key === selected?.key ? styles.propertyCardActive : ""].join(" ")}
+                  onClick={() => selectListing(listing.key)}
+                  aria-pressed={listing.key === selected?.key}
                 >
                   <div className={styles.visualWrap}>
-                    <PropertyVisual property={property} />
-                    <span className={styles.cardProvider}>{property.provider}</span>
-                    <span id={`property-card-${property.id}-score`} className={styles.cardScore}>
-                      <ScoreBadge
-                        value={property.scores.overall}
-                        displayValue={formatDecimal(property.scores.overall, locale)}
-                        label={t("score.valueAria", {
-                          name: t("score.overall"),
-                          value: formatDecimal(property.scores.overall, locale),
-                        })}
-                      />
-                    </span>
+                    <PropertyVisual property={listing} />
+                    <span className={styles.cardProvider}>{listing.source}</span>
                   </div>
                   <div className={styles.cardBody}>
                     <div className={styles.cardTitle}>
-                      <strong id={`property-card-${property.id}-title`}>{getPropertyTitle(property, locale)}</strong>
-                      <span id={`property-card-${property.id}-price`}>{formatPrice(property.price, locale)}</span>
+                      <strong>{display(listing.title, t("common.unavailable"))}</strong>
+                      <span>{formatOptionalPrice(listing.priceEuros, locale, t("common.unavailable"))}</span>
                     </div>
-                    <p id={`property-card-${property.id}-facts`}>
-                      {property.locality} · {formatInteger(property.surfaceM2, locale)}&nbsp;m² · {formatRooms(property.rooms, locale)} · {t("property.dpe")} {property.dpe}
-                    </p>
-                    <Meter value={property.scores.overall} />
+                    <p>{listing.location ?? t("common.unavailable")} · {formatOptionalSurface(listing.surfaceM2, locale, t("common.unavailable"))}</p>
+                    <DecisionSummary evaluation={listing.evaluation} locale={locale} />
                   </div>
                 </button>
               ))}
             </div>
           )}
-          {!error && !isLoading && visibleProperties.length < sortedProperties.length && (
-            <div className={styles.loadMore}>
-              <span>{t("properties.showing", { count: visibleProperties.length, total: sortedProperties.length })}</span>
-              <Button onClick={() => setVisibleLimit((current) => current + 50)}>{t("properties.showMore")}</Button>
-            </div>
-          )}
         </div>
-
-        {selectedProperty && (
-          <aside ref={detailRef} className={styles.detail}>
-            <PropertyVisual property={selectedProperty} size="lg" />
-            <div className={styles.detailBody}>
-              <div className={styles.detailHeader}>
-                <div>
-                  <strong>{formatPrice(selectedProperty.price, locale)}</strong>
-                  <h2>{getPropertyTitle(selectedProperty, locale)}</h2>
-                  <p>{selectedProperty.address}</p>
-                </div>
-                <Chip>{selectedProperty.provider}</Chip>
-              </div>
-
-              <div className={styles.detailFacts}>
-                <span>{formatInteger(selectedProperty.surfaceM2, locale)}&nbsp;m²</span>
-                <span>{formatRooms(selectedProperty.rooms, locale)}</span>
-                <span>{formatPricePerM2(selectedProperty.price, selectedProperty.surfaceM2, locale)}</span>
-                <span>{t("property.dpe")} {selectedProperty.dpe}</span>
-              </div>
-
-              <div className={styles.breakdown}>
-                <SectionLabel>{t("properties.scoringDetail")}</SectionLabel>
-                {[
-                  [scoreMessageIds.overall, selectedProperty.scores.overall],
-                  [scoreMessageIds.coast, selectedProperty.scores.coast],
-                  [scoreMessageIds.quiet, selectedProperty.scores.quiet],
-                  [scoreMessageIds.value, selectedProperty.scores.value],
-                  [scoreMessageIds.family, selectedProperty.scores.family],
-                  [scoreMessageIds.transit, selectedProperty.scores.transit],
-                ].map(([label, value]) => (
-                  <div key={label} className={styles.metricRow}>
-                    <span>{t(label as MessageId)}</span>
-                    <b>{formatDecimal(Number(value), locale)}</b>
-                    <Meter value={Number(value)} />
-                  </div>
-                ))}
-              </div>
-
-              <div className={styles.marketBox}>
-                <SectionLabel>{t("properties.marketCompare")}</SectionLabel>
-                <Comparison
-                  locale={locale}
-                  label={t("properties.pricePerM2")}
-                  value={formatPricePerM2(selectedProperty.price, selectedProperty.surfaceM2, locale)}
-                  delta={percentDelta(
-                    selectedProperty.price / selectedProperty.surfaceM2,
-                    selectedProperty.diagnostics.irisMedianPrice,
-                  )}
-                  favorableWhen="lower"
-                />
-                <Comparison
-                  locale={locale}
-                  label={t("properties.comparableSales")}
-                  value={formatInteger(selectedProperty.diagnostics.comparableSales, locale)}
-                  delta={12}
-                  favorableWhen="higher"
-                />
-                <Comparison
-                  locale={locale}
-                  label={t("properties.coastalDistance")}
-                  value={formatDistanceKm(selectedProperty.diagnostics.coastalDistanceKm, locale)}
-                  delta={-18}
-                  favorableWhen="lower"
-                />
-              </div>
-
-              <div className={styles.detailActions}>
-                <Button onClick={() => toggleShortlist(selectedProperty.id)}>
-                  <Star size={15} />
-                  {shortlisted.includes(selectedProperty.id) ? t("properties.shortlisted") : t("properties.shortlist")}
-                </Button>
-              </div>
-            </div>
-          </aside>
-        )}
+        {selected && <ListingDetail detailRef={detailRef} listing={selected} loading={detailQuery.isFetching} />}
       </div>
     </section>
   );
 }
 
-function Cell({
-  property,
-  column,
-  shortlisted,
-  selected,
-  locale,
-  onSelect,
-}: {
-  property: PropertyListing;
-  column: Column;
-  shortlisted: boolean;
-  selected: boolean;
-  locale: LocaleCode;
-  onSelect: () => void;
-}) {
+function LoadState({ kind, onRetry }: { kind: "error"; onRetry: () => void }) {
   const { t } = useAppIntl();
-
-  if (column.key === "title") {
-    return (
-      <button
-        type="button"
-        className={styles.titleCell}
-        onClick={onSelect}
-        aria-pressed={selected}
-        aria-label={t("properties.select", { title: getPropertyTitle(property, locale) })}
-      >
-        <PropertyVisual property={property} size="sm" />
-        <div>
-          <strong>{getPropertyTitle(property, locale)}</strong>
-          <span>
-            {shortlisted && <Star size={11} fill="currentColor" />} {property.locality} · {formatRooms(property.rooms, locale)}
-          </span>
-        </div>
-      </button>
-    );
-  }
-
-  if (column.key === "price") return <span className={styles.numeric}>{formatPrice(property.price, locale)}</span>;
-  if (column.key === "surfaceM2") return <span className={styles.numeric}>{formatInteger(property.surfaceM2, locale)}</span>;
-  if (column.key === "provider") return <Chip>{property.provider}</Chip>;
-  if (column.key === "postedDaysAgo") return <span className={styles.numeric}>{formatPostedDays(property.postedDaysAgo, locale)}</span>;
-  if (column.key === "dpe") return <Chip active>{property.dpe}</Chip>;
-  const scoreKey = column.key === "overall" ? "overall" : column.key as ScoreKey;
-  const scoreValue = scoreKey === "overall" ? property.scores.overall : property.scores[scoreKey];
-  const displayValue = formatDecimal(scoreValue, locale);
-
   return (
-    <ScoreBadge
-      value={scoreValue}
-      displayValue={displayValue}
-      label={t("score.valueAria", { name: t(scoreMessageIds[scoreKey]), value: displayValue })}
-    />
+    <EmptyState role="alert" data-kind={kind}>
+      <div className={styles.stateContent}>
+        <strong>{t("properties.error")}</strong>
+        <Button onClick={onRetry}>{t("common.retry")}</Button>
+      </div>
+    </EmptyState>
   );
 }
 
-function Comparison({
-  label,
-  value,
-  delta,
-  locale,
-  favorableWhen,
-}: {
-  label: string;
-  value: string;
-  delta: number;
+interface ListingTableProps {
+  listings: PropertyListing[];
+  selectedKey?: string;
   locale: LocaleCode;
-  favorableWhen: "higher" | "lower";
-}) {
-  const favorable = favorableWhen === "higher" ? delta >= 0 : delta <= 0;
+  sortKey: SortKey;
+  sortDirection: "asc" | "desc";
+  onSort: (key: SortKey) => void;
+  onSelect: (key: string) => void;
+}
+
+function ListingTable({ listings, selectedKey, locale, sortKey, sortDirection, onSort, onSelect }: ListingTableProps) {
+  const { t } = useAppIntl();
+  const headers: Array<{ key: SortKey; label: string; align?: "left" | "right" }> = [
+    { key: "title", label: t("properties.column.title") },
+    { key: "price", label: t("properties.column.price"), align: "right" },
+    { key: "surface", label: t("properties.column.surface"), align: "right" },
+    { key: "score", label: t("properties.column.evaluation"), align: "right" },
+    { key: "source", label: t("properties.column.provider") },
+    { key: "updated", label: t("properties.column.updated") },
+  ];
+
   return (
-    <div className={styles.comparison}>
-      <span>{label}</span>
-      <b>{value}</b>
-      <em className={favorable ? styles.deltaGood : styles.deltaWeak}>{formatPercentage(delta, locale)}</em>
+    <div className={styles.tableWrap}>
+      <table className={styles.table} aria-label={t("properties.table")}>
+        <thead><tr>{headers.map((header) => (
+          <th key={header.key} style={{ textAlign: header.align ?? "left" }} aria-sort={sortKey === header.key ? (sortDirection === "asc" ? "ascending" : "descending") : "none"}>
+            <button type="button" onClick={() => onSort(header.key)}>
+              <span>{header.label}</span>
+              {sortKey === header.key && (sortDirection === "asc" ? <ArrowUp size={12} /> : <ArrowDown size={12} />)}
+            </button>
+          </th>
+        ))}</tr></thead>
+        <tbody>{listings.map((listing) => (
+          <tr key={listing.key} className={listing.key === selectedKey ? styles.selectedRow : ""}>
+            <td>
+              <button type="button" className={styles.titleCell} onClick={() => onSelect(listing.key)} aria-pressed={listing.key === selectedKey}>
+                <PropertyVisual property={listing} size="sm" />
+                <div><strong>{listing.title ?? t("common.unavailable")}</strong><span>{listing.externalId} · {listing.location ?? t("common.unavailable")}</span></div>
+              </button>
+            </td>
+            <td className={styles.numeric}>{formatOptionalPrice(listing.priceEuros, locale, t("common.unavailable"))}</td>
+            <td className={styles.numeric}>{formatOptionalSurface(listing.surfaceM2, locale, t("common.unavailable"))}</td>
+            <td className={styles.numeric}>{formatEvaluationScore(listing.evaluation?.score, locale, t("common.unavailable"))}</td>
+            <td><Chip>{listing.source}</Chip></td>
+            <td>{formatOptionalDate(listing.scrapedAt, locale, t("common.unavailable"))}</td>
+          </tr>
+        ))}</tbody>
+      </table>
     </div>
   );
 }
 
-function sameMembers<T extends string>(left: T[], right: T[]) {
-  return left.length === right.length && left.every((item) => right.includes(item));
+function ListingDetail({ listing, loading, detailRef }: { listing: PropertyListing; loading: boolean; detailRef: RefObject<HTMLElement | null> }) {
+  const { locale, t } = useAppIntl();
+  const evaluation = listing.evaluation;
+  return (
+    <aside ref={detailRef} className={styles.detail} aria-busy={loading}>
+      <PropertyVisual property={listing} size="lg" />
+      <div className={styles.detailBody}>
+        <div className={styles.detailHeader}>
+          <div>
+            <strong>{formatOptionalPrice(listing.priceEuros, locale, t("common.unavailable"))}</strong>
+            <h2>{listing.title ?? t("common.unavailable")}</h2>
+            <p>{listing.location ?? t("common.unavailable")}</p>
+          </div>
+          <Chip>{listing.source}</Chip>
+        </div>
+        <div className={styles.detailFacts}>
+          <span>{formatOptionalSurface(listing.surfaceM2, locale, t("common.unavailable"))}</span>
+          <span>{listing.rooms === undefined ? t("common.unavailable") : formatRooms(listing.rooms, locale)}</span>
+          <span>{t("property.dpe")} {listing.energyClass ?? t("common.unavailable")}</span>
+          <span>{t("properties.ges")} {listing.gesClass ?? t("common.unavailable")}</span>
+        </div>
+        <a className={styles.sourceLink} href={listing.url} target="_blank" rel="noreferrer noopener">
+          {t("properties.openSource")} <ExternalLink size={14} aria-hidden="true" />
+        </a>
+
+        <section className={styles.detailSection}>
+          <SectionLabel>{t("properties.description")}</SectionLabel>
+          <p className={styles.description}>{listing.description ?? t("common.unavailable")}</p>
+        </section>
+
+        <section className={styles.detailSection}>
+          <SectionLabel>{t("properties.capture")}</SectionLabel>
+          <dl className={styles.definitionList}>
+            <div><dt>{t("properties.externalId")}</dt><dd>{listing.externalId}</dd></div>
+            <div><dt>{t("properties.run")}</dt><dd>{listing.latestRun?.id ?? listing.runs[0]?.id ?? t("common.unavailable")}</dd></div>
+            <div><dt>{t("common.status")}</dt><dd>{listing.status ?? t("common.unavailable")}</dd></div>
+            <div><dt>{t("properties.seller")}</dt><dd>{listing.sellerName ?? listing.sellerType ?? t("common.unavailable")}</dd></div>
+            {listing.coordinates && (
+              <>
+                <div><dt>{t("map.positionTitle")}</dt><dd>{t(`map.locationKind.${listing.coordinates.locationKind}`)}</dd></div>
+                <div><dt>{t("map.coordinateProvenance")}</dt><dd>{listing.coordinates.provenance}</dd></div>
+                <div><dt>{t("map.coordinateObservedAt")}</dt><dd>{formatOptionalDate(listing.coordinates.verifiedAt, locale, t("common.unavailable"))}</dd></div>
+              </>
+            )}
+          </dl>
+        </section>
+
+        <section className={styles.detailSection}>
+          <SectionLabel>{t("properties.evaluation")}</SectionLabel>
+          {evaluation ? (
+            <>
+              <DecisionSummary evaluation={evaluation} locale={locale} />
+              <p className={styles.description}>{evaluation.summary}</p>
+              <div className={styles.breakdown}>
+                {evaluation.criteria.map((criterion) => (
+                  <article key={criterion.criterionId} className={styles.criterionRow}>
+                    <div><strong>{criterion.criterionId}</strong><DecisionChip decision={criterion.verdict} /></div>
+                    <p>{criterion.reason}</p>
+                    {criterion.evidence.length > 0 && <ul>{criterion.evidence.map((item) => <li key={item}>{item}</li>)}</ul>}
+                  </article>
+                ))}
+              </div>
+              {evaluation.missingData.length > 0 && <p className={styles.missingData}>{t("properties.missingData")}: {evaluation.missingData.join(", ")}</p>}
+            </>
+          ) : <p>{t("properties.notEvaluated")}</p>}
+        </section>
+
+        {listing.features.length > 0 && <div className={styles.featureList}>{listing.features.map((feature) => <Chip key={feature}>{feature}</Chip>)}</div>}
+      </div>
+    </aside>
+  );
+}
+
+function DecisionSummary({ evaluation, locale }: { evaluation?: PropertyListing["evaluation"]; locale: LocaleCode }) {
+  const { t } = useAppIntl();
+  if (!evaluation) return <span className={styles.unavailable}>{t("properties.notEvaluated")}</span>;
+  return (
+    <div className={styles.decisionSummary}>
+      <DecisionChip decision={evaluation.decision} />
+      <strong>{formatEvaluationScore(evaluation.score, locale, t("common.unavailable"))}</strong>
+      {evaluation.score !== null && <Meter value={evaluation.score} max={100} tone={evaluation.decision === "relevant" ? "good" : evaluation.decision === "not-relevant" ? "danger" : "default"} />}
+    </div>
+  );
+}
+
+function DecisionChip({ decision }: { decision: ListingDecision | "pass" | "fail" | "unknown" }) {
+  const { t } = useAppIntl();
+  const tone = decision === "relevant" || decision === "pass" ? "good" : decision === "not-relevant" || decision === "fail" ? "danger" : "sunset";
+  const key = `decision.${decision}` as Parameters<typeof t>[0];
+  return <Chip active tone={tone}>{t(key)}</Chip>;
+}
+
+function compareListings(left: PropertyListing, right: PropertyListing, key: SortKey, locale: LocaleCode): number {
+  const unavailableLast = (a: string | number | undefined | null, b: string | number | undefined | null) => {
+    if (a === undefined || a === null) return b === undefined || b === null ? 0 : 1;
+    if (b === undefined || b === null) return -1;
+    return typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b), locale);
+  };
+  if (key === "title") return unavailableLast(left.title, right.title);
+  if (key === "price") return unavailableLast(left.priceEuros, right.priceEuros);
+  if (key === "surface") return unavailableLast(left.surfaceM2, right.surfaceM2);
+  if (key === "score") return unavailableLast(left.evaluation?.score, right.evaluation?.score);
+  if (key === "source") return unavailableLast(left.source, right.source);
+  return unavailableLast(left.scrapedAt, right.scrapedAt);
+}
+
+function display(value: string | undefined, unavailable: string): string { return value?.trim() || unavailable; }
+function formatOptionalPrice(value: number | undefined, locale: LocaleCode, unavailable: string): string { return value === undefined ? unavailable : formatPrice(value, locale); }
+function formatOptionalSurface(value: number | undefined, locale: LocaleCode, unavailable: string): string { return value === undefined ? unavailable : `${formatInteger(value, locale)}\u00a0m²`; }
+function formatEvaluationScore(value: number | null | undefined, locale: LocaleCode, unavailable: string): string { return value === undefined || value === null ? unavailable : `${formatDecimal(value, locale)} / 100`; }
+function formatOptionalDate(value: string | undefined, locale: LocaleCode, unavailable: string): string {
+  if (!value) return unavailable;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.valueOf()) ? unavailable : new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(parsed);
 }

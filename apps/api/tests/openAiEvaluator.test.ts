@@ -32,10 +32,44 @@ describe("buildOpenAiRequest", () => {
     });
     expect(openAiRequest.tools).toBeUndefined();
     expect(JSON.stringify(openAiRequest.text?.format)).not.toMatch(/minLength|maxLength/);
-    expect(JSON.parse(openAiRequest.input as string)).toEqual({
+    expect(readPrimaryInput(openAiRequest)).toEqual({
       locale: request.locale,
       recipe: request.recipe,
       listings: request.listings,
+    });
+  });
+
+  it("associates each supplied gallery image with its listing at low detail", () => {
+    const request = createRequest(2);
+    request.listings[0]!.imageUrls = [
+      "https://img.leboncoin.fr/white-house.jpg",
+      "https://img.leboncoin.fr/sea-view.jpg",
+    ];
+    request.listings[1]!.imageUrls = ["https://img.leboncoin.fr/stone-house.jpg"];
+
+    const openAiRequest = buildOpenAiRequest(request, MODEL);
+    const content = readInputContent(openAiRequest);
+
+    expect(content.map((item) => item.type)).toEqual([
+      "input_text",
+      "input_text",
+      "input_image",
+      "input_image",
+      "input_text",
+      "input_image",
+    ]);
+    expect(content.filter((item) => item.type === "input_image")).toEqual([
+      { type: "input_image", image_url: request.listings[0]!.imageUrls[0], detail: "low" },
+      { type: "input_image", image_url: request.listings[0]!.imageUrls[1], detail: "low" },
+      { type: "input_image", image_url: request.listings[1]!.imageUrls[0], detail: "low" },
+    ]);
+    expect(JSON.parse(readTextContent(content[1]!))).toEqual({
+      imagesForListingId: "listing-1",
+      imageUrls: request.listings[0]!.imageUrls,
+    });
+    expect(JSON.parse(readTextContent(content[4]!))).toEqual({
+      imagesForListingId: "listing-2",
+      imageUrls: request.listings[1]!.imageUrls,
     });
   });
 
@@ -57,9 +91,10 @@ describe("buildOpenAiRequest", () => {
     request.listings[0]!.description = injectedText;
 
     const openAiRequest = buildOpenAiRequest(request, MODEL);
-    const input = JSON.parse(openAiRequest.input as string) as typeof request;
+    const input = readPrimaryInput(openAiRequest) as typeof request;
 
     expect(openAiRequest.instructions).toContain("untrusted data");
+    expect(openAiRequest.instructions).toContain("text visible inside images");
     expect(openAiRequest.instructions).not.toContain(injectedText);
     expect(input.listings[0]?.description).toBe(injectedText);
   });
@@ -221,4 +256,23 @@ function createLogger() {
     info: vi.fn(),
     error: vi.fn(),
   };
+}
+
+function readInputContent(request: ReturnType<typeof buildOpenAiRequest>) {
+  const input = request.input;
+  if (!input || typeof input === "string") throw new Error("Expected multimodal message input.");
+  const first = input[0];
+  if (!first || !("content" in first) || !Array.isArray(first.content)) {
+    throw new Error("Expected one user message with content parts.");
+  }
+  return first.content;
+}
+
+function readTextContent(content: ReturnType<typeof readInputContent>[number]): string {
+  if (content.type !== "input_text") throw new Error("Expected input text.");
+  return content.text;
+}
+
+function readPrimaryInput(request: ReturnType<typeof buildOpenAiRequest>): unknown {
+  return JSON.parse(readTextContent(readInputContent(request)[0]!));
 }

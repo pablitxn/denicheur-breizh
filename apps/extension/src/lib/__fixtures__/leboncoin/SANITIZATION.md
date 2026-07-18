@@ -21,7 +21,10 @@ for stop behavior, not a substitute for either required fixture.
   equivalent to the visible DOM rather than making hidden text visible.
 - Then remove scripts, styles, inline event handlers, iframes, forms, contact
   controls, tracking pixels, application state payloads, and unrelated page
-  chrome.
+  chrome. The sole exception is a focused coordinate-state fixture: it may
+  retain only the observed `#__NEXT_DATA__` object path required to prove
+  coordinate provenance and precision, with all sibling state removed and all
+  listing/location values deterministically replaced.
 
 ## Deterministic replacements
 
@@ -69,3 +72,8 @@ IP address, cookies, tokens, or challenge identifier.
 `expected.json` is compared field by field. It includes explicit `null` markers
 only as fixture metadata for values expected to be `undefined` in TypeScript;
 the extractor itself must never convert those markers into stored values.
+
+A focused coordinate-state fixture may live in its own dated directory with a
+local `PROVENANCE.md` instead of the four-artifact DOM regression set. It must
+contain no broader application state and must document the source path,
+precision markers, deterministic replacements, and challenge state.

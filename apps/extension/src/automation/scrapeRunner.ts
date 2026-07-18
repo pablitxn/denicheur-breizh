@@ -17,6 +17,10 @@ import {
   localizedTextDetail,
   message,
 } from "../lib/localizedText";
+import {
+  coordinateEvidenceToVerifiedCoordinates,
+  selectBestCoordinates,
+} from "../lib/coordinates";
 import type {
   ContentRequest,
   ContentResponse,
@@ -37,6 +41,7 @@ import type {
   SiteChallenge,
 } from "../lib/types";
 import { loadCrawlerState, saveCrawlerState } from "../storage/chromeStorage";
+import { requestImmediateSync } from "../sync/runtime";
 
 type RunnerObserver = (snapshot: { run: ScrapeRun; records: ScrapedPropertyRecord[] }) => void;
 export type ListingEvaluator = (
@@ -45,6 +50,10 @@ export type ListingEvaluator = (
   records: ScrapedPropertyRecord[],
   locale: LocaleCode,
   signal: AbortSignal,
+  onBatchComplete?: (
+    batch: ListingEvaluation[],
+    accumulated: ListingEvaluation[],
+  ) => void | Promise<void>,
 ) => Promise<ListingEvaluation[]>;
 
 const SEARCH_SETTLE_MS = 1600;
@@ -52,7 +61,7 @@ const DETAIL_SETTLE_MS = 1200;
 const DOM_MIN_OBSERVATION_MS = 4_000;
 const SEARCH_DOM_STABILITY_TIMEOUT_MS = 20_000;
 const DETAIL_DOM_STABILITY_TIMEOUT_MS = 8_000;
-const DETAIL_LOAD_OBSERVATION_TIMEOUT_MS = 10_000;
+const PAGE_LOAD_OBSERVATION_TIMEOUT_MS = 10_000;
 const MAX_STORED_RECORDS = 500;
 const HOME_URL = "https://www.leboncoin.fr/";
 const PAGE_OBSERVATION_MIN_MS = 2_000;
@@ -248,7 +257,7 @@ export class ScrapeRunner {
       this.currentOwnedTabId = searchTabId;
 
       await this.tabs.update(searchTabId, { url: HOME_URL, active: true });
-      await this.tabs.waitForComplete(searchTabId, 45_000, this.abortController.signal);
+      await this.waitForPageLoadObservation(searchTabId);
       await this.observeLoadedPage();
 
       run.status = "configuring-search";
@@ -282,7 +291,7 @@ export class ScrapeRunner {
         records,
         safeFilters,
       );
-      await this.tabs.waitForComplete(searchTabId, 45_000, this.abortController.signal);
+      await this.waitForPageLoadObservation(searchTabId);
       await this.observeLoadedPage();
       run.currentUrl = routedTab.url;
       run.message = message("run.applyingResultsFilters");
@@ -311,6 +320,9 @@ export class ScrapeRunner {
         run,
         records,
         safeFilters,
+        (checkpointRecords) => {
+          records = checkpointRecords;
+        },
       );
       const listings = searchCollection.listings;
       records = searchCollection.records;
@@ -359,18 +371,7 @@ export class ScrapeRunner {
           this.ownedTabIds.add(detailTabId);
           this.currentOwnedTabId = detailTabId;
           await this.tabs.update(detailTabId, { url: listing.url, active: true });
-          try {
-            await this.tabs.waitForComplete(
-              detailTabId,
-              DETAIL_LOAD_OBSERVATION_TIMEOUT_MS,
-              this.abortController.signal,
-            );
-          } catch (error) {
-            // Some detail pages keep background resources loading indefinitely even
-            // though the document and content script are ready. In that case the
-            // content-script handshake below is the authoritative readiness gate.
-            if (this.cancelled || !isTabLoadTimeout(error)) throw error;
-          }
+          await this.waitForPageLoadObservation(detailTabId);
           await this.observeLoadedPage();
 
           const detail = await this.collectListingDetail(detailTabId, run, records, safeFilters);
@@ -589,7 +590,7 @@ export class ScrapeRunner {
           filters,
         );
       }
-      await this.tabs.waitForComplete(tabId, 45_000, this.abortController.signal);
+      await this.waitForPageLoadObservation(tabId);
       await this.observeLoadedPage();
 
       const observed = await this.tabs.get(tabId);
@@ -837,6 +838,21 @@ export class ScrapeRunner {
     );
   }
 
+  private async waitForPageLoadObservation(tabId: number): Promise<void> {
+    try {
+      await this.tabs.waitForComplete(
+        tabId,
+        PAGE_LOAD_OBSERVATION_TIMEOUT_MS,
+        this.abortController.signal,
+      );
+    } catch (error) {
+      // Leboncoin can keep secondary resources loading after the document and the
+      // extension content script are ready. The following content-script handshake
+      // is the authoritative availability check; all other tab errors remain fatal.
+      if (this.cancelled || !isTabLoadTimeout(error)) throw error;
+    }
+  }
+
   private randomDelay(minMs: number, maxMs: number): number {
     return minMs + Math.round(this.random() * Math.max(0, maxMs - minMs));
   }
@@ -859,6 +875,7 @@ export class ScrapeRunner {
     run: ScrapeRun,
     records: ScrapedPropertyRecord[],
     filters: SearchFilters,
+    onRecordsCheckpoint: (records: ScrapedPropertyRecord[]) => void,
   ): Promise<SearchCollection> {
     let listings: ListingSummary[] = [];
     let nextRecords = records;
@@ -905,6 +922,7 @@ export class ScrapeRunner {
         target: run.target,
       });
       await this.persist(run, nextRecords, filters);
+      onRecordsCheckpoint(nextRecords);
 
       if (listings.length >= run.target) {
         return { listings, records: nextRecords, pagesVisited: pageNumber };
@@ -944,7 +962,7 @@ export class ScrapeRunner {
         "pagination-advanced",
         "collecting-search",
       );
-      await this.tabs.waitForComplete(tabId, 45_000, this.abortController.signal);
+      await this.waitForPageLoadObservation(tabId);
       await this.observeLoadedPage();
     }
 
@@ -961,10 +979,10 @@ export class ScrapeRunner {
     let deadline = this.clock.now() + SEARCH_DOM_STABILITY_TIMEOUT_MS;
     let previousFingerprint: string | undefined;
     let stableSince = this.clock.now();
+    await this.waitForPageLoadObservation(tabId);
 
     for (;;) {
       this.ensureActive();
-      await this.tabs.waitForComplete(tabId, 45_000, this.abortController.signal);
       await this.clock.sleep(SEARCH_SETTLE_MS, this.abortController.signal);
       const response = await this.tabs.sendMessage(tabId, {
         type: "LBC_COLLECT_SEARCH_RESULTS",
@@ -1306,6 +1324,7 @@ function recordFromSummary(summary: ListingSummary, runId: string): ScrapedPrope
     summary.imageUrls,
     summary.imageUrl ? [summary.imageUrl] : undefined,
   );
+  const scrapedAt = new Date().toISOString();
 
   return {
     id: summary.id,
@@ -1321,6 +1340,10 @@ function recordFromSummary(summary: ListingSummary, runId: string): ScrapedPrope
     surfaceM2: summary.surfaceM2,
     landSurfaceM2: summary.landSurfaceM2,
     location: summary.location,
+    coordinates: coordinateEvidenceToVerifiedCoordinates(
+      summary.coordinateEvidence,
+      scrapedAt,
+    ),
     sellerName: summary.sellerName,
     sellerType: summary.sellerType,
     postedAt: summary.postedAt,
@@ -1329,7 +1352,7 @@ function recordFromSummary(summary: ListingSummary, runId: string): ScrapedPrope
     imageUrl: imageUrls?.[0],
     imageUrls,
     features: summary.features,
-    scrapedAt: new Date().toISOString(),
+    scrapedAt,
     searchRunId: runId,
     status: "listing",
     rawTextSample: summary.rawTextSample,
@@ -1350,9 +1373,10 @@ function recordFromDetail(
     detail.imageUrls,
     detail.imageUrl ? [detail.imageUrl] : undefined,
   );
+  const summaryRecord = recordFromSummary(summary, runId);
 
   return {
-    ...recordFromSummary(summary, runId),
+    ...summaryRecord,
     listingUrl: detail.url ?? summary.url,
     title: detail.title,
     priceText: detail.priceText,
@@ -1364,6 +1388,10 @@ function recordFromDetail(
     surfaceM2: detail.surfaceM2,
     landSurfaceM2: detail.landSurfaceM2,
     location: detail.location,
+    coordinates: coordinateEvidenceToVerifiedCoordinates(
+      detail.coordinateEvidence,
+      summaryRecord.scrapedAt,
+    ) ?? summaryRecord.coordinates,
     sellerName: detail.sellerName,
     sellerType: detail.sellerType,
     postedAt: detail.postedAt,
@@ -1402,7 +1430,12 @@ function mergeRecords(
   const byListingId = new Map(existing.map((record) => [recordKey(record), record]));
 
   for (const record of incoming) {
-    byListingId.set(recordKey(record), record);
+    const key = recordKey(record);
+    const previous = byListingId.get(key);
+    byListingId.set(key, {
+      ...record,
+      coordinates: selectBestCoordinates(previous?.coordinates, record.coordinates),
+    });
   }
 
   return Array.from(byListingId.values())
@@ -1757,8 +1790,19 @@ function defaultEvaluator(
   records: ScrapedPropertyRecord[],
   locale: LocaleCode,
   signal: AbortSignal,
+  onBatchComplete?: (
+    batch: ListingEvaluation[],
+    accumulated: ListingEvaluation[],
+  ) => void | Promise<void>,
 ): Promise<ListingEvaluation[]> {
-  return evaluateDetailedRecordsInBatches(runId, recipe, records, { locale, signal });
+  return requestImmediateSync().then((response) => {
+    if (!response.ok) throw new Error(response.error ?? "Listings could not be synchronized before evaluation.");
+    return evaluateDetailedRecordsInBatches(runId, recipe, records, {
+      locale,
+      signal,
+      onBatchComplete,
+    });
+  });
 }
 
 interface IntelligencePhaseOptions {
@@ -1790,8 +1834,20 @@ export async function runIntelligencePhase({
   run.message = message("run.evaluating", { count: detailedRecords.length });
   await persist(run, records);
 
+  let latestRecords = records;
   try {
-    const evaluations = await evaluator(run.id, recipe, detailedRecords, locale, signal);
+    const evaluations = await evaluator(
+      run.id,
+      recipe,
+      detailedRecords,
+      locale,
+      signal,
+      async (_batch, accumulated) => {
+        latestRecords = mergeRecordEvaluations(records, accumulated);
+        applyEvaluationCounts(run, accumulated);
+        await persist(run, latestRecords);
+      },
+    );
     const evaluatedRecords = mergeRecordEvaluations(records, evaluations);
     applyEvaluationCounts(run, evaluations);
     run.status = "completed";
@@ -1805,8 +1861,8 @@ export async function runIntelligencePhase({
     run.intelligenceStatus = "failed";
     run.intelligenceError = filterApiErrorDescriptor(error);
     run.message = message("run.intelligenceFailed", { count: run.collected });
-    await persist(run, records);
-    return records;
+    await persist(run, latestRecords);
+    return latestRecords;
   }
 }
 

@@ -1,4 +1,4 @@
-import type { BrowserContext, Page, Route } from "@playwright/test";
+import type { BrowserContext, Page, Route, TestInfo } from "@playwright/test";
 
 import {
   ACTIVITY_BLOCK_PAGE_HTML,
@@ -24,8 +24,359 @@ import {
 const FOREIGN_SEARCH_URL = "https://www.leboncoin.fr/recherche?foreign=untouched";
 const FOREIGN_DETAIL_URL = "https://www.leboncoin.fr/ad/ventes_immobilieres/3999999999";
 const UNRELATED_URL = "https://fixtures.invalid/unrelated";
-
+const API_BASE_URL = "http://127.0.0.1:14310";
+const WEB_BASE_URL = "http://127.0.0.1:14173";
 test.describe("Denicheur MV3 native-search runtime", () => {
+  async function runFunctionalProductFlow({
+    context,
+    page,
+    extensionId,
+  }: {
+    context: BrowserContext;
+    page: Page;
+    extensionId: string;
+  }, testInfo: TestInfo): Promise<void> {
+    test.setTimeout(90_000);
+    const externalId = String(3_007_199_900 + testInfo.retry);
+    const listingId = `leboncoin:${externalId}`;
+    const detailUrl = `https://www.leboncoin.fr/ad/ventes_immobilieres/${externalId}`;
+    const title = `Maison E2E persistée à Brest r${testInfo.retry}`;
+    const detailPageHtml = DETAIL_PAGE_HTML.replaceAll("Maison familiale à Brest", title);
+    const recipeId = `mv3-functional-e2e-r${testInfo.retry}`;
+    const recipeName = "Recette MV3 fonctionnelle";
+    const bootstrapRecipeId = `${recipeId}-bootstrap`;
+    const bootstrapDraft = {
+      name: "Recette bootstrap E2E",
+      threshold: 50,
+      criteria: [{
+        id: "bootstrap",
+        name: "Bootstrap",
+        description: "Évite un état 404 avant la publication depuis Atelier.",
+        weight: 1,
+        required: false,
+      }],
+    };
+    const bootstrapSave = await context.request.put(
+      `${API_BASE_URL}/v1/recipes/${bootstrapRecipeId}`,
+      { data: bootstrapDraft },
+    );
+    expect(bootstrapSave.status()).toBe(201);
+    const bootstrapActivate = await context.request.post(
+      `${API_BASE_URL}/v1/recipes/${bootstrapRecipeId}/activate`,
+      { data: { version: 1 } },
+    );
+    expect(bootstrapActivate.status()).toBe(200);
+    const web = await context.newPage();
+
+    await web.goto(`${WEB_BASE_URL}/?view=builder`);
+    await web.getByRole("button", { name: /^(French|Français)$/ }).click();
+    await expect(web.getByRole("heading", { name: "Atelier de scoring" })).toBeVisible();
+    await web.getByRole("button", { name: "Nouvelle recette" }).click();
+    await web.getByLabel("Identifiant de recette", { exact: true }).fill(recipeId);
+    await web.getByLabel("Nom", { exact: true }).fill(recipeName);
+    await web.getByLabel("Seuil de pertinence", { exact: true }).fill("70");
+    await web.getByLabel("Identifiant", { exact: true }).fill("garden");
+    await web.getByLabel("Nom du critère", { exact: true }).fill("Jardin privé");
+    await web.getByLabel("Poids", { exact: true }).fill("100");
+    await web.getByLabel("Instruction et contexte", { exact: true }).fill(
+      "Confirmer que l’annonce mentionne explicitement un jardin privé.",
+    );
+
+    const saveResponse = web.waitForResponse((response) =>
+      response.request().method() === "PUT" &&
+      response.url() === `${API_BASE_URL}/v1/recipes/${recipeId}`,
+    );
+    await web.getByRole("button", { name: "Enregistrer une version" }).click();
+    expect((await saveResponse).status()).toBe(201);
+
+    const activateButton = web.getByRole("button", { name: "Activer", exact: true });
+    await expect(activateButton).toBeEnabled();
+    const activationResponse = web.waitForResponse((response) =>
+      response.request().method() === "POST" &&
+      response.url() === `${API_BASE_URL}/v1/recipes/${recipeId}/activate`,
+    );
+    await activateButton.click();
+    expect((await activationResponse).status()).toBe(200);
+    await expect(web.getByRole("heading", { name: recipeName, exact: true })).toBeVisible();
+
+    const uniqueListingBeforeCapture = await context.request.get(
+      `${API_BASE_URL}/v1/listings/leboncoin/${externalId}`,
+    );
+    expect(uniqueListingBeforeCapture.status()).toBe(404);
+
+    await openCleanDashboard(page, extensionId);
+    const intelligencePanel = page.locator("details.intelligence-panel");
+    if (await intelligencePanel.getAttribute("open") === null) {
+      await intelligencePanel.locator("summary").click();
+    }
+    const refreshRecipe = page.getByRole("button", { name: "Refresh active recipe" });
+    await expect(refreshRecipe).toBeVisible();
+    await refreshRecipe.click();
+    await expect(page.getByText("Active recipe refreshed from the API.", { exact: true })).toBeVisible();
+    await expect.poll(async () => {
+      const storage = await readExtensionStorage(page);
+      const syncState = storage["denicheur:sync:state"] as {
+        activeRecipe?: { status?: string; recipeId?: string; recipeVersion?: number };
+      } | undefined;
+      const recipe = storage["denicheur:intelligence:recipe"] as {
+        id?: string;
+        version?: number;
+        enabled?: boolean;
+      } | undefined;
+      return { activeRecipe: syncState?.activeRecipe, recipe };
+    }).toMatchObject({
+      activeRecipe: { status: "cached", recipeId, recipeVersion: 1 },
+      recipe: { id: recipeId, version: 1, enabled: true },
+    });
+
+    await routeNativeFlow(context, {
+      searchPages: [[{ id: externalId, title }]],
+    });
+    await context.route(detailUrl, (route) =>
+      route.fulfill({ status: 200, headers: htmlHeaders(), body: detailPageHtml }),
+    );
+    const ingestionRoute = `${API_BASE_URL}/v1/ingestion/runs/**`;
+    const abortIngestion = async (route: Route) => {
+      if (route.request().method() === "PUT") {
+        await route.abort("failed");
+        return;
+      }
+      await route.continue();
+    };
+    await context.route(ingestionRoute, abortIngestion);
+
+    await configureNativeSearch(page, { details: true });
+    await page.getByRole("button", { name: "Start collection" }).click();
+    await expect(page.getByText("completed", { exact: true })).toBeVisible({ timeout: 60_000 });
+
+    const capturedStorage = await readExtensionStorage(page);
+    const capturedRun = capturedStorage["denicheur:crawler:run"] as { id?: string } | undefined;
+    expect(capturedRun?.id).toMatch(/^run-/);
+    const capturedRunId = capturedRun?.id ?? "";
+    expect(capturedStorage["denicheur:crawler:records"]).toEqual([
+      expect.objectContaining({
+        id: externalId,
+        source: "leboncoin",
+        listingUrl: detailUrl,
+        title,
+        searchRunId: capturedRunId,
+        status: "detailed",
+      }),
+    ]);
+    await expect.poll(async () => {
+      const storage = await readExtensionStorage(page);
+      const syncState = storage["denicheur:sync:state"] as {
+        queue?: Array<{
+          runId?: string;
+          attempts?: number;
+          payload?: {
+            run?: { status?: string };
+            listings?: Array<{ externalId?: string; url?: string }>;
+          };
+        }>;
+      } | undefined;
+      return syncState?.queue?.some((entry) =>
+        entry.runId === capturedRunId &&
+        (entry.attempts ?? 0) > 0 &&
+        entry.payload?.run?.status === "completed" &&
+        entry.payload?.listings?.some((listing) =>
+          listing.externalId === externalId && listing.url === detailUrl,
+        ),
+      ) ?? false;
+    }).toBe(true);
+
+    await context.unroute(ingestionRoute, abortIngestion);
+    const popup = await context.newPage();
+    await popup.goto(extensionUrl(extensionId, "popup.html"));
+    await expect(popup.getByText("1 record", { exact: true })).toBeVisible();
+    await popup.getByRole("button", { name: "Sync now" }).click();
+    await expect(popup.getByText("Synced with the local API", { exact: true })).toBeVisible();
+    await expect.poll(async () => {
+      const storage = await readExtensionStorage(popup);
+      const syncState = storage["denicheur:sync:state"] as { queue?: unknown[] } | undefined;
+      return syncState?.queue?.length;
+    }).toBe(0);
+
+    const firstApiDetail = await context.request.get(
+      `${API_BASE_URL}/v1/listings/leboncoin/${externalId}`,
+    );
+    expect(firstApiDetail.ok()).toBe(true);
+    expect(await firstApiDetail.json()).toMatchObject({
+      id: listingId,
+      externalId,
+      url: detailUrl,
+      title,
+      lastRunId: capturedRunId,
+    });
+    const runListingsUrl = `${API_BASE_URL}/v1/listings?runId=${encodeURIComponent(capturedRunId)}&limit=100`;
+    const firstApiListings = await context.request.get(runListingsUrl);
+    expect(firstApiListings.ok()).toBe(true);
+    const firstApiPayload = await firstApiListings.json() as {
+      total: number;
+      items: Array<{
+        id: string;
+        externalId: string;
+        url: string;
+        title?: string;
+        lastRunId: string;
+      }>;
+    };
+    expect(firstApiPayload.total).toBe(1);
+    expect(firstApiPayload.items).toEqual([
+      expect.objectContaining({
+        id: listingId,
+        externalId,
+        url: detailUrl,
+        title,
+        lastRunId: capturedRunId,
+      }),
+    ]);
+
+    await popup.evaluate(() => {
+      const root = document.documentElement;
+      root.dataset.sawSyncing = "false";
+      const observer = new MutationObserver(() => {
+        if (document.body.innerText.includes("Syncing…")) {
+          root.dataset.sawSyncing = "true";
+          observer.disconnect();
+        }
+      });
+      observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+    });
+    const repeatSyncButton = popup.getByRole("button", { name: "Sync now" });
+    await repeatSyncButton.click();
+    await expect.poll(() => popup.locator("html").getAttribute("data-saw-syncing")).toBe("true");
+    await expect(repeatSyncButton).toBeEnabled();
+
+    const repeatedApiListings = await context.request.get(runListingsUrl);
+    expect(repeatedApiListings.ok()).toBe(true);
+    const repeatedApiPayload = await repeatedApiListings.json() as {
+      total: number;
+      items: Array<{ id: string; url: string }>;
+    };
+    expect(repeatedApiPayload.total).toBe(1);
+    expect(repeatedApiPayload.items).toEqual([
+      expect.objectContaining({ id: listingId, url: detailUrl }),
+    ]);
+
+    await web.goto(`${WEB_BASE_URL}/?view=properties`);
+    await expect(web.getByRole("heading", { name: "Biens", exact: true })).toBeVisible();
+    await expect(web.getByRole("heading", { name: title, exact: true })).toBeVisible();
+    await expect(web.getByRole("link", { name: "Ouvrir l’annonce source" })).toHaveAttribute(
+      "href",
+      detailUrl,
+    );
+    await expect(
+      web.getByText("Identifiant source", { exact: true }).locator("..").getByText(externalId, { exact: true }),
+    ).toBeVisible();
+    await expect(
+      web.getByText("Run de collecte", { exact: true }).locator("..").getByText(capturedRunId, { exact: true }),
+    ).toBeVisible();
+  }
+
+  test("cleans iteration data from the npm hook while preserving extension configuration", async ({
+    context,
+    page,
+    extensionId,
+  }) => {
+    await page.goto(extensionUrl(extensionId, "dashboard.html"));
+    const storedFilters = {
+      source: "leboncoin",
+      category: "9",
+      text: "",
+      locationQuery: "Finistère",
+      propertyTypes: ["1"],
+      ownerType: "all",
+      priceMax: 120000,
+      roomsMin: 2,
+      roomsMax: 3,
+      sort: "time",
+      order: "desc",
+      maxListings: 1,
+      collectDetailPages: true,
+      minDelaySeconds: 25,
+      maxDelaySeconds: 55,
+      pauseAfterDetails: 5,
+      cooldownSeconds: 180,
+    };
+    const storedRecipe = {
+      id: "iteration-recipe",
+      version: 4,
+      name: "Iteration recipe",
+      threshold: 70,
+      enabled: false,
+      criteria: [],
+    };
+    await page.evaluate(async ({ detailUrl, filters, recipe }) => {
+      await chrome.storage.local.set({
+        "denicheur:locale": "es",
+        "denicheur:crawler:filters": filters,
+        "denicheur:intelligence:recipe": recipe,
+        "denicheur:crawler:run": {
+          id: "previous-run",
+          status: "completed",
+          target: 1,
+          found: 1,
+          pagesVisited: 1,
+          collected: 1,
+          evaluated: 0,
+          relevant: 0,
+          notRelevant: 0,
+          review: 0,
+          filterWarnings: [],
+          intelligenceStatus: "idle",
+        },
+        "denicheur:crawler:records": [{
+          id: "3007106066",
+          source: "leboncoin",
+          listingUrl: detailUrl,
+          title: "Previous iteration",
+          features: [],
+          scrapedAt: "2026-07-18T10:00:00.000Z",
+          searchRunId: "previous-run",
+          status: "detailed",
+          rawTextSample: "Previous iteration",
+        }],
+      });
+    }, { detailUrl: DETAIL_URL, filters: storedFilters, recipe: storedRecipe });
+
+    let callbackOrigin = "";
+    let callbackRequestUrl = "";
+    await context.route("http://127.0.0.1:15432/extension-db-cleaned**", async (route) => {
+      callbackOrigin = route.request().headers().origin ?? "";
+      callbackRequestUrl = route.request().url();
+      await route.fulfill({
+        status: 204,
+        headers: { "Access-Control-Allow-Origin": `chrome-extension://${extensionId}` },
+        body: "",
+      });
+    });
+    const callbackUrl = "http://127.0.0.1:15432/extension-db-cleaned?token=e2e";
+    await page.goto(
+      `${extensionUrl(extensionId, "dashboard.html")}?action=clean-db&callback=${encodeURIComponent(callbackUrl)}`,
+    );
+
+    await expect(page).toHaveURL(extensionUrl(extensionId, "dashboard.html"));
+    await expect(page.getByText(
+      "No hay anuncios guardados. Configura la búsqueda e inicia una recopilación.",
+      { exact: true },
+    )).toBeVisible();
+    await expect.poll(() => callbackRequestUrl).toContain("status=ok");
+    expect(callbackOrigin).toBe(`chrome-extension://${extensionId}`);
+
+    const storage = await readExtensionStorage(page);
+    expect(storage["denicheur:crawler:records"]).toEqual([]);
+    expect(storage["denicheur:crawler:run"]).toEqual(expect.objectContaining({
+      id: "idle",
+      status: "idle",
+      found: 0,
+      collected: 0,
+    }));
+    expect(storage["denicheur:crawler:filters"]).toEqual(storedFilters);
+    expect(storage["denicheur:intelligence:recipe"]).toEqual(storedRecipe);
+    expect(storage["denicheur:locale"]).toBe("es");
+  });
+
   test("loads the pinned minimal manifest and exposes valid native dashboard controls", async ({
     page,
     context,
@@ -43,7 +394,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     const manifest = await page.evaluate(() => chrome.runtime.getManifest());
     expect(extensionId).toBe(EXPECTED_EXTENSION_ID);
     expect(manifest.manifest_version).toBe(3);
-    expect(manifest.permissions).toEqual(["storage"]);
+    expect(manifest.permissions).toEqual(["storage", "alarms"]);
     expect(manifest.permissions).not.toEqual(expect.arrayContaining(["tabs", "scripting", "debugger"]));
     expect(manifest.content_scripts?.[0]?.matches).toEqual(
       expect.arrayContaining(["https://www.leboncoin.fr/", "https://www.leboncoin.fr/recherche*"]),
@@ -278,7 +629,8 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     await expect(page.getByLabel("Delay min sec")).toHaveValue("25");
     await expect(page.getByLabel("Delay max sec")).toHaveValue("55");
     await page.locator("details.intelligence-panel > summary").click();
-    await expect(page.getByRole("checkbox", { name: "Enable", exact: true })).not.toBeChecked();
+    await expect(page.getByText("disabled", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Refresh active recipe" })).toBeVisible();
 
     const dashboardTab = await page.evaluate(async () => chrome.tabs.getCurrent());
     expect(dashboardTab?.windowId).toBeDefined();
@@ -776,6 +1128,11 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     expect(context.pages().some((candidate) => candidate.url() === DETAIL_URL)).toBe(true);
     await expect.poll(() => activeTabUrl(page)).toBe(DETAIL_URL);
   });
+
+  test(
+    "publishes a recipe and keeps one native MV3 capture until API and web converge",
+    runFunctionalProductFlow,
+  );
 });
 
 interface NativeFlowOptions {

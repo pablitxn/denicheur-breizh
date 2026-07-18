@@ -141,6 +141,10 @@
   background: var(--color-good);
 }
 
+.apiStatus:global(.danger) .liveDot {
+  background: var(--color-danger);
+}
+
 .localeSwitch {
   display: inline-flex;
   align-items: center;

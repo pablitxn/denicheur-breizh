@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import diagnosticsFixtureHtml from "./__fixtures__/leboncoin/2026-07-13/listing-detail-diagnostics.sanitized.html?raw";
 import detailFixtureHtml from "./__fixtures__/leboncoin/2026-07-13/listing-detail.sanitized.html?raw";
+import locationStateFixtureHtml from "./__fixtures__/leboncoin/2026-07-18/listing-detail-location-state.sanitized.html?raw";
 import expected from "./__fixtures__/leboncoin/2026-07-13/expected.json";
 import searchFixtureHtml from "./__fixtures__/leboncoin/2026-07-13/search-results.sanitized.html?raw";
 import {
@@ -126,6 +127,20 @@ describe("sanitized current Leboncoin DOM fixtures", () => {
     expect(collectListingDetail(doc)).toMatchObject({
       energyClass: "B",
       gesClass: "A",
+    });
+  });
+
+  it("classifies the observed embedded location as source-locality evidence", () => {
+    const doc = parseFixture(
+      locationStateFixtureHtml,
+      "https://www.leboncoin.fr/ad/ventes_immobilieres/900000000004",
+    );
+
+    expect(collectListingDetail(doc).coordinateEvidence).toMatchObject({
+      latitude: 47.8,
+      longitude: -3.8,
+      locationKind: "source-locality",
+      provenance: expect.stringContaining('"path":"props.pageProps.ad.location"'),
     });
   });
 });

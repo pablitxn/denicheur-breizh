@@ -7,15 +7,21 @@ interface PropertyVisualProps {
 }
 
 export function PropertyVisual({ property, size = "md" }: PropertyVisualProps) {
-  const coastalTone = property.scores.coast >= 8 ? styles.coast : property.scores.quiet >= 7.5 ? styles.quiet : styles.town;
+  const imageUrl = property.imageUrls[0];
 
   return (
-    <div className={[styles.visual, styles[size], coastalTone].join(" ")} aria-hidden="true">
-      <span className={styles.sun} />
-      <span className={styles.horizon} />
-      <span className={styles.house} />
-      <span className={styles.roof} />
-      <span className={styles.path} />
+    <div className={[styles.visual, styles[size], styles.town].join(" ")}>
+      {imageUrl ? (
+        <img src={imageUrl} alt="" loading="lazy" referrerPolicy="no-referrer" />
+      ) : (
+        <span className={styles.placeholder} aria-hidden="true">
+          <span className={styles.sun} />
+          <span className={styles.horizon} />
+          <span className={styles.house} />
+          <span className={styles.roof} />
+          <span className={styles.path} />
+        </span>
+      )}
     </div>
   );
 }

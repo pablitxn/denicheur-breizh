@@ -1,89 +1,141 @@
-export type ProviderName = "SeLoger" | "Bien'ici" | "Leboncoin" | "Ouest-France";
+export type ListingDecision = "relevant" | "not-relevant" | "review";
+export type CriterionVerdict = "pass" | "fail" | "unknown";
 
-export type DpeGrade = "A" | "B" | "C" | "D" | "E" | "F" | "G";
-export type PropertyType = "house" | "apartment" | "land";
+export interface ListingCriterionEvaluation {
+  criterionId: string;
+  verdict: CriterionVerdict;
+  reason: string;
+  evidence: string[];
+}
 
-export type ScoreKey = "coast" | "quiet" | "value" | "family" | "transit" | "dpe" | "flood";
+export interface ListingEvaluation {
+  listingId: string;
+  runId: string;
+  decision: ListingDecision;
+  score: number | null;
+  summary: string;
+  criteria: ListingCriterionEvaluation[];
+  missingData: string[];
+  evaluatedAt: string;
+  recipeId: string;
+  recipeVersion: number;
+  locale?: "fr" | "es" | "en";
+  evaluator?: {
+    provider: "openai";
+    model: string;
+    version: string;
+  };
+}
 
-export interface PropertyScores extends Record<ScoreKey, number> {
-  overall: number;
+export interface ListingRunReference {
+  id: string;
+  status?: string;
+  observedAt?: string;
+}
+
+export type CoordinateLocationKind =
+  | "source-property"
+  | "source-locality"
+  | "locality-centroid"
+  | "postal-code-centroid";
+
+export interface PropertyCoordinates {
+  latitude: number;
+  longitude: number;
+  verifiedAt: string;
+  provenance: string;
+  locationKind: CoordinateLocationKind;
 }
 
 export interface PropertyListing {
-  id: string;
-  title: string;
-  propertyType: PropertyType;
-  locality: string;
-  address: string;
-  price: number;
-  surfaceM2: number;
-  rooms: number;
-  provider: ProviderName;
-  coordinates: {
-    lat: number;
-    lng: number;
-  };
-  dpe: DpeGrade;
-  scores: PropertyScores;
-  postedDaysAgo: number;
-  diagnostics: {
-    irisMedianPrice: number;
-    comparableSales: number;
-    noiseDbNight: number;
-    coastalDistanceKm: number;
-    transitMinutes: number;
-  };
+  source: string;
+  externalId: string;
+  key: string;
+  url: string;
+  title?: string;
+  priceText?: string;
+  priceEuros?: number;
+  pricePerSquareMeterText?: string;
+  propertyType?: string;
+  rooms?: number;
+  bedrooms?: number;
+  surfaceM2?: number;
+  landSurfaceM2?: number;
+  location?: string;
+  sellerName?: string;
+  sellerType?: string;
+  postedAt?: string;
+  description?: string;
+  energyClass?: string;
+  gesClass?: string;
+  imageUrls: string[];
+  features: string[];
+  status?: string;
+  scrapedAt?: string;
+  coordinates?: PropertyCoordinates;
+  latestRun?: ListingRunReference;
+  runs: ListingRunReference[];
+  evaluation?: ListingEvaluation;
+  evaluations: ListingEvaluation[];
 }
 
-export interface ScoringMetric {
-  id: ScoreKey | "weekend";
-  group: string;
-  name: string;
-  icon: string;
-  short: string;
-  formula: string;
-  inputs: string[];
-  sample: {
-    good: string;
-    weak: string;
-  };
-  tags: string[];
-  builtIn: boolean;
-}
-
-export interface RecipeFilter {
-  id: string;
-  field: "price" | "type" | "dpe" | "surface" | "rooms" | ScoreKey;
-  operator: "eq" | "neq" | "lte" | "gte" | "between";
-  value: string;
-}
-
-export interface ScoringRecipe {
+export interface IntelligenceCriterion {
   id: string;
   name: string;
   description: string;
-  status: "draft" | "saved";
-  weights: Record<ScoreKey, number>;
-  filters: RecipeFilter[];
+  weight: number;
+  required: boolean;
+  evidenceRequired?: boolean;
 }
 
-export interface PropertyFilters {
-  providers: ProviderName[];
-  propertyTypes: PropertyType[];
-  priceMin: number;
-  priceMax: number;
-  surfaceMin: number;
-  dpeMax: DpeGrade;
+export interface IntelligenceRecipe {
+  id: string;
+  version: number;
+  name: string;
+  threshold: number;
+  criteria: IntelligenceCriterion[];
+  active: boolean;
+  createdAt?: string;
+}
+
+export interface RecipeDraft {
+  id: string;
+  name: string;
+  threshold: number;
+  criteria: IntelligenceCriterion[];
+}
+
+export interface ListingFilters {
+  sources?: string[];
+  runId?: string;
+  status?: string;
+  decision?: ListingDecision;
+  propertyType?: string;
+  priceMin?: number;
+  priceMax?: number;
+  surfaceMin?: number;
+  energyClassMax?: string;
+  cursor?: string;
+  limit?: number;
+}
+
+export interface PaginatedListings {
+  items: PropertyListing[];
+  nextCursor: string | null;
+  total: number;
+}
+
+export interface HealthStatus {
+  status: "ok" | "degraded";
+  database: "ok" | "unavailable";
+  openAiConfigured: boolean;
 }
 
 export type WorkspaceView = "map" | "properties" | "scorings" | "builder" | "realtime";
-
 export type ThemeMode = "dark" | "light";
-
 export type AccentMode = "lavender" | "sunset" | "sea";
-
 export type DensityMode = "comfortable" | "compact";
 
-export interface RankedProperty extends PropertyListing {
-  customScore: number;
+export function propertyKey(source: string, externalId: string): string {
+  return `${source}:${externalId}`;
 }

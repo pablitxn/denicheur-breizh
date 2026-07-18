@@ -326,6 +326,109 @@
   gap: var(--space-4);
 }
 
+.coveragePanel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin: var(--space-4);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-3);
+  background: var(--color-surface-2);
+}
+
+.summaryGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.summaryCard {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-3);
+  background: var(--color-surface);
+}
+
+.summaryCard strong {
+  font-family: var(--font-mono);
+  font-size: var(--fs-h2);
+}
+
+.coverageSection,
+.evaluationDocs {
+  margin-top: var(--space-6);
+  padding-top: var(--space-5);
+  border-top: 1px solid var(--color-border);
+}
+
+.criterionCoverage {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.7fr) minmax(100px, 1fr);
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-3) 0;
+}
+
+.criterionCoverage > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.criterionCoverage span,
+.muted {
+  color: var(--color-text-muted);
+  font-size: var(--fs-body-sm);
+}
+
+.scoreSummary {
+  display: grid;
+  grid-template-columns: auto minmax(120px, 1fr);
+  align-items: center;
+  gap: var(--space-4);
+  margin-top: var(--space-5);
+}
+
+.scoreSummary strong {
+  font-family: var(--font-mono);
+  font-size: var(--fs-h3);
+}
+
+.criteriaResults {
+  display: grid;
+  gap: var(--space-3);
+  margin-top: var(--space-5);
+}
+
+.criteriaResults article {
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-3);
+  background: var(--color-surface);
+}
+
+.criteriaResults p,
+.criteriaResults ul {
+  margin: var(--space-3) 0 0;
+  line-height: 1.5;
+}
+
+@media (max-width: 760px) {
+  .summaryGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .criterionCoverage {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 @media (max-width: 1060px) {
   .view {
     grid-template-columns: 220px minmax(300px, 1fr);

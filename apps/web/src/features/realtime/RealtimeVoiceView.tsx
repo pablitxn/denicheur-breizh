@@ -2,11 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } fro
 import { formatDateTime, type MessageValues } from "@denicheur-breizh/i18n";
 import { Activity, Languages, Mic, MicOff, Phone, PhoneOff, Send } from "lucide-react";
 import { Button, Chip } from "@denicheur-breizh/design-system";
+import { API_BASE_URL } from "../../api/denicheurApi";
 import { useAppIntl } from "../../intl/IntlContext";
 import type { MessageId } from "../../intl/messages";
 import styles from "./RealtimeVoiceView.module.css";
 
-const realtimeSessionEndpoint = "/api/realtime/session";
+export const realtimeSessionEndpoint = `${API_BASE_URL}/v1/realtime/session`;
 const realtimeModel = "gpt-realtime-2";
 
 type ConnectionStatus = "idle" | "connecting" | "connected" | "error";

@@ -5,10 +5,16 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { ExtensionI18nProvider, loadExtensionLocale } from "../../src/i18n";
 import { DashboardApp } from "../../src/ui/DashboardApp";
+import { handleIterationReset } from "../../src/ui/iterationReset";
 import { RootReady } from "../../src/ui/RootReady";
 import { applyThemePreference, loadThemePreference } from "../../src/ui/theme";
 
 async function bootstrap() {
+  try {
+    await handleIterationReset();
+  } catch (error) {
+    console.error("Could not complete the requested iteration reset.", error);
+  }
   const [initialLocale, initialThemePreference] = await Promise.all([
     loadExtensionLocale(),
     loadThemePreference(),

@@ -47,6 +47,14 @@ const STAGED_SEARCH_URLS = [
   "https://www.leboncoin.fr/recherche?category=9&locations=d_29&real_estate_type=1&price=0-120000&rooms=2-3&kst=k",
 ] as const;
 
+const SOURCE_LOCALITY_EVIDENCE = {
+  latitude: 47.856373,
+  longitude: -3.8512979,
+  locationKind: "source-locality" as const,
+  provenance:
+    'leboncoin:__NEXT_DATA__.props.pageProps.ad.location:{"source":"city","provider":"here","type":"city","origin_type":"city","is_shape":true}',
+};
+
 beforeEach(() => {
   storageMocks.loadCrawlerState.mockReset().mockResolvedValue({ records: [] });
   storageMocks.saveCrawlerState.mockReset().mockResolvedValue(undefined);
@@ -272,6 +280,40 @@ class DetailLoadTimeoutGateway extends FakeTabGateway {
     if (this.tabUrl(tabId)?.includes("/ad/")) {
       this.detailLoadTimeouts += 1;
       throw new Error("Timed out waiting for tab load.");
+    }
+    await super.waitForComplete(tabId, timeoutMs, signal);
+  }
+}
+
+class LeboncoinLoadTimeoutGateway extends FakeTabGateway {
+  loadTimeouts = 0;
+
+  override async waitForComplete(
+    tabId: number,
+    _timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (this.tabUrl(tabId)?.startsWith("https://www.leboncoin.fr/")) {
+      this.loadTimeouts += 1;
+      throw new Error("Timed out waiting for tab load.");
+    }
+    await super.waitForComplete(tabId, _timeoutMs, signal);
+  }
+}
+
+class SecondSearchPageFailureGateway extends FakeTabGateway {
+  pageTwoLoadObservations = 0;
+
+  override async waitForComplete(
+    tabId: number,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    if (this.tabUrl(tabId)?.includes("page=2")) {
+      this.pageTwoLoadObservations += 1;
+      if (this.pageTwoLoadObservations === 2) {
+        throw new Error("The second search page became unavailable.");
+      }
     }
     await super.waitForComplete(tabId, timeoutMs, signal);
   }
@@ -658,6 +700,177 @@ describe("scrape runner native browser orchestration", () => {
       message.type === "LBC_COLLECT_SEARCH_RESULTS" ? [message.limit] : []
     ))).toEqual(new Set([100]));
     expect(gateway.touchedTabIds).not.toEqual(expect.arrayContaining(FOREIGN_TAB_IDS));
+  });
+
+  it("uses the content-script handshake when Leboncoin never reports load complete", async () => {
+    const result = listing("3007106071");
+    const gateway = new LeboncoinLoadTimeoutGateway(happyResponseFactory([result]));
+    const collector = snapshotCollector();
+    const runner = createRunner(
+      collector,
+      gateway,
+      new DeterministicClock(gateway.events),
+    );
+
+    await runner.run(searchFilters({ maxListings: 1, collectDetailPages: false }));
+
+    expect(gateway.loadTimeouts).toBeGreaterThan(0);
+    expect(gateway.messages.some(({ message }) => message.type === "LBC_COLLECT_SEARCH_RESULTS")).toBe(true);
+    expect(collector.latest().run).toMatchObject({
+      status: "completed",
+      found: 1,
+      pagesVisited: 1,
+      collected: 1,
+    });
+    expect(collector.latest().records).toEqual([
+      expect.objectContaining({ id: result.id, status: "listing" }),
+    ]);
+  });
+
+  it("persists stable source-locality evidence from a search result", async () => {
+    const result = {
+      ...listing("3007106074"),
+      coordinateEvidence: SOURCE_LOCALITY_EVIDENCE,
+    };
+    const gateway = new FakeTabGateway(happyResponseFactory([result]));
+    const collector = snapshotCollector();
+    const runner = createRunner(
+      collector,
+      gateway,
+      new DeterministicClock(gateway.events),
+    );
+
+    await runner.run(searchFilters({ maxListings: 1, collectDetailPages: false }));
+
+    expect(collector.latest().records.at(0)?.coordinates).toEqual({
+      ...SOURCE_LOCALITY_EVIDENCE,
+      verifiedAt: expect.any(String),
+    });
+  });
+
+  it("uses detail coordinate evidence and falls back to summary evidence", async () => {
+    const detailOnly = listing("3007106075");
+    const summaryFallback = {
+      ...listing("3007106076"),
+      coordinateEvidence: SOURCE_LOCALITY_EVIDENCE,
+    };
+    const gateway = new FakeTabGateway(happyResponseFactory(
+      [detailOnly, summaryFallback],
+      {
+        detailFor: (summary) => detail(summary, {
+          coordinateEvidence: summary.id === detailOnly.id
+            ? SOURCE_LOCALITY_EVIDENCE
+            : undefined,
+        }),
+      },
+    ));
+    const collector = snapshotCollector();
+    const runner = createRunner(
+      collector,
+      gateway,
+      new DeterministicClock(gateway.events),
+    );
+
+    await runner.run(searchFilters({ maxListings: 2, collectDetailPages: true }));
+
+    expect(collector.latest().records).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: detailOnly.id,
+        coordinates: expect.objectContaining(SOURCE_LOCALITY_EVIDENCE),
+      }),
+      expect.objectContaining({
+        id: summaryFallback.id,
+        coordinates: expect.objectContaining(SOURCE_LOCALITY_EVIDENCE),
+      }),
+    ]));
+  });
+
+  it("keeps the original verification timestamp when a bounded backfill sees the same coordinates", async () => {
+    const id = "3007106077";
+    const historical = {
+      ...record(id, "detailed"),
+      coordinates: {
+        ...SOURCE_LOCALITY_EVIDENCE,
+        verifiedAt: "2026-07-18T10:00:00.000Z",
+      },
+    };
+    storageMocks.loadCrawlerState.mockResolvedValue({ records: [historical] });
+    const result = { ...listing(id), coordinateEvidence: SOURCE_LOCALITY_EVIDENCE };
+    const gateway = new FakeTabGateway(happyResponseFactory([result]));
+    const collector = snapshotCollector();
+    const runner = createRunner(
+      collector,
+      gateway,
+      new DeterministicClock(gateway.events),
+    );
+
+    await runner.run(searchFilters({ maxListings: 1, collectDetailPages: false }));
+
+    expect(collector.latest().records.at(0)?.coordinates).toEqual(historical.coordinates);
+  });
+
+  it("preserves historical and page-one records when the next search page fails", async () => {
+    const historical = record("2999999999", "detailed");
+    storageMocks.loadCrawlerState.mockResolvedValue({ records: [historical] });
+    const firstPage = [listing("3007106072"), listing("3007106073")];
+    const pageUrls = [
+      `${OBSERVED_SEARCH_URL}&page=1`,
+      `${OBSERVED_SEARCH_URL}&page=2`,
+    ];
+    const fallback = happyResponseFactory([]);
+    const responseFactory: ResponseFactory = (tabId, message, gateway) => {
+      const page = Number(new URL(gateway.tabUrl(tabId) ?? pageUrls[0]).searchParams.get("page") ?? "1");
+      if (message.type === "LBC_COLLECT_SEARCH_RESULTS") {
+        return {
+          type: "LBC_SEARCH_RESULTS",
+          captcha: false,
+          ready: true,
+          listings: page === 1 ? firstPage : [],
+        };
+      }
+      if (message.type === "LBC_PREPARE_NEXT_RESULTS_PAGE") {
+        return nativeResponse("pagination-prepared", { hasNextPage: page === 1 });
+      }
+      if (message.type === "LBC_GO_NEXT_RESULTS_PAGE") {
+        return nativeResponse("pagination-advanced", {
+          hasNextPage: true,
+          navigationExpected: true,
+        });
+      }
+      return fallback(tabId, message, gateway);
+    };
+    const gateway = new SecondSearchPageFailureGateway(responseFactory, pageUrls);
+    const collector = snapshotCollector();
+    const runner = createRunner(
+      collector,
+      gateway,
+      new DeterministicClock(gateway.events),
+    );
+
+    await runner.run(searchFilters({ maxListings: 3, collectDetailPages: false }));
+
+    expect(gateway.pageTwoLoadObservations).toBe(2);
+    expect(collector.latest().run).toMatchObject({
+      status: "failed",
+      found: 2,
+      pagesVisited: 2,
+      error: {
+        id: "error.crawlFailed",
+        technicalDetail: "The second search page became unavailable.",
+      },
+    });
+    expect(new Set(collector.latest().records.map(({ id }) => id))).toEqual(new Set([
+      historical.id,
+      ...firstPage.map(({ id }) => id),
+    ]));
+
+    const persistedRecordSnapshots = storageMocks.saveCrawlerState.mock.calls.flatMap(([state]) =>
+      state.records ? [state.records as ScrapedPropertyRecord[]] : []
+    );
+    expect(new Set(persistedRecordSnapshots.at(-1)?.map(({ id }) => id))).toEqual(new Set([
+      historical.id,
+      ...firstPage.map(({ id }) => id),
+    ]));
   });
 
   it("re-handshakes after each staged results navigation and records only the final observed URL", async () => {
@@ -1552,6 +1765,7 @@ describe("scrape runner intelligence phase", () => {
       [detailed],
       "fr",
       expect.any(AbortSignal),
+      expect.any(Function),
     );
     expect(snapshots).toEqual([
       { status: "evaluating", intelligenceStatus: "evaluating" },
@@ -1586,6 +1800,36 @@ describe("scrape runner intelligence phase", () => {
       collected: 1,
     });
     expect(persist).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps completed evaluation batches when a later batch fails", async () => {
+    const activeRun = run();
+    const first = record("listing-1", "detailed");
+    const second = record("listing-2", "detailed");
+    const firstEvaluation = evaluation(first.id);
+    const persist = vi.fn(async () => undefined);
+
+    const records = await runIntelligencePhase({
+      run: activeRun,
+      records: [first, second],
+      recipe,
+      evaluator: vi.fn(async (_runId, _recipe, _records, _locale, _signal, onBatchComplete) => {
+        await onBatchComplete?.([firstEvaluation], [firstEvaluation]);
+        throw new Error("second batch failed");
+      }),
+      signal: new AbortController().signal,
+      persist,
+    });
+
+    expect(records[0].evaluation).toEqual(firstEvaluation);
+    expect(records[1].evaluation).toBeUndefined();
+    expect(activeRun).toMatchObject({
+      status: "completed",
+      intelligenceStatus: "failed",
+      evaluated: 1,
+      relevant: 1,
+    });
+    expect(persist).toHaveBeenCalledTimes(3);
   });
 
   it("propagates cancellation instead of persisting a fabricated evaluation result", async () => {

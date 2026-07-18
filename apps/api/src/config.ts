@@ -17,6 +17,7 @@ const envSchema = z.object({
     z.coerce.number().int().min(1).max(65_535),
   ),
   FILTER_API_ALLOWED_ORIGINS: z.string().optional(),
+  DENICHEUR_DB_PATH: z.string().trim().min(1).default(".data/denicheur.sqlite"),
 });
 
 export interface ApiConfig {
@@ -24,6 +25,7 @@ export interface ApiConfig {
   readonly port: number;
   readonly allowedOrigins: ReadonlySet<string>;
   readonly openAiApiKey: string | undefined;
+  readonly databasePath: string;
   readonly openAiModel: string;
   readonly evaluatorVersion: string;
   readonly requestBodyLimit: string;
@@ -46,12 +48,13 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): ApiCon
     port: parsed.FILTER_API_PORT,
     allowedOrigins: new Set(origins),
     openAiApiKey: parsed.OPENAI_API_KEY,
+    databasePath: parsed.DENICHEUR_DB_PATH,
     openAiModel: parsed.OPENAI_FILTER_MODEL,
-    evaluatorVersion: "1.0.0",
+    evaluatorVersion: "1.1.0",
     requestBodyLimit: "256kb",
     rateLimitMax: 30,
     rateLimitWindowMs: 60_000,
-    openAiTimeoutMs: 30_000,
+    openAiTimeoutMs: 60_000,
     openAiMaxRetries: 1,
   };
 }

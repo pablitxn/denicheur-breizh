@@ -6,6 +6,21 @@
     linear-gradient(150deg, var(--cta-soft), var(--color-sunset-soft));
 }
 
+.visual > img,
+.placeholder {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.visual > img {
+  object-fit: cover;
+}
+
+.placeholder {
+  position: relative;
+}
+
 .sm {
   width: 58px;
   height: 58px;

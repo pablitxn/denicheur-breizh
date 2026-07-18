@@ -11,6 +11,9 @@ describe("loadConfig", () => {
     expect(config.host).toBe(FILTER_API_HOST);
     expect(config.host).toBe("127.0.0.1");
     expect(config.port).toBe(4310);
+    expect(config.databasePath).toBe(".data/denicheur.sqlite");
+    expect(config.evaluatorVersion).toBe("1.1.0");
+    expect(config.openAiTimeoutMs).toBe(60_000);
     expect(config.allowedOrigins).toContain(VALID_EXTENSION_ORIGIN);
     expect(config.allowedOrigins).not.toContain("chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
   });
@@ -39,10 +42,15 @@ describe("loadConfig", () => {
   });
 
   it("accepts a configured port and pinned model", () => {
-    const config = loadConfig({ FILTER_API_PORT: "4500", OPENAI_FILTER_MODEL: "gpt-fixed-snapshot" });
+    const config = loadConfig({
+      FILTER_API_PORT: "4500",
+      OPENAI_FILTER_MODEL: "gpt-fixed-snapshot",
+      DENICHEUR_DB_PATH: ":memory:",
+    });
 
     expect(config.port).toBe(4500);
     expect(config.openAiModel).toBe("gpt-fixed-snapshot");
+    expect(config.databasePath).toBe(":memory:");
   });
 });
 

@@ -10,15 +10,11 @@ interface WorkspaceState {
   theme: ThemeMode;
   accent: AccentMode;
   density: DensityMode;
-  selectedPropertyId: string;
-  shortlistedPropertyIds: string[];
   setActiveView: (view: WorkspaceView) => void;
   setTheme: (theme: ThemeMode) => void;
   toggleTheme: () => void;
   setAccent: (accent: AccentMode) => void;
   setDensity: (density: DensityMode) => void;
-  setSelectedPropertyId: (id: string) => void;
-  toggleShortlist: (id: string) => void;
 }
 
 function getInitialView(): WorkspaceView {
@@ -38,31 +34,20 @@ export const useWorkspaceStore = create<WorkspaceState>()(
       theme: getInitialTheme(),
       accent: "lavender",
       density: "comfortable",
-      selectedPropertyId: "",
-      shortlistedPropertyIds: [],
       setActiveView: (activeView) => set({ activeView }),
       setTheme: (theme) => set({ theme }),
       toggleTheme: () => set((state) => ({ theme: state.theme === "dark" ? "light" : "dark" })),
       setAccent: (accent) => set({ accent }),
       setDensity: (density) => set({ density }),
-      setSelectedPropertyId: (selectedPropertyId) => set({ selectedPropertyId }),
-      toggleShortlist: (id) =>
-        set((state) => ({
-          shortlistedPropertyIds: state.shortlistedPropertyIds.includes(id)
-            ? state.shortlistedPropertyIds.filter((item) => item !== id)
-            : [...state.shortlistedPropertyIds, id],
-        })),
     }),
     {
       name: workspaceStorageKey,
-      version: 1,
+      version: 2,
       storage: createJSONStorage(() => window.localStorage),
-      partialize: ({ theme, accent, density, selectedPropertyId, shortlistedPropertyIds }) => ({
+      partialize: ({ theme, accent, density }) => ({
         theme,
         accent,
         density,
-        selectedPropertyId,
-        shortlistedPropertyIds,
       }),
     },
   ),

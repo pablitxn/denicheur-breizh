@@ -4,6 +4,13 @@ import { Button, Chip } from "@denicheur-breizh/design-system";
 import { LocaleSelector, useExtensionI18n } from "../i18n";
 import type { ScrapeRun } from "../lib/types";
 import { IDLE_RUN, isCrawlerStorageKey, loadCrawlerState } from "../storage/chromeStorage";
+import { requestImmediateSync } from "../sync/runtime";
+import {
+  EMPTY_SYNC_STATE,
+  loadExtensionSyncState,
+  SYNC_STORAGE_KEY,
+} from "../sync/storage";
+import type { ExtensionSyncState } from "../sync/types";
 import { useThemePreference, type ThemePreference } from "./theme";
 
 interface PopupAppProps {
@@ -14,6 +21,8 @@ export function PopupApp({ initialThemePreference = "system" }: PopupAppProps) {
   const { formatNumber, resolveText, t } = useExtensionI18n();
   const [run, setRun] = useState<ScrapeRun>(IDLE_RUN);
   const [recordCount, setRecordCount] = useState(0);
+  const [syncState, setSyncState] = useState<ExtensionSyncState>(EMPTY_SYNC_STATE);
+  const [syncPending, setSyncPending] = useState(false);
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [loadError, setLoadError] = useState<unknown>();
   const [retryToken, setRetryToken] = useState(0);
@@ -24,11 +33,12 @@ export function PopupApp({ initialThemePreference = "system" }: PopupAppProps) {
     setLoadState("loading");
     setLoadError(undefined);
 
-    void loadCrawlerState()
-      .then((snapshot) => {
+    void Promise.all([loadCrawlerState(), loadExtensionSyncState()])
+      .then(([snapshot, storedSyncState]) => {
         if (!mounted) return;
         setRun(snapshot.run);
         setRecordCount(snapshot.records.length);
+        setSyncState(storedSyncState);
         setLoadState("ready");
       })
       .catch((caught) => {
@@ -38,15 +48,18 @@ export function PopupApp({ initialThemePreference = "system" }: PopupAppProps) {
       });
 
     const listener = (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => {
-      if (areaName !== "local" || !Object.keys(changes).some(isCrawlerStorageKey)) {
+      if (areaName !== "local" || !Object.keys(changes).some(
+        (key) => isCrawlerStorageKey(key) || key === SYNC_STORAGE_KEY,
+      )) {
         return;
       }
 
-      void loadCrawlerState()
-        .then((snapshot) => {
+      void Promise.all([loadCrawlerState(), loadExtensionSyncState()])
+        .then(([snapshot, storedSyncState]) => {
           if (!mounted) return;
           setRun(snapshot.run);
           setRecordCount(snapshot.records.length);
+          setSyncState(storedSyncState);
           setLoadState("ready");
         })
         .catch((caught) => {
@@ -74,6 +87,20 @@ export function PopupApp({ initialThemePreference = "system" }: PopupAppProps) {
       await chrome.tabs.create({ url: dashboardUrl, active: true });
     }
     window.close();
+  }
+
+  async function syncNow() {
+    setSyncPending(true);
+    setLoadError(undefined);
+    try {
+      const response = await requestImmediateSync();
+      setSyncState(response.state);
+      if (!response.ok) setLoadError(response.error ?? response.state.lastError);
+    } catch (caught) {
+      setLoadError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setSyncPending(false);
+    }
   }
 
   const isBusy =
@@ -154,11 +181,28 @@ export function PopupApp({ initialThemePreference = "system" }: PopupAppProps) {
                 {t("error.technicalDetail", { detail: progressMessage.technicalDetail })}
               </small>
             )}
+
+            <section className="popup-status" aria-live="polite">
+              <Chip tone={syncState.status === "error" ? "danger" : syncState.queue.length > 0 ? "sunset" : "good"}>
+                {(syncPending || syncState.status === "syncing") && <LoaderCircle className="spin" size={13} />}
+                {syncPending || syncState.status === "syncing"
+                  ? t("sync.syncing")
+                  : syncState.status === "error"
+                    ? t("sync.failed", { detail: syncState.lastError ?? "API" })
+                    : syncState.queue.length > 0
+                      ? t("sync.pending", { count: syncState.queue.length })
+                      : t("sync.upToDate")}
+              </Chip>
+            </section>
           </>
         )}
       </div>
 
       <footer className="popup-actions">
+        <Button type="button" variant="ghost" onClick={() => void syncNow()} disabled={syncPending}>
+          {syncPending ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
+          {syncPending ? t("sync.syncing") : t("sync.now")}
+        </Button>
         <Button type="button" variant="primary" onClick={openDashboard}>
           <Play size={16} />
           {t("popup.openCrawler")}

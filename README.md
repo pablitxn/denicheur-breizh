@@ -1,24 +1,40 @@
 # dénicheur·breizh
 
-Turborepo workspace for the real-estate decision ecosystem. The current web app
-lives in `apps/web`, and shared UI foundations live in `packages/design-system`.
+Local, single-user real-estate workspace. The Chrome extension captures
+Leboncoin listings, the HTTP API persists them in SQLite and evaluates them,
+and the web app reads the resulting runs, listings, recipes, and evaluations.
+
+SQLite is private implementation detail of `apps/api`: neither the extension
+nor the browser opens the database file. OpenAI is also called only by the API.
+
+```text
+Chrome extension ─┐
+                  ├─ HTTP on 127.0.0.1 ─> apps/api ─> SQLite
+React web app ────┘                         └─────────> OpenAI (optional)
+```
 
 ## Local
 
 ```bash
 pnpm install
 cp apps/web/.env.example apps/web/.env
-# set VITE_ENABLE_REALTIME=true and add OPENAI_API_KEY only for the optional voice experiment
-pnpm dev
+cp apps/api/.env.example apps/api/.env
+cp apps/extension/.env.example apps/extension/.env
+pnpm dev            # API + web
+pnpm dev:extension  # WXT extension watcher, in another terminal
 ```
 
-The app uses the in-repo mock API by default. Set `VITE_API_BASE_URL` when a backend is available; API calls are isolated in `apps/web/src/api/denicheurApi.ts`.
+The defaults bind the API to `127.0.0.1:4310`, persist data under
+`apps/api/.data/`, and point both browser clients at that API. There is no
+runtime mock fallback: if the API is down, the web app reports the failure and
+the extension keeps its pending queue until synchronization succeeds.
 
 ## Workspace
 
 - `apps/web`: Vite + React + TypeScript app.
 - `apps/extension`: WXT + React Chrome extension PoC for user-assisted LeBonCoin crawling.
-- `apps/api`: localhost-only Express API for OpenAI-backed listing evaluation.
+- `apps/api`: localhost-only Express API and SQLite owner.
+- `packages/contracts`: shared Zod wire contracts for all three applications.
 - `packages/design-system`: shared design tokens, component CSS, and React UI primitives.
 - `turbo.json`: build graph for `build`, `typecheck`, `test:run`, `dev`, and `preview`.
 
@@ -26,12 +42,12 @@ The app imports `@denicheur-breizh/design-system/styles.css` once in `apps/web/s
 
 ## Realtime Spanish-to-French voice agent
 
-The optional `Voix` / `Voz` experiment starts a minimal WebRTC voice translator with `gpt-realtime-2`. It is hidden by default; enable it with `VITE_ENABLE_REALTIME=true` only in a Vite dev/preview environment that also has `OPENAI_API_KEY`.
+The optional `Voix` / `Voz` experiment starts a minimal WebRTC voice translator with `gpt-realtime-2`. It is hidden by default; enable it in the web app with `VITE_ENABLE_REALTIME=true`. The API process must have `OPENAI_API_KEY` configured.
 
 - Browser audio uses `RTCPeerConnection`: microphone input is added as a local audio track and model audio plays through a remote audio element.
 - The app opens an `oai-events` data channel and sends `session.update` to configure a Spanish-to-French interpreter prompt.
-- The local server endpoint is `POST /api/realtime/session`. It accepts the browser SDP offer as `application/sdp`, then posts to `https://api.openai.com/v1/realtime/calls` with multipart `FormData` fields named `sdp` and `session`.
-- `OPENAI_API_KEY` is only read server-side by the Vite middleware.
+- The localhost API endpoint is `POST /v1/realtime/session`. It accepts the browser SDP offer as `application/sdp`, then posts to `https://api.openai.com/v1/realtime/calls` with multipart `FormData` fields named `sdp` and `session`.
+- `OPENAI_API_KEY` is read only by `apps/api`; Vite and the browser receive neither the credential nor an ephemeral copy.
 
 ## Checks
 
@@ -42,17 +58,34 @@ pnpm test:coverage  # per-app Vitest coverage summaries
 pnpm check:all      # deterministic gate: check + E2E
 ```
 
-The opt-in live test exercises the complete extension → content script → local
-API → OpenAI → Chrome storage path. It reads the existing ignored root `.env`
-and makes a real API request:
+The deterministic suite exercises the real MV3 extension, the HTTP API, SQLite,
+and the built web application with sanitized fixtures. The opt-in live test
+adds a real OpenAI request; it reads the existing ignored root `.env`:
 
 ```bash
 pnpm test:e2e:live
 ```
 
-## Chrome extension PoC
+## Chrome extension
 
-The extension lives in `apps/extension` and writes crawler state to `chrome.storage.local`.
+The extension lives in `apps/extension`. `chrome.storage.local` is its durable
+offline buffer, not the system of record. Runs and listings are checkpointed
+there first, then synchronized idempotently to the API in batches of at most 20.
+The popup exposes **Synchroniser maintenant** / **Sincronizar ahora** / **Sync
+now** for an explicit retry. Existing local records can be imported without
+running the crawler again.
+
+Between manual iterations, clear only the stored listings and previous run while
+keeping the configured filters, intelligence recipe, language, and theme:
+
+```bash
+npm run db:clean
+```
+
+The command opens the installed unpacked extension in Chrome and exits only
+after the extension confirms the cleanup. It refuses to clean while a dashboard
+still owns an active collection. It never deletes listings already persisted by
+the API.
 
 For a stable manual smoke test, build once and load the production directory:
 
@@ -98,30 +131,32 @@ one-listing Computer Use procedure is documented in
 The long, multipage acceptance procedure is documented in
 [`tests/manual/leboncoin-seventy-listing-smoke.md`](tests/manual/leboncoin-seventy-listing-smoke.md).
 
-## Intelligent listing filter
+## Data and intelligence API
 
-The extension can collect up to 100 listings and sends detailed records to the
-local Express API in sequential batches of at most 20. The API evaluates
-structured personal criteria through OpenAI. Intelligence remains a
-backend-only capability: the API key stays in the server environment and is
-never bundled with the extension.
+The API owns listings, per-run history, versioned recipes, and evaluation
+results. Re-ingesting `source + externalId` merges only present fields, so a
+later search summary cannot erase an earlier detailed capture. Evaluation is a
+separate operation: an unavailable OpenAI service never removes or blocks a
+persisted listing. The legacy `POST /v1/listings/filter` endpoint remains
+temporarily available while callers migrate.
 
 ```bash
-# OPENAI_API_KEY is read from the ignored workspace .env
-pnpm --filter @denicheur-breizh/api dev
-pnpm --filter @denicheur-breizh/extension dev
+# OPENAI_API_KEY is optional and read only by apps/api
+pnpm dev
+pnpm dev:extension
 ```
 
 The API listens on `127.0.0.1:4310` by default. Copy the relevant `.env.example`
-files only when overriding the model, port, allowed origins, or extension API URL.
+files only when overriding the database path, model, port, allowed origins, or
+client API URL.
 Keep this unauthenticated v1 bound to localhost; it is not intended for public
 deployment.
 
 ## Structure
 
 - `apps/web/src/api/`: typed API boundary, query keys, React Query hooks.
-- `apps/api/src/`: request validation, OpenAI evaluation, deterministic scoring, and HTTP transport.
-- `apps/web/src/assets/`: typed mock data that mirrors the expected backend resources.
+- `apps/api/src/`: SQLite persistence, request validation, OpenAI evaluation, and HTTP transport.
+- `packages/contracts/src/`: shared request, response, pagination, and persistence-facing schemas.
 - `apps/web/src/components/`: app shell and app-specific visual components.
 - `apps/web/src/features/`: MVP views for map, property list, scoring catalog, and builder.
 - `apps/web/src/state/`: local UI state with Zustand.

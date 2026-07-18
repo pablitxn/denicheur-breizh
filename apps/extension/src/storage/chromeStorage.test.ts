@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createDefaultIntelligenceRecipe } from "../intelligence/recipe";
+import type { ScrapedPropertyRecord } from "../lib/types";
 import {
   IDLE_RUN,
+  clearRecords,
   isCrawlerStorageKey,
   loadCrawlerState,
   migrateStoredRecords,
@@ -203,6 +205,20 @@ describe("crawler run recovery", () => {
     expect(isCrawlerStorageKey("denicheur:intelligence:recipe")).toBe(true);
   });
 
+  it("clears only the local crawler cache and never issues a backend delete", async () => {
+    storage["denicheur:sync:state"] = { version: 1, marker: "not-a-backend-delete" };
+    storage["denicheur:crawler:records"] = [{ id: "local-record" }];
+
+    await clearRecords();
+
+    expect(storage["denicheur:crawler:records"]).toEqual([]);
+    expect(storage["denicheur:crawler:run"]).toEqual(IDLE_RUN);
+    expect(storage["denicheur:sync:state"]).toEqual({
+      version: 1,
+      marker: "not-a-backend-delete",
+    });
+  });
+
   it("migrates legacy category ids and deduplicates tracking URL variants", () => {
     const legacy = (listingUrl: string, title: string) => ({
       id: "ventes_immobilieres",
@@ -268,5 +284,101 @@ describe("crawler run recovery", () => {
       }),
     ]);
     expect(migrated[0].priceEuros).toBeUndefined();
+  });
+
+  it("preserves the highest-quality valid coordinates across duplicate records", () => {
+    const base: ScrapedPropertyRecord = {
+      id: "3007106066",
+      source: "leboncoin",
+      listingUrl: "https://www.leboncoin.fr/ad/ventes_immobilieres/3007106066",
+      features: [],
+      scrapedAt: "2026-07-18T09:00:00.000Z",
+      searchRunId: "run-1",
+      status: "listing",
+      rawTextSample: "Maison",
+      coordinates: {
+        latitude: 47.81,
+        longitude: -3.81,
+        verifiedAt: "2026-07-18T09:00:00.000Z",
+        provenance: "source-property fixture",
+        locationKind: "source-property",
+      },
+    };
+
+    const migrated = migrateStoredRecords([
+      base,
+      {
+        ...base,
+        status: "detailed",
+        scrapedAt: "2026-07-18T09:05:00.000Z",
+        coordinates: {
+          latitude: 47.8,
+          longitude: -3.8,
+          verifiedAt: "2026-07-18T09:05:00.000Z",
+          provenance: "source-locality fixture",
+          locationKind: "source-locality",
+        },
+      },
+    ]);
+
+    expect(migrated).toHaveLength(1);
+    expect(migrated[0]).toMatchObject({ status: "detailed" });
+    expect(migrated[0].coordinates).toEqual(base.coordinates);
+  });
+
+  it("omits invalid legacy coordinates while retaining and persisting the listing", async () => {
+    storage["denicheur:crawler:records"] = [{
+      id: "3007106066",
+      source: "leboncoin",
+      listingUrl: "https://www.leboncoin.fr/ad/ventes_immobilieres/3007106066",
+      features: [],
+      scrapedAt: "2026-07-18T09:00:00.000Z",
+      searchRunId: "run-1",
+      status: "detailed",
+      rawTextSample: "Maison",
+      coordinates: {
+        latitude: 147.8,
+        longitude: -3.8,
+        verifiedAt: "2026-07-18T09:00:00.000Z",
+        provenance: "legacy invalid fixture",
+        locationKind: "source-locality",
+      },
+    }];
+
+    const state = await loadCrawlerState();
+    const persisted = storage["denicheur:crawler:records"] as ScrapedPropertyRecord[];
+
+    expect(state.records).toHaveLength(1);
+    expect(state.records[0].coordinates).toBeUndefined();
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]).not.toHaveProperty("coordinates");
+  });
+
+  it("keeps a valid source-locality provenance unchanged during migration", () => {
+    const coordinates = {
+      latitude: 47.856373,
+      longitude: -3.8512979,
+      verifiedAt: "2026-07-18T09:00:00.000Z",
+      provenance: JSON.stringify({
+        site: "leboncoin",
+        container: "#__NEXT_DATA__",
+        path: "props.pageProps.ad.location",
+        locationSource: "city",
+      }),
+      locationKind: "source-locality" as const,
+    };
+    const record: ScrapedPropertyRecord = {
+      id: "3007106066",
+      source: "leboncoin",
+      listingUrl: "https://www.leboncoin.fr/ad/ventes_immobilieres/3007106066",
+      features: [],
+      scrapedAt: "2026-07-18T09:00:00.000Z",
+      searchRunId: "run-1",
+      status: "detailed",
+      rawTextSample: "Maison",
+      coordinates,
+    };
+
+    expect(migrateStoredRecords([record])[0].coordinates).toEqual(coordinates);
   });
 });

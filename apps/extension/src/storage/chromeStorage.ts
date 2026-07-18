@@ -4,6 +4,10 @@ import {
   normalizeSearchFilters,
 } from "../lib/leboncoinSearch";
 import { createDefaultIntelligenceRecipe, normalizeIntelligenceRecipe } from "../intelligence/recipe";
+import {
+  normalizeVerifiedCoordinates,
+  selectBestCoordinates,
+} from "../lib/coordinates";
 import { listingIdFromUrl, normalizeListingUrl } from "../lib/leboncoinExtractors";
 import { message } from "../lib/localizedText";
 import type {
@@ -63,15 +67,22 @@ export async function loadCrawlerState(): Promise<StoredCrawlerState> {
     ? createDefaultSearchFilters()
     : migrateStoredSearchFilters(storedFilters);
 
+  const storedRecords = values[RECORDS_KEY] ?? [];
+  const records = migrateStoredRecords(storedRecords);
+  const migrationPatch: Record<string, unknown> = {};
   if (storedFilters !== undefined && needsStoredFilterMigration(storedFilters)) {
-    await setStorage({ [FILTERS_KEY]: filters });
+    migrationPatch[FILTERS_KEY] = filters;
   }
+  if (JSON.stringify(storedRecords) !== JSON.stringify(records)) {
+    migrationPatch[RECORDS_KEY] = records;
+  }
+  if (Object.keys(migrationPatch).length > 0) await setStorage(migrationPatch);
 
   return {
     filters,
     recipe: normalizeIntelligenceRecipe(values[RECIPE_KEY] ?? createDefaultIntelligenceRecipe()),
     run: normalizeRun(values[RUN_KEY]),
-    records: migrateStoredRecords(values[RECORDS_KEY] ?? []),
+    records,
   };
 }
 
@@ -121,7 +132,7 @@ export async function saveCrawlerState(state: Partial<StoredCrawlerState>): Prom
   }
 
   if (state.records) {
-    patch[RECORDS_KEY] = state.records;
+    patch[RECORDS_KEY] = migrateStoredRecords(state.records);
   }
 
   await setStorage(patch);
@@ -229,15 +240,19 @@ export function migrateStoredRecords(records: ScrapedPropertyRecord[]): ScrapedP
     if (!id) continue;
 
     const evaluation = record.evaluation?.listingId === id ? record.evaluation : undefined;
+    const { coordinates: storedCoordinates, ...recordWithoutCoordinates } = record;
+    const coordinates = normalizeVerifiedCoordinates(storedCoordinates);
     const candidate: ScrapedPropertyRecord = {
-      ...record,
+      ...recordWithoutCoordinates,
       id,
       listingUrl: canonicalUrl,
       evaluation,
       error: normalizeLocalizedText(record.error),
+      ...(coordinates ? { coordinates } : {}),
     };
     const existing = byListingId.get(id);
     const preferred = existing ? preferMigratedRecord(existing, candidate) : candidate;
+    const preferredCoordinates = selectBestCoordinates(existing?.coordinates, candidate.coordinates);
     const imageUrls = Array.from(new Set([
       ...(preferred.imageUrls ?? []),
       ...(preferred.imageUrl ? [preferred.imageUrl] : []),
@@ -246,6 +261,7 @@ export function migrateStoredRecords(records: ScrapedPropertyRecord[]): ScrapedP
       ...preferred,
       imageUrl: imageUrls[0],
       imageUrls: imageUrls.length > 0 ? imageUrls : undefined,
+      ...(preferredCoordinates ? { coordinates: preferredCoordinates } : {}),
     });
   }
 

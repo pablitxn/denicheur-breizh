@@ -1,6 +1,14 @@
 import type { LocaleCode, MessageDescriptor } from "@denicheur-breizh/i18n";
+import type { VerifiedCoordinates } from "@denicheur-breizh/contracts";
 
 export type SourceSite = "leboncoin";
+
+/**
+ * Stable coordinate evidence read from a source page. The observation time is
+ * added only when the crawler persists a record so repeated DOM polls keep the
+ * same fingerprint.
+ */
+export type CoordinateEvidence = Omit<VerifiedCoordinates, "verifiedAt">;
 
 /**
  * New runtime state stores stable message descriptors. Strings remain accepted
@@ -65,6 +73,7 @@ export interface ListingSummary {
   surfaceM2?: number;
   landSurfaceM2?: number;
   location?: string;
+  coordinateEvidence?: CoordinateEvidence;
   sellerName?: string;
   sellerType?: string;
   postedAt?: string;
@@ -89,6 +98,7 @@ export interface ListingDetail {
   surfaceM2?: number;
   landSurfaceM2?: number;
   location?: string;
+  coordinateEvidence?: CoordinateEvidence;
   sellerName?: string;
   sellerType?: string;
   postedAt?: string;
@@ -115,6 +125,7 @@ export interface ScrapedPropertyRecord {
   surfaceM2?: number;
   landSurfaceM2?: number;
   location?: string;
+  coordinates?: VerifiedCoordinates;
   sellerName?: string;
   sellerType?: string;
   postedAt?: string;

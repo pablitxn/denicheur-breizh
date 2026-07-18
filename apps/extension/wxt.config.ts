@@ -13,7 +13,7 @@ export default defineConfig({
     name: "__MSG_extensionName__",
     description: "__MSG_extensionDescription__",
     minimum_chrome_version: "116",
-    permissions: ["storage"],
+    permissions: ["storage", "alarms"],
     host_permissions: [
       "https://www.leboncoin.fr/*",
       "https://leboncoin.fr/*",

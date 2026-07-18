@@ -6,6 +6,7 @@ import {
   detectSiteChallenge,
   isDetailExtractionReady,
   isSearchExtractionReady,
+  extractCoordinateEvidenceFromPage,
   listingIdFromUrl,
   normalizeListingUrl,
 } from "./leboncoinExtractors";
@@ -934,6 +935,81 @@ describe("leboncoin extractors", () => {
       features: [],
     });
     expect(isDetailExtractionReady(detail)).toBe(false);
+  });
+
+  it("extracts stable locality coordinate evidence from the observed Next.js location path", () => {
+    const doc = new DOMParser().parseFromString(
+      `
+        <script id="__NEXT_DATA__" type="application/json">
+          {"props":{"pageProps":{"ad":{"location":{"lat":47.856373,"lng":-3.8512979,"source":"city","provider":"here","type":"city","origin_type":"city","is_shape":true}}}}}
+        </script>
+        <main><h1>Maison test</h1><p>Trégunc 29910 · 300 000 €</p></main>
+      `,
+      "text/html",
+    );
+
+    const detail = collectListingDetail(doc);
+
+    expect(detail.coordinateEvidence).toEqual({
+      latitude: 47.856373,
+      longitude: -3.8512979,
+      locationKind: "source-locality",
+      provenance: JSON.stringify({
+        site: "leboncoin",
+        container: "#__NEXT_DATA__",
+        path: "props.pageProps.ad.location",
+        locationSource: "city",
+        provider: "here",
+        locationType: "city",
+        originType: "city",
+        isShape: true,
+      }),
+    });
+    expect(detail.coordinateEvidence).not.toHaveProperty("verifiedAt");
+  });
+
+  it("does not infer coordinates from visible locality text without source evidence", () => {
+    const doc = new DOMParser().parseFromString(
+      `<main><h1>Maison test</h1><p>Située à Trégunc 29910 · 300 000 €</p></main>`,
+      "text/html",
+    );
+
+    expect(collectListingDetail(doc).coordinateEvidence).toBeUndefined();
+  });
+
+  it.each([
+    {
+      name: "out-of-bounds latitude",
+      location: { lat: 91, lng: -3.8, source: "city" },
+    },
+    {
+      name: "string longitude",
+      location: { lat: 47.8, lng: "-3.8", source: "city" },
+    },
+    {
+      name: "unrecognized precision semantics",
+      location: { lat: 47.8, lng: -3.8, source: "unknown" },
+    },
+    {
+      name: "conflicting precision semantics",
+      location: { lat: 47.8, lng: -3.8, source: "city", type: "property" },
+    },
+  ])("omits $name instead of storing misleading evidence", ({ location }) => {
+    const doc = new DOMParser().parseFromString(
+      `<script id="__NEXT_DATA__">${JSON.stringify({ props: { pageProps: { ad: { location } } } })}</script>`,
+      "text/html",
+    );
+
+    expect(extractCoordinateEvidenceFromPage(doc)).toBeUndefined();
+  });
+
+  it("ignores malformed embedded application state", () => {
+    const doc = new DOMParser().parseFromString(
+      `<script id="__NEXT_DATA__">{"props":{"pageProps":</script>`,
+      "text/html",
+    );
+
+    expect(extractCoordinateEvidenceFromPage(doc)).toBeUndefined();
   });
 
   it("does not treat a title-derived property type as an independent ready fact", () => {
