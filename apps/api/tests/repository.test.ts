@@ -1,11 +1,12 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
 import { afterEach, describe, expect, it } from "vitest";
 
 import type { IngestionRequest, ListingIngestion } from "../src/contracts.js";
-import { DenicheurRepository } from "../src/repository.js";
+import { DATABASE_MIGRATIONS, DenicheurRepository } from "../src/repository.js";
 
 const NOW = new Date("2026-07-18T10:00:00.000Z");
 const temporaryDirectories: string[] = [];
@@ -34,6 +35,63 @@ describe("DenicheurRepository", () => {
       title: "Maison détaillée",
       lastRunId: "run-1",
     });
+  });
+
+  it("clears collected data through a second live connection while preserving recipes", () => {
+    const directory = mkdtempSync(join(tmpdir(), "denicheur-api-clean-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "denicheur.sqlite");
+    const servingRepository = new DenicheurRepository({ path, now: () => NOW });
+    const cleaningRepository = new DenicheurRepository({ path, now: () => NOW });
+
+    try {
+      servingRepository.ingest(createIngestion([createListing()]));
+      const recipe = servingRepository.saveRecipe("preserved-recipe", {
+        name: "Recette conservée",
+        threshold: 70,
+        criteria: [{
+          id: "garden",
+          name: "Jardin",
+          description: "Le bien doit disposer d'un jardin.",
+          weight: 1,
+          required: false,
+        }],
+      });
+      servingRepository.activateRecipe(recipe.id, recipe.version);
+
+      expect(cleaningRepository.clearCollectedData()).toEqual({
+        listings: 1,
+        runs: 1,
+        runListings: 1,
+        evaluations: 0,
+      });
+      expect(servingRepository.listListings({ limit: 20, sort: "updatedAt", order: "desc" })).toMatchObject({
+        items: [],
+        total: 0,
+      });
+      expect(servingRepository.listRuns({ limit: 20, order: "desc" })).toMatchObject({
+        items: [],
+        total: 0,
+      });
+      expect(servingRepository.getActiveRecipe()).toMatchObject({
+        id: "preserved-recipe",
+        version: 1,
+        active: true,
+      });
+      const inspectionDatabase = new DatabaseSync(path);
+      try {
+        const appliedVersions = inspectionDatabase
+          .prepare("SELECT version FROM schema_migrations ORDER BY version")
+          .all()
+          .map((row) => row.version);
+        expect(appliedVersions).toEqual(DATABASE_MIGRATIONS.map((migration) => migration.version));
+      } finally {
+        inspectionDatabase.close();
+      }
+    } finally {
+      cleaningRepository.close();
+      servingRepository.close();
+    }
   });
 
   it("does not let a later summary erase richer detail fields", () => {

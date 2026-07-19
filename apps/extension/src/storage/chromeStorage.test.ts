@@ -1,9 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { createDefaultIntelligenceRecipe } from "../intelligence/recipe";
 import type { ScrapedPropertyRecord } from "../lib/types";
+import { loadExtensionSyncState } from "../sync/storage";
+import type { SyncQueueEntry } from "../sync/types";
 import {
   IDLE_RUN,
   clearRecords,
+  clearRecordsAndSyncQueue,
   isCrawlerStorageKey,
   loadCrawlerState,
   migrateStoredRecords,
@@ -216,6 +219,74 @@ describe("crawler run recovery", () => {
     expect(storage["denicheur:sync:state"]).toEqual({
       version: 1,
       marker: "not-a-backend-delete",
+    });
+  });
+
+  it("clears the sync queue for a coordinated reset while preserving the active recipe cache", async () => {
+    const queuedAt = "2026-07-18T09:59:00.000Z";
+    const pendingEntry = {
+      key: "old-run:batch:1",
+      runId: "old-run",
+      fingerprint: "old-fingerprint",
+      payload: {
+        run: {
+          id: "old-run",
+          source: "leboncoin",
+          status: "completed",
+          startedAt: "2026-07-18T09:00:00.000Z",
+          finishedAt: queuedAt,
+          target: 1,
+          found: 1,
+          pagesVisited: 1,
+          collected: 1,
+        },
+        listings: [{
+          source: "leboncoin",
+          externalId: "3007106066",
+          url: "https://www.leboncoin.fr/ad/ventes_immobilieres/3007106066",
+          title: "Pending listing",
+          features: [],
+          status: "detailed",
+          scrapedAt: queuedAt,
+          rawTextSample: "Pending listing",
+        }],
+      },
+      attempts: 2,
+      nextAttemptAt: Date.parse("2026-07-18T10:01:00.000Z"),
+      createdAt: queuedAt,
+      updatedAt: queuedAt,
+      lastError: "API unavailable",
+    } satisfies SyncQueueEntry;
+    storage["denicheur:crawler:records"] = [{ id: "local-record" }];
+    storage["denicheur:sync:state"] = {
+      version: 1,
+      status: "error",
+      queue: [pendingEntry],
+      syncedFingerprints: { "old-run:batch:1": "old-fingerprint" },
+      lastError: "API unavailable",
+      activeRecipe: {
+        status: "cached",
+        recipeId: "preserved-recipe",
+        recipeVersion: 4,
+      },
+    };
+
+    expect((await loadExtensionSyncState()).queue).toEqual([pendingEntry]);
+
+    await clearRecordsAndSyncQueue();
+
+    expect(storage["denicheur:crawler:records"]).toEqual([]);
+    expect(storage["denicheur:crawler:run"]).toEqual(IDLE_RUN);
+    expect(storage["denicheur:sync:state"]).toEqual({
+      version: 1,
+      status: "idle",
+      queue: [],
+      syncedFingerprints: {},
+      activeRecipe: {
+        status: "cached",
+        recipeId: "preserved-recipe",
+        recipeVersion: 4,
+      },
     });
   });
 

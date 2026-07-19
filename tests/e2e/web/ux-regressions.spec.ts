@@ -35,6 +35,8 @@ test.describe("integrated web responsive navigation", () => {
       await page.setViewportSize(viewport);
       await page.goto("/?view=map");
 
+      await expect(page).toHaveTitle("dénicheur·breizh — Décision immobilière en Bretagne");
+      await expect(page.getByRole("banner").getByText("dénicheur·breizh", { exact: true })).toBeVisible();
       await expect(page.getByText("API connectée", { exact: true })).toBeVisible();
       const navigation = page.getByRole("navigation", { name: "Vue principale", exact: true });
       await expect(navigation).toBeVisible();

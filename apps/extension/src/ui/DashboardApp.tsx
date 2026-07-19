@@ -113,6 +113,15 @@ interface DashboardAppProps {
   initialThemePreference?: ThemePreference;
 }
 
+export class DashboardRunnerBusyError extends Error {
+  readonly code = "DASHBOARD_RUNNER_BUSY";
+
+  constructor() {
+    super("Another dashboard already owns the crawler run.");
+    this.name = "DashboardRunnerBusyError";
+  }
+}
+
 export function DashboardApp({ initialThemePreference = "system" }: DashboardAppProps) {
   const {
     formatNumber,
@@ -1272,7 +1281,7 @@ export async function withDashboardRunnerLease<T>(
     { ifAvailable: true },
     async (lock) => {
       if (!lock) {
-        throw new Error("Another dashboard already owns the crawler run.");
+        throw new DashboardRunnerBusyError();
       }
       return operation();
     },

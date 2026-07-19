@@ -124,7 +124,8 @@ describe("intl UI", () => {
     );
     expect((await screen.findAllByText("Non disponible")).length).toBeGreaterThan(0);
     expect(document.documentElement.lang).toBe("fr-FR");
-    expect(document.title).toContain("Décision immobilière");
+    expect(document.title).toBe("dénicheur·breizh — Décision immobilière en Bretagne");
+    expect(document.body).toHaveTextContent("dénicheur·breizh");
     expect(store.get(localeStorageKey)).toBe("fr");
     expect(store.has("denicheur.locale")).toBe(false);
 
@@ -134,7 +135,7 @@ describe("intl UI", () => {
     expect((await screen.findAllByText("Maison collectée")).length).toBeGreaterThan(0);
     expect(screen.getByRole("navigation", { name: "Vista principal" })).toHaveTextContent("Propiedades");
     expect(document.documentElement.lang).toBe("es-ES");
-    expect(document.title).toContain("Decisión inmobiliaria");
+    expect(document.title).toBe("dénicheur·breizh — Decisión inmobiliaria en Bretaña");
 
     fireEvent.click(screen.getByRole("button", { name: "Inglés" }));
 
@@ -142,7 +143,7 @@ describe("intl UI", () => {
     expect((await screen.findAllByText("Maison collectée")).length).toBeGreaterThan(0);
     expect(screen.getByRole("navigation", { name: "Primary view" })).toHaveTextContent("Properties");
     expect(document.documentElement.lang).toBe("en-GB");
-    expect(document.title).toContain("Property decisions");
+    expect(document.title).toBe("dénicheur·breizh — Property decisions in Brittany");
     expect(document.querySelector('meta[name="description"]')).toHaveAttribute(
       "content",
       expect.stringContaining("property decision workspace"),

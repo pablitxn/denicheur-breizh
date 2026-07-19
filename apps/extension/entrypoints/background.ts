@@ -2,6 +2,7 @@ import { defineBackground } from "wxt/utils/define-background";
 import {
   readSyncResponse,
   refreshCachedActiveRecipe,
+  resetExtensionIteration,
   scheduleExtensionSync,
 } from "../src/sync/controller";
 import { isExtensionRuntimeRequest } from "../src/sync/types";
@@ -30,15 +31,20 @@ export default defineBackground(() => {
 
     const operation = request.type === "SYNC_NOW"
       ? scheduleExtensionSync(true)
-      : request.type === "REFRESH_ACTIVE_RECIPE"
-        ? refreshCachedActiveRecipe()
-        : readSyncResponse();
+      : request.type === "RESET_ITERATION"
+        ? resetExtensionIteration(request.deadlineAt)
+        : request.type === "REFRESH_ACTIVE_RECIPE"
+          ? refreshCachedActiveRecipe()
+          : readSyncResponse();
     void operation
       .then(sendResponse)
       .catch(async (error) => sendResponse({
         ...(await readSyncResponse()),
         ok: false,
         error: error instanceof Error ? error.message : String(error),
+        ...(typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
+          ? { errorCode: error.code }
+          : {}),
       }));
     return true;
   });

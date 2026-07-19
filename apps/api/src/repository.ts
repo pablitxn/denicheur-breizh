@@ -174,6 +174,26 @@ export interface RepositoryOptions {
   readonly now?: () => Date;
 }
 
+export interface CollectedDataCounts {
+  readonly listings: number;
+  readonly runs: number;
+  readonly runListings: number;
+  readonly evaluations: number;
+}
+
+export interface ClearCollectedDataOptions {
+  readonly allowActiveRun?: boolean;
+}
+
+const ACTIVE_RUN_STATUSES = [
+  "opening-search",
+  "configuring-search",
+  "collecting-search",
+  "collecting-details",
+  "evaluating",
+  "paused-captcha",
+] as const;
+
 export class DenicheurRepository {
   private readonly database: DatabaseSync;
   private readonly now: () => Date;
@@ -196,6 +216,43 @@ export class DenicheurRepository {
     } catch {
       return false;
     }
+  }
+
+  clearCollectedData(options: ClearCollectedDataOptions = {}): CollectedDataCounts {
+    return this.transaction(() => {
+      if (!options.allowActiveRun) {
+        const activeRun = this.database.prepare(`
+          SELECT id, status
+          FROM runs
+          WHERE status IN (${ACTIVE_RUN_STATUSES.map(() => "?").join(", ")})
+          ORDER BY updated_at DESC
+          LIMIT 1
+        `).get(...ACTIVE_RUN_STATUSES) as Record<string, unknown> | undefined;
+        if (activeRun) {
+          const runId = readString(activeRun, "id");
+          const status = readString(activeRun, "status");
+          throw new ApiError(
+            409,
+            "ACTIVE_RUN",
+            `Run ${runId} is still active (${status}). Wait for it to finish or cancel it before clearing data.`,
+          );
+        }
+      }
+
+      const deleted = this.collectedDataCounts();
+      this.database.exec(`
+        DELETE FROM evaluations;
+        DELETE FROM run_listings;
+        DELETE FROM listings;
+        DELETE FROM runs;
+      `);
+
+      const remaining = this.collectedDataCounts();
+      if (Object.values(remaining).some((count) => count !== 0)) {
+        throw new Error("Collected data cleanup did not leave every iteration table empty.");
+      }
+      return deleted;
+    });
   }
 
   ingest(request: IngestionRequest): IngestionResponse {
@@ -449,6 +506,17 @@ export class DenicheurRepository {
           .run(migration.version, this.now().toISOString());
       });
     }
+  }
+
+  private collectedDataCounts(): CollectedDataCounts {
+    const count = (table: "listings" | "runs" | "run_listings" | "evaluations") =>
+      readNumber(this.database.prepare(`SELECT COUNT(*) AS total FROM ${table}`).get(), "total");
+    return {
+      listings: count("listings"),
+      runs: count("runs"),
+      runListings: count("run_listings"),
+      evaluations: count("evaluations"),
+    };
   }
 
   private upsertRun(incoming: RunIngestion): void {

@@ -274,7 +274,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     ).toBeVisible();
   }
 
-  test("cleans iteration data from the npm hook while preserving extension configuration", async ({
+  test("cleans coordinated iteration data from the npm hook while preserving extension configuration", async ({
     context,
     page,
     extensionId,
@@ -307,11 +307,124 @@ test.describe("Denicheur MV3 native-search runtime", () => {
       enabled: false,
       criteria: [],
     };
+
+    let releaseIngestion!: () => void;
+    const ingestionRelease = new Promise<void>((resolve) => {
+      releaseIngestion = resolve;
+    });
+    let markIngestionStarted!: () => void;
+    const ingestionStarted = new Promise<void>((resolve) => {
+      markIngestionStarted = resolve;
+    });
+    let markIngestionFinished!: () => void;
+    const ingestionFinished = new Promise<void>((resolve) => {
+      markIngestionFinished = resolve;
+    });
+    let ingestionStatus = 0;
+    let ingestionPayload: unknown;
+    await context.route(`${API_BASE_URL}/v1/ingestion/runs/previous-run`, async (route) => {
+      if (route.request().method() !== "PUT") {
+        await route.continue();
+        return;
+      }
+
+      ingestionPayload = route.request().postDataJSON();
+      markIngestionStarted();
+      await ingestionRelease;
+      const response = await route.fetch();
+      ingestionStatus = response.status();
+      await route.fulfill({ response });
+      markIngestionFinished();
+    });
+
+    let releaseMaintenance!: () => void;
+    const maintenanceRelease = new Promise<void>((resolve) => {
+      releaseMaintenance = resolve;
+    });
+    let markMaintenanceStarted!: () => void;
+    const maintenanceStarted = new Promise<void>((resolve) => {
+      markMaintenanceStarted = resolve;
+    });
+    let markMaintenanceFinished!: () => void;
+    const maintenanceFinished = new Promise<void>((resolve) => {
+      markMaintenanceFinished = resolve;
+    });
+    let maintenanceStatus = 0;
+    let maintenanceMethod = "";
+    let maintenanceOrigin = "";
+    let maintenanceBody = "";
+    await context.route(`${API_BASE_URL}/v1/maintenance/collected-data/clear`, async (route) => {
+      maintenanceMethod = route.request().method();
+      maintenanceOrigin = route.request().headers().origin ?? "";
+      maintenanceBody = route.request().postData() ?? "";
+      markMaintenanceStarted();
+      await maintenanceRelease;
+      const response = await route.fetch();
+      maintenanceStatus = response.status();
+      await route.fulfill({ response });
+      markMaintenanceFinished();
+    });
+
+    let callbackOrigin = "";
+    let callbackRequestUrl = "";
+    await context.route("http://127.0.0.1:15432/extension-db-cleaned**", async (route) => {
+      callbackOrigin = route.request().headers().origin ?? "";
+      callbackRequestUrl = route.request().url();
+      await route.fulfill({
+        status: 204,
+        headers: { "Access-Control-Allow-Origin": `chrome-extension://${extensionId}` },
+        body: "",
+      });
+    });
+
     await page.evaluate(async ({ detailUrl, filters, recipe }) => {
       await chrome.storage.local.set({
         "denicheur:locale": "es",
         "denicheur:crawler:filters": filters,
         "denicheur:intelligence:recipe": recipe,
+        "denicheur:sync:state": {
+          version: 1,
+          status: "pending",
+          queue: [{
+            key: "previous-run:batch:1",
+            runId: "previous-run",
+            fingerprint: "previous-run-fixture-fingerprint",
+            payload: {
+              run: {
+                id: "previous-run",
+                source: "leboncoin",
+                status: "completed",
+                startedAt: "2026-07-18T09:00:00.000Z",
+                finishedAt: "2026-07-18T10:00:00.000Z",
+                target: 1,
+                found: 1,
+                pagesVisited: 1,
+                collected: 1,
+              },
+              listings: [{
+                source: "leboncoin",
+                externalId: "3007106066",
+                url: detailUrl,
+                title: "Previous iteration",
+                features: [],
+                status: "detailed",
+                scrapedAt: "2026-07-18T10:00:00.000Z",
+                rawTextSample: "Previous iteration",
+              }],
+            },
+            attempts: 1,
+            nextAttemptAt: 0,
+            createdAt: "2026-07-18T10:00:00.000Z",
+            updatedAt: "2026-07-18T10:00:00.000Z",
+            lastError: "Previous API attempt failed",
+          }],
+          syncedFingerprints: { "previous-run:batch:1": "stale-fingerprint" },
+          activeRecipe: {
+            status: "cached",
+            recipeId: recipe.id,
+            recipeVersion: recipe.version,
+          },
+        },
         "denicheur:crawler:run": {
           id: "previous-run",
           status: "completed",
@@ -338,25 +451,87 @@ test.describe("Denicheur MV3 native-search runtime", () => {
           rawTextSample: "Previous iteration",
         }],
       });
+      await chrome.storage.sync.set({ "denicheur:theme": "dark" });
     }, { detailUrl: DETAIL_URL, filters: storedFilters, recipe: storedRecipe });
 
-    let callbackOrigin = "";
-    let callbackRequestUrl = "";
-    await context.route("http://127.0.0.1:15432/extension-db-cleaned**", async (route) => {
-      callbackOrigin = route.request().headers().origin ?? "";
-      callbackRequestUrl = route.request().url();
-      await route.fulfill({
-        status: 204,
-        headers: { "Access-Control-Allow-Origin": `chrome-extension://${extensionId}` },
-        body: "",
-      });
-    });
+    await ingestionStarted;
+    const pendingStorage = await readExtensionStorage(page);
+    expect(pendingStorage["denicheur:sync:state"]).toEqual(expect.objectContaining({
+      status: "syncing",
+      queue: [expect.objectContaining({
+        key: "previous-run:batch:1",
+        runId: "previous-run",
+        payload: expect.objectContaining({
+          run: expect.objectContaining({ id: "previous-run", status: "completed" }),
+          listings: [expect.objectContaining({ externalId: "3007106066", url: DETAIL_URL })],
+        }),
+      })],
+    }));
+    expect(ingestionPayload).toEqual(expect.objectContaining({
+      run: expect.objectContaining({ id: "previous-run", status: "completed" }),
+      listings: [expect.objectContaining({ externalId: "3007106066", url: DETAIL_URL })],
+    }));
+
     const callbackUrl = "http://127.0.0.1:15432/extension-db-cleaned?token=e2e";
     await page.goto(
-      `${extensionUrl(extensionId, "dashboard.html")}?action=clean-db&callback=${encodeURIComponent(callbackUrl)}`,
+      `${extensionUrl(extensionId, "dashboard.html")}?action=clean-all-data&callback=${encodeURIComponent(callbackUrl)}`,
     );
 
     await expect(page).toHaveURL(extensionUrl(extensionId, "dashboard.html"));
+    await page.evaluate(() => new Promise<void>((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+    }));
+    expect(maintenanceMethod).toBe("");
+    expect(callbackRequestUrl).toBe("");
+
+    releaseIngestion();
+    await ingestionFinished;
+    expect(ingestionStatus).toBe(200);
+    await maintenanceStarted;
+    expect(maintenanceMethod).toBe("POST");
+    expect(maintenanceOrigin).toBe(`chrome-extension://${extensionId}`);
+    expect(JSON.parse(maintenanceBody)).toEqual({
+      confirm: "clear-collected-data",
+      runnerLease: "held",
+    });
+    expect(callbackRequestUrl).toBe("");
+
+    const seededApiListing = await context.request.get(
+      `${API_BASE_URL}/v1/listings/leboncoin/3007106066`,
+    );
+    expect(seededApiListing.status()).toBe(200);
+
+    const competingDashboard = await context.newPage();
+    await competingDashboard.goto(extensionUrl(extensionId, "dashboard.html"));
+    const competingStart = competingDashboard.getByRole("button", {
+      name: "Iniciar recopilación",
+      exact: true,
+    });
+    await expect(competingStart).toBeEnabled();
+    const pagesBeforeCompetingStart = context.pages().map((candidate) => candidate.url());
+
+    await competingStart.click();
+
+    await expect(competingDashboard.getByText(
+      "Otro panel ya controla la recopilación.",
+      { exact: true },
+    )).toBeVisible();
+    await expect(competingStart).toBeEnabled();
+    await expect(competingDashboard).toHaveURL(extensionUrl(extensionId, "dashboard.html"));
+    expect(context.pages().map((candidate) => candidate.url())).toEqual(pagesBeforeCompetingStart);
+    expect(context.pages().some((candidate) => candidate.url().startsWith("https://www.leboncoin.fr/"))).toBe(false);
+    const competingStorage = await readExtensionStorage(competingDashboard);
+    expect(competingStorage["denicheur:crawler:records"]).toEqual([]);
+    expect(competingStorage["denicheur:crawler:run"]).toEqual(expect.objectContaining({
+      id: "idle",
+      status: "idle",
+      found: 0,
+      collected: 0,
+    }));
+
+    releaseMaintenance();
+    await maintenanceFinished;
+    expect(maintenanceStatus).toBe(200);
     await expect(page.getByText(
       "No hay anuncios guardados. Configura la búsqueda e inicia una recopilación.",
       { exact: true },
@@ -372,9 +547,30 @@ test.describe("Denicheur MV3 native-search runtime", () => {
       found: 0,
       collected: 0,
     }));
+    expect(storage["denicheur:sync:state"]).toEqual(expect.objectContaining({
+      version: 1,
+      status: "idle",
+      queue: [],
+      syncedFingerprints: {},
+      activeRecipe: expect.objectContaining({
+        status: "cached",
+        recipeId: storedRecipe.id,
+        recipeVersion: storedRecipe.version,
+      }),
+    }));
     expect(storage["denicheur:crawler:filters"]).toEqual(storedFilters);
     expect(storage["denicheur:intelligence:recipe"]).toEqual(storedRecipe);
     expect(storage["denicheur:locale"]).toBe("es");
+    await expect.poll(() => page.evaluate(async () =>
+      (await chrome.storage.sync.get("denicheur:theme"))["denicheur:theme"]
+    )).toBe("dark");
+
+    const apiListings = await context.request.get(`${API_BASE_URL}/v1/listings?limit=100`);
+    const apiRuns = await context.request.get(`${API_BASE_URL}/v1/runs?limit=100`);
+    expect(apiListings.status()).toBe(200);
+    expect(await apiListings.json()).toMatchObject({ items: [], nextCursor: null, total: 0 });
+    expect(apiRuns.status()).toBe(200);
+    expect(await apiRuns.json()).toMatchObject({ items: [], nextCursor: null, total: 0 });
   });
 
   test("loads the pinned minimal manifest and exposes valid native dashboard controls", async ({

@@ -10,6 +10,11 @@ import {
 } from "../lib/coordinates";
 import { listingIdFromUrl, normalizeListingUrl } from "../lib/leboncoinExtractors";
 import { message } from "../lib/localizedText";
+import {
+  EMPTY_SYNC_STATE,
+  loadExtensionSyncState,
+  SYNC_STORAGE_KEY,
+} from "../sync/storage";
 import type {
   IntelligenceRecipe,
   LocalizedText,
@@ -140,6 +145,18 @@ export async function saveCrawlerState(state: Partial<StoredCrawlerState>): Prom
 
 export async function clearRecords(): Promise<void> {
   await setStorage({ [RECORDS_KEY]: [], [RUN_KEY]: IDLE_RUN });
+}
+
+export async function clearRecordsAndSyncQueue(): Promise<void> {
+  const syncState = await loadExtensionSyncState();
+  await setStorage({
+    [RECORDS_KEY]: [],
+    [RUN_KEY]: IDLE_RUN,
+    [SYNC_STORAGE_KEY]: {
+      ...structuredClone(EMPTY_SYNC_STATE),
+      activeRecipe: syncState.activeRecipe,
+    },
+  });
 }
 
 export function isCrawlerStorageKey(key: string): boolean {

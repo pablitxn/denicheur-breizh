@@ -10,6 +10,13 @@ const DEFAULT_API_URL = "http://127.0.0.1:4310";
 
 export type SyncFetcher = typeof fetch;
 
+export interface ClearedCollectedDataCounts {
+  readonly listings: number;
+  readonly runs: number;
+  readonly runListings: number;
+  readonly evaluations: number;
+}
+
 export class ExtensionApiError extends Error {
   constructor(
     message: string,
@@ -63,6 +70,37 @@ export async function fetchActiveRecipe(
   return toLocalRecipe(parsed.data);
 }
 
+export async function clearApiCollectedData(
+  options: { fetcher?: SyncFetcher; baseUrl?: string; signal?: AbortSignal } = {},
+): Promise<ClearedCollectedDataCounts> {
+  const response = await request(
+    `${normalizedBaseUrl(options.baseUrl)}/v1/maintenance/collected-data/clear`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ confirm: "clear-collected-data", runnerLease: "held" }),
+      signal: options.signal,
+    },
+    options.fetcher,
+  );
+  const payload = await readSuccessJson(response);
+  const deleted = isRecord(payload) && isRecord(payload.deleted) ? payload.deleted : undefined;
+  if (!deleted) {
+    throw new ExtensionApiError("The API returned an invalid cleanup response.", response.status, "INVALID_API_RESPONSE");
+  }
+
+  const counts = {
+    listings: deleted.listings,
+    runs: deleted.runs,
+    runListings: deleted.runListings,
+    evaluations: deleted.evaluations,
+  };
+  if (!Object.values(counts).every(isNonNegativeInteger)) {
+    throw new ExtensionApiError("The API returned an invalid cleanup response.", response.status, "INVALID_API_RESPONSE");
+  }
+  return counts as ClearedCollectedDataCounts;
+}
+
 async function request(url: string, init: RequestInit, fetcher: SyncFetcher = fetch): Promise<Response> {
   try {
     return await fetcher(url, init);
@@ -107,6 +145,10 @@ function toLocalRecipe(recipe: RecipeVersion): IntelligenceRecipe {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
 function errorMessage(error: unknown): string {

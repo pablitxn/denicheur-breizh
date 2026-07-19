@@ -26,6 +26,13 @@ export function requestImmediateSync(): Promise<ExtensionRuntimeResponse> {
   return sendExtensionRuntimeRequest({ type: "SYNC_NOW" });
 }
 
+export function requestIterationReset(deadlineAt?: number): Promise<ExtensionRuntimeResponse> {
+  return sendExtensionRuntimeRequest({
+    type: "RESET_ITERATION",
+    ...(deadlineAt === undefined ? {} : { deadlineAt }),
+  });
+}
+
 export function requestActiveRecipeRefresh(): Promise<ExtensionRuntimeResponse> {
   return sendExtensionRuntimeRequest({ type: "REFRESH_ACTIVE_RECIPE" });
 }

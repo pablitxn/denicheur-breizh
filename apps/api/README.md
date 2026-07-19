@@ -29,6 +29,7 @@ The Turbo commands build workspace dependencies such as `@denicheur-breizh/i18n`
 ## Data API
 
 - `GET /health` checks SQLite without calling OpenAI and reports only whether OpenAI is configured.
+- `POST /v1/maintenance/collected-data/clear` transactionally clears collected iteration data after an exact confirmation. A local CLI request refuses active checkpoints; the configured extension may clear a stale active checkpoint only while it holds the crawler's exclusive runner lease.
 - `PUT /v1/ingestion/runs/:runId` upserts a run checkpoint and up to 20 sparse listings transactionally.
 - `GET /v1/runs` and `GET /v1/runs/:runId` expose runs and the listing snapshot actually observed by that run.
 - `GET /v1/listings` supports cursor pagination plus source, run, status, decision, property, price, surface, and energy filters.
@@ -41,6 +42,8 @@ The Turbo commands build workspace dependencies such as `@denicheur-breizh/i18n`
 Listings use `source + externalId` as their stable identity and expose it as `source:externalId`. Canonical scalar fields come from the newest observation that contains them, while richer descriptions and array values are retained. Canonical state is rebuilt from timestamp-ordered run snapshots, so out-of-order delivery is deterministic. Repeating an ingestion batch is idempotent, while the run-to-listing observation remains available for provenance.
 
 SQLite migrations are applied automatically and recorded in `schema_migrations`. The local database directory is ignored by Git.
+
+To clear collected listings, runs, observations, and evaluations without deleting the live SQLite file or its WAL, keep the API running and run `pnpm db:clean` from the workspace root. The loaded extension coordinates its local reset with the API process that owns SQLite, so custom database paths and `:memory:` work without opening a second connection. Recipe versions and schema migrations are preserved. `pnpm --filter @denicheur-breizh/api db:clean` invokes the same live maintenance endpoint without changing extension storage. Use `pnpm db:clean:extension` when API-persisted data must remain available to the web app.
 
 ## Evaluation compatibility contract
 

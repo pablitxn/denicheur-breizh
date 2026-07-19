@@ -8,6 +8,7 @@ const EXTENSION_ID = "oekklajlieiinmjcmhdfeodpdhahhjdi";
 const EXTENSION_ORIGIN = `chrome-extension://${EXTENSION_ID}`;
 const CALLBACK_PATH = "/extension-db-cleaned";
 const CALLBACK_TIMEOUT_MS = 20_000;
+const CLEAR_ALL = process.argv.includes("--all");
 
 const REPEATABLE_FILTERS = [
   "Transaction: Vente",
@@ -27,11 +28,14 @@ const REPEATABLE_FILTERS = [
 ];
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
-  console.log(`Usage: npm run db:clean
+  console.log(`Usage: pnpm db:clean
+       pnpm db:clean:extension
 
-Clears stored extension listings and the last run while preserving filters,
-the intelligence recipe, locale, and theme. Google Chrome must have the
-current unpacked Denicheur Breizh build loaded.`);
+db:clean clears extension iteration data, pending synchronization state, and
+the API SQLite rendered by the web app. db:clean:extension clears only stored
+extension listings and the last run. Both preserve filters, recipes, locale,
+and theme. Google Chrome must have the current unpacked Denicheur Breizh build
+loaded.`);
   process.exit(0);
 }
 
@@ -73,15 +77,17 @@ try {
 
   const callbackUrl = new URL(`http://127.0.0.1:${address.port}${CALLBACK_PATH}`);
   callbackUrl.searchParams.set("token", token);
+  const deadlineAt = Date.now() + CALLBACK_TIMEOUT_MS;
 
   const dashboardUrl = new URL(`${EXTENSION_ORIGIN}/dashboard.html`);
-  dashboardUrl.searchParams.set("action", "clean-db");
+  dashboardUrl.searchParams.set("action", CLEAR_ALL ? "clean-all-data" : "clean-db");
   dashboardUrl.searchParams.set("callback", callbackUrl.toString());
+  dashboardUrl.searchParams.set("deadline", String(deadlineAt));
 
   openChrome(dashboardUrl.toString());
   const result = await Promise.race([
     acknowledgement.promise,
-    rejectAfter(CALLBACK_TIMEOUT_MS),
+    rejectAt(deadlineAt),
   ]);
 
   if (result.status === "busy") {
@@ -91,15 +97,17 @@ try {
     throw new Error(`La extensión no pudo limpiar sus datos (${result.reason ?? "error desconocido"}).`);
   }
 
-  console.log("Base local de la extensión limpia: 0 anuncios y corrida reiniciada.");
+  console.log(CLEAR_ALL
+    ? "Datos de iteración limpios: 0 anuncios en la extensión y en el API; corrida reiniciada."
+    : "Base local de la extensión limpia: 0 anuncios y corrida reiniciada.");
   console.log("Filtros, receta, idioma y tema fueron conservados.\n");
   console.log("Perfil de prueba repetible:");
   for (const filter of REPEATABLE_FILTERS) console.log(`  - ${filter}`);
 } catch (error) {
   console.error(error instanceof Error ? error.message : String(error));
-  console.error(
-    "Verificá que Chrome tenga cargada y recargada la build unpacked actual de Denicheur Breizh.",
-  );
+  console.error(CLEAR_ALL
+    ? "Verificá que el API local esté activo y que Chrome tenga cargada y recargada la build unpacked actual de Denicheur Breizh."
+    : "Verificá que Chrome tenga cargada y recargada la build unpacked actual de Denicheur Breizh.");
   process.exitCode = 1;
 } finally {
   await close(server);
@@ -119,11 +127,11 @@ function close(httpServer) {
   });
 }
 
-function rejectAfter(timeoutMs) {
+function rejectAt(deadlineAt) {
   return new Promise((_, reject) => {
     setTimeout(() => reject(new Error(
-      "Chrome no confirmó la limpieza dentro de 20 segundos.",
-    )), timeoutMs).unref();
+      `Chrome no confirmó la limpieza dentro de ${CALLBACK_TIMEOUT_MS / 1_000} segundos.`,
+    )), Math.max(0, deadlineAt - Date.now())).unref();
   });
 }
 

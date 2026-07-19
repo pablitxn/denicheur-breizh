@@ -39,6 +39,7 @@ export interface ExtensionSyncState {
 export type ExtensionRuntimeRequest =
   | { type: "GET_SYNC_STATE" }
   | { type: "SYNC_NOW" }
+  | { type: "RESET_ITERATION"; deadlineAt?: number }
   | { type: "REFRESH_ACTIVE_RECIPE" };
 
 export interface ExtensionRuntimeResponse {
@@ -46,10 +47,15 @@ export interface ExtensionRuntimeResponse {
   state: ExtensionSyncState;
   recipe?: IntelligenceRecipe;
   error?: string;
+  errorCode?: string;
 }
 
 export function isExtensionRuntimeRequest(value: unknown): value is ExtensionRuntimeRequest {
   if (typeof value !== "object" || value === null || !("type" in value)) return false;
+  if (value.type === "RESET_ITERATION") {
+    return !("deadlineAt" in value) ||
+      (typeof value.deadlineAt === "number" && Number.isFinite(value.deadlineAt));
+  }
   return value.type === "GET_SYNC_STATE" ||
     value.type === "SYNC_NOW" ||
     value.type === "REFRESH_ACTIVE_RECIPE";

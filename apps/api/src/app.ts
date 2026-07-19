@@ -6,7 +6,7 @@ import { rateLimit } from "express-rate-limit";
 import helmet from "helmet";
 import { z } from "zod";
 
-import type { ApiConfig } from "./config.js";
+import { isChromeExtensionOrigin, type ApiConfig } from "./config.js";
 import {
   evaluationRequestSchema,
   filterListingsRequestSchema,
@@ -33,6 +33,10 @@ export interface AppDependencies {
 
 const pathIdentifierSchema = z.string().trim().min(1).max(128);
 const activationRequestSchema = z.object({ version: z.number().int().min(1).optional() }).strict();
+const clearCollectedDataRequestSchema = z.object({
+  confirm: z.literal("clear-collected-data"),
+  runnerLease: z.literal("held").optional(),
+}).strict();
 
 export function createApp({ config, filterService, repository, logger, fetchImpl }: AppDependencies): Express {
   const app = express();
@@ -72,6 +76,28 @@ export function createApp({ config, filterService, repository, logger, fetchImpl
       service: "denicheur-api",
       database: { status: ready ? "ok" : "error" },
       openAiConfigured: Boolean(config.openAiApiKey),
+    });
+  });
+
+  app.post("/v1/maintenance/collected-data/clear", (request, response) => {
+    const origin = request.get("Origin");
+    if (origin && !isChromeExtensionOrigin(origin)) {
+      throw new ApiError(
+        403,
+        "MAINTENANCE_ORIGIN_NOT_ALLOWED",
+        "Maintenance requests are only accepted from the configured Chrome extension or a local CLI.",
+      );
+    }
+    const input = parseOrThrow(clearCollectedDataRequestSchema.safeParse(request.body));
+    if (input.runnerLease && !origin) {
+      throw new ApiError(
+        403,
+        "RUNNER_LEASE_ORIGIN_REQUIRED",
+        "Only the configured Chrome extension can assert ownership of the crawler runner lease.",
+      );
+    }
+    response.json({
+      deleted: repository.clearCollectedData({ allowActiveRun: input.runnerLease === "held" }),
     });
   });
 

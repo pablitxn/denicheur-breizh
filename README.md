@@ -182,10 +182,18 @@ pnpm --filter @denicheur-breizh/extension build
 
 Load `apps/extension/.output/chrome-mv3` in `chrome://extensions`. This build contains the pinned extension identity expected by the default API allowlist and does not require a watcher.
 
-To clear only the extension's local iteration data while preserving filters, language, theme, and API-persisted listings:
+To clear the extension iteration, its pending synchronization state, and the live API SQLite rendered by the web app while preserving filters, recipes, language, and theme:
 
 ```bash
 pnpm db:clean
+```
+
+The API must be running and Chrome must have the current unpacked build loaded. The reset holds the crawler's exclusive lease, waits for any in-flight extension sync, refuses to race a live collection, and only reports success after both stores are empty. Its internal 15-second deadline finishes before the CLI timeout, so a timed-out command cannot start a late cleanup.
+
+To clear only the extension's local iteration data while preserving API-persisted listings:
+
+```bash
+pnpm db:clean:extension
 ```
 
 Manual acceptance procedures:

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { createApp } from "../src/app.js";
 import { loadConfig, type ApiConfig } from "../src/config.js";
-import type { FilterListingsRequest, FilterListingsResponse } from "../src/contracts.js";
+import type { FilterListingsRequest, FilterListingsResponse, RunStatus } from "../src/contracts.js";
 import { ApiError } from "../src/errors.js";
 import type { LogEntry } from "../src/logger.js";
 import { DenicheurRepository } from "../src/repository.js";
@@ -206,6 +206,138 @@ describe("HTTP API", () => {
     expect(filter).toHaveBeenCalledTimes(1);
   });
 
+  it.each<RunStatus>(["completed", "idle"])(
+    "clears collected data for a %s run while preserving recipes and the migrated database",
+    async (status) => {
+      const { app, repository } = createTestApp();
+      const seeded = seedCollectedData(repository, status);
+
+      expect(repository.findEvaluation(seeded.runId, seeded.identity, seeded.evaluationRequest)).toBeDefined();
+
+      const response = await request(app)
+        .post("/v1/maintenance/collected-data/clear")
+        .send({ confirm: "clear-collected-data" })
+        .expect(200);
+
+      expect(response.body).toEqual({
+        deleted: {
+          listings: 1,
+          runs: 1,
+          runListings: 1,
+          evaluations: 1,
+        },
+      });
+      await request(app).get("/v1/listings?limit=20&sort=updatedAt&order=desc").expect(200, {
+        items: [],
+        nextCursor: null,
+        total: 0,
+      });
+      await request(app).get("/v1/runs?limit=20&order=desc").expect(200, {
+        items: [],
+        nextCursor: null,
+        total: 0,
+      });
+      await request(app).get("/health").expect(200);
+      const activeRecipe = await request(app).get("/v1/recipes/active").expect(200);
+
+      expect(activeRecipe.body).toMatchObject({ id: seeded.recipeId, version: 1, active: true });
+      expect(repository.findEvaluation(seeded.runId, seeded.identity, seeded.evaluationRequest)).toBeUndefined();
+    },
+  );
+
+  it.each([
+    ["missing confirmation", {}],
+    ["wrong confirmation", { confirm: "not-the-destructive-confirmation" }],
+    ["an unknown field", { confirm: "clear-collected-data", unexpected: true }],
+  ])("rejects %s without deleting collected data", async (_case, payload) => {
+    const { app, repository } = createTestApp();
+    const seeded = seedCollectedData(repository);
+
+    const response = await request(app)
+      .post("/v1/maintenance/collected-data/clear")
+      .send(payload)
+      .expect(400);
+
+    expect(response.body.error).toMatchObject({ code: "INVALID_REQUEST" });
+    expect(repository.getRun(seeded.runId)).toBeDefined();
+    expect(repository.getListing(seeded.identity)).toBeDefined();
+    expect(repository.findEvaluation(seeded.runId, seeded.identity, seeded.evaluationRequest)).toBeDefined();
+    expect(repository.getActiveRecipe()).toMatchObject({ id: seeded.recipeId, version: 1, active: true });
+  });
+
+  it("rejects maintenance cleanup from a web origin without deleting data", async () => {
+    const { app, repository } = createTestApp();
+    const seeded = seedCollectedData(repository);
+
+    const response = await request(app)
+      .post("/v1/maintenance/collected-data/clear")
+      .set("Origin", "http://127.0.0.1:5173")
+      .send({ confirm: "clear-collected-data" })
+      .expect(403);
+
+    expect(response.body.error).toMatchObject({ code: "MAINTENANCE_ORIGIN_NOT_ALLOWED" });
+    expect(repository.getRun(seeded.runId)).toBeDefined();
+    expect(repository.getListing(seeded.identity)).toBeDefined();
+  });
+
+  it.each<RunStatus>([
+    "opening-search",
+    "configuring-search",
+    "collecting-search",
+    "collecting-details",
+    "evaluating",
+    "paused-captcha",
+  ])("refuses cleanup while a %s run is nonterminal", async (status) => {
+    const { app, repository } = createTestApp();
+    const seeded = seedCollectedData(repository, status);
+
+    const response = await request(app)
+      .post("/v1/maintenance/collected-data/clear")
+      .send({ confirm: "clear-collected-data" })
+      .expect(409);
+
+    expect(response.body.error).toMatchObject({ code: "ACTIVE_RUN" });
+    expect(repository.getRun(seeded.runId)).toMatchObject({ status });
+    expect(repository.getListing(seeded.identity)).toBeDefined();
+    expect(repository.findEvaluation(seeded.runId, seeded.identity, seeded.evaluationRequest)).toBeDefined();
+    expect(repository.getActiveRecipe()).toMatchObject({ id: seeded.recipeId, version: 1, active: true });
+  });
+
+  it("clears a stale active checkpoint when the configured extension asserts the runner lease", async () => {
+    const { app, repository } = createTestApp();
+    const seeded = seedCollectedData(repository, "collecting-details");
+
+    const response = await request(app)
+      .post("/v1/maintenance/collected-data/clear")
+      .set("Origin", VALID_EXTENSION_ORIGIN)
+      .send({ confirm: "clear-collected-data", runnerLease: "held" })
+      .expect(200);
+
+    expect(response.body.deleted).toEqual({
+      listings: 1,
+      runs: 1,
+      runListings: 1,
+      evaluations: 1,
+    });
+    expect(repository.getRun(seeded.runId)).toBeUndefined();
+    expect(repository.getListing(seeded.identity)).toBeUndefined();
+    expect(repository.getActiveRecipe()).toMatchObject({ id: seeded.recipeId, version: 1, active: true });
+  });
+
+  it("rejects a runner-lease assertion from a local CLI", async () => {
+    const { app, repository } = createTestApp();
+    const seeded = seedCollectedData(repository, "collecting-details");
+
+    const response = await request(app)
+      .post("/v1/maintenance/collected-data/clear")
+      .send({ confirm: "clear-collected-data", runnerLease: "held" })
+      .expect(403);
+
+    expect(response.body.error).toMatchObject({ code: "RUNNER_LEASE_ORIGIN_REQUIRED" });
+    expect(repository.getRun(seeded.runId)).toBeDefined();
+    expect(repository.getListing(seeded.identity)).toBeDefined();
+  });
+
   it("rejects an invalid payload before invoking the evaluator", async () => {
     const input = createRequest();
     input.recipe.criteria = [];
@@ -353,4 +485,68 @@ function createLogger() {
     info: vi.fn<(entry: LogEntry) => void>(),
     error: vi.fn<(entry: LogEntry) => void>(),
   };
+}
+
+function seedCollectedData(repository: DenicheurRepository, status: RunStatus = "completed") {
+  const runId = `run-maintenance-${status}`;
+  const identity = { source: "leboncoin" as const, externalId: "2876543210" };
+  const recipe = repository.saveRecipe("preserved-recipe", {
+    name: "Recette conservée",
+    threshold: 70,
+    criteria: [{
+      id: "garden",
+      name: "Jardin",
+      description: "Le bien doit disposer d'un jardin.",
+      weight: 1,
+      required: false,
+    }],
+  });
+  repository.activateRecipe(recipe.id, recipe.version);
+  repository.ingest({
+    run: {
+      id: runId,
+      source: "leboncoin",
+      status,
+      startedAt: "2026-07-18T09:00:00.000Z",
+      ...(status === "completed" ? { finishedAt: "2026-07-18T09:30:00.000Z" } : {}),
+    },
+    listings: [{
+      ...identity,
+      url: "https://www.leboncoin.fr/ad/ventes_immobilieres/2876543210",
+      title: "Maison avec jardin",
+      features: ["Jardin"],
+      status: "detailed",
+      scrapedAt: "2026-07-18T09:20:00.000Z",
+    }],
+  });
+  const listingId = `${identity.source}:${identity.externalId}`;
+  const evaluationRequest = {
+    locale: "fr" as const,
+    recipeId: recipe.id,
+    recipeVersion: recipe.version,
+    listingIds: [listingId],
+  };
+  repository.saveEvaluationBatch({
+    runId,
+    locale: evaluationRequest.locale,
+    recipeId: recipe.id,
+    recipeVersion: recipe.version,
+    evaluator: { provider: "openai", model: "gpt-test", version: "1.0.0" },
+    results: [{
+      listingId,
+      decision: "relevant",
+      score: 100,
+      summary: "Le jardin est présent.",
+      criteria: [{
+        criterionId: "garden",
+        verdict: "pass",
+        reason: "Le jardin est mentionné.",
+        evidence: ["Jardin"],
+      }],
+      missingData: [],
+      evaluatedAt: "2026-07-18T10:00:00.000Z",
+    }],
+  });
+
+  return { runId, identity, evaluationRequest, recipeId: recipe.id };
 }
