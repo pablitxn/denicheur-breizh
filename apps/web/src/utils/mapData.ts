@@ -8,6 +8,13 @@ export interface MapCoverage {
   unmappedCount: number;
 }
 
+export interface MapBounds {
+  west: number;
+  south: number;
+  east: number;
+  north: number;
+}
+
 export function summarizeMapCoverage(properties: PropertyListing[]): MapCoverage {
   const mapped = properties.filter((property) => property.coordinates !== undefined);
   const sourcePropertyCount = mapped.filter(
@@ -20,6 +27,24 @@ export function summarizeMapCoverage(properties: PropertyListing[]): MapCoverage
     approximateCount: mapped.length - sourcePropertyCount,
     unmappedCount: properties.length - mapped.length,
   };
+}
+
+export function propertiesWithinBounds(
+  properties: PropertyListing[],
+  bounds: MapBounds,
+): PropertyListing[] {
+  return properties.filter((property) => {
+    const coordinates = property.coordinates;
+    if (!coordinates) return false;
+
+    const withinLatitude = coordinates.latitude >= bounds.south
+      && coordinates.latitude <= bounds.north;
+    const withinLongitude = bounds.west <= bounds.east
+      ? coordinates.longitude >= bounds.west && coordinates.longitude <= bounds.east
+      : coordinates.longitude >= bounds.west || coordinates.longitude <= bounds.east;
+
+    return withinLatitude && withinLongitude;
+  });
 }
 
 export function propertiesToGeoJson(properties: PropertyListing[]): FeatureCollection<Point> {

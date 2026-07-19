@@ -98,7 +98,7 @@ describe("shared design-token accessibility contracts", () => {
     expect(componentsCss).toContain(":where(a, button, input, select, textarea, summary");
     expect(componentsCss).toContain("@media (pointer: coarse)");
     expect(componentsCss).toContain("@media (prefers-reduced-motion: reduce)");
-    expect(shellCss).toContain("grid-template-columns: repeat(3, minmax(0, 1fr))");
+    expect(shellCss).toContain("grid-template-columns: repeat(4, minmax(0, 1fr))");
     expect(shellCss).toContain("overflow: visible");
   });
 });

@@ -9,6 +9,7 @@ import {
   evaluateDetailedRecordsInBatches,
   filterApiErrorDescriptor,
   FilterApiError,
+  mergeRecordEvaluationOutcome,
   mergeRecordEvaluations,
 } from "./filterApi";
 
@@ -49,28 +50,36 @@ function detailedRecord(id = "listing-1"): ScrapedPropertyRecord {
 }
 
 function validPayload(listingId = "leboncoin:listing-1", locale: "fr" | "es" | "en" = "fr") {
+  const evaluation = {
+    listingId,
+    decision: "relevant",
+    score: 100,
+    summary: "The garden requirement is supported.",
+    criteria: [
+      {
+        criterionId: "garden",
+        verdict: "pass",
+        reason: "The description explicitly mentions a private garden.",
+        evidence: ["jardin privatif"],
+      },
+    ],
+    missingData: [],
+    evaluatedAt: "2026-07-12T10:01:00.000Z",
+  };
   return {
+    requestId: "request-1",
     runId: "run-1",
     locale,
     recipeId: recipe.id,
     recipeVersion: recipe.version,
-    evaluator: { provider: "openai", model: "gpt-5-mini-2025-08-07", version: "filter-v1" },
-    results: [
+    status: "completed",
+    items: [
       {
         listingId,
-        decision: "relevant",
-        score: 100,
-        summary: "The garden requirement is supported.",
-        criteria: [
-          {
-            criterionId: "garden",
-            verdict: "pass",
-            reason: "The description explicitly mentions a private garden.",
-            evidence: ["jardin privatif"],
-          },
-        ],
-        missingData: [],
-        evaluatedAt: "2026-07-12T10:01:00.000Z",
+        status: "succeeded",
+        attemptId: "attempt-1",
+        evaluation,
+        evaluator: { provider: "openai", model: "gpt-5-mini-2025-08-07", version: "filter-v1" },
       },
     ],
   };
@@ -93,7 +102,7 @@ describe("intelligence filter API client", () => {
       });
     });
 
-    const evaluations = await evaluateDetailedRecords("run-1", recipe, [{
+    const outcome = await evaluateDetailedRecords("run-1", recipe, [{
       ...detailedRecord(),
       listingUrl: "https://www.leboncoin.fr/ad/ventes_immobilieres/listing-1?utm_source=test#photo",
       location: "x".repeat(400),
@@ -104,7 +113,8 @@ describe("intelligence filter API client", () => {
     });
 
     expect(fetcher).toHaveBeenCalledOnce();
-    expect(evaluations[0]).toMatchObject({
+    expect(outcome.failures).toEqual([]);
+    expect(outcome.evaluations[0]).toMatchObject({
       listingId: "listing-1",
       decision: "relevant",
       evaluator: { provider: "openai" },
@@ -137,24 +147,83 @@ describe("intelligence filter API client", () => {
     expect(fetcher).toHaveBeenCalledOnce();
   });
 
-  it("rejects incomplete or mismatched API output", async () => {
+  it("returns successful and failed items independently for a partial response", async () => {
+    const first = detailedRecord();
+    const second = detailedRecord("listing-2");
+    const payload = {
+      ...validPayload(),
+      status: "partial",
+      items: [
+        validPayload("leboncoin:listing-1").items[0],
+        {
+          listingId: "leboncoin:listing-2",
+          status: "failed",
+          error: {
+            code: "UNKNOWN_EVIDENCE_ID",
+            stage: "semantic",
+            retryable: true,
+            requestId: "request-partial",
+          },
+        },
+      ],
+    };
+    const fetcher = vi.fn(async () => new Response(JSON.stringify(payload), { status: 200 }));
+
+    const outcome = await evaluateDetailedRecords("run-1", recipe, [first, second], { fetcher });
+
+    expect(outcome.evaluations).toHaveLength(1);
+    expect(outcome.failures).toEqual([{
+      listingId: "listing-2",
+      code: "UNKNOWN_EVIDENCE_ID",
+      stage: "semantic",
+      retryable: true,
+      requestId: "request-partial",
+    }]);
+  });
+
+  it("sends force only for an explicit full reevaluation", async () => {
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      expect(JSON.parse(String(init?.body))).toMatchObject({ force: true });
+      return new Response(JSON.stringify(validPayload()), { status: 200 });
+    });
+
+    await evaluateDetailedRecords("run-1", recipe, [detailedRecord()], { fetcher, force: true });
+
+    expect(fetcher).toHaveBeenCalledOnce();
+  });
+
+  it("turns incomplete or mismatched API output into retryable listing failures", async () => {
     const payload = validPayload("leboncoin:unexpected-id");
     const fetcher = vi.fn(async () => new Response(JSON.stringify(payload), { status: 200 }));
 
-    await expect(
-      evaluateDetailedRecords("run-1", recipe, [detailedRecord()], { fetcher }),
-    ).rejects.toMatchObject({
-      code: "INVALID_API_RESPONSE",
-      message: expect.stringContaining("unexpected or duplicate listing ids"),
+    const outcome = await evaluateDetailedRecords("run-1", recipe, [detailedRecord()], { fetcher });
+
+    expect(outcome).toEqual({
+      evaluations: [],
+      failures: [{
+        code: "INVALID_API_RESPONSE",
+        listingId: "listing-1",
+        requestId: "request-1",
+        retryable: true,
+        stage: "response",
+      }],
     });
   });
 
   it("rejects a response whose locale does not match the requested narrative language", async () => {
     const fetcher = vi.fn(async () => new Response(JSON.stringify(validPayload()), { status: 200 }));
 
-    await expect(
-      evaluateDetailedRecords("run-1", recipe, [detailedRecord()], { fetcher, locale: "en" }),
-    ).rejects.toThrow("does not match the request");
+    const outcome = await evaluateDetailedRecords(
+      "run-1",
+      recipe,
+      [detailedRecord()],
+      { fetcher, locale: "en" },
+    );
+
+    expect(outcome.failures[0]).toMatchObject({
+      code: "INVALID_API_RESPONSE",
+      listingId: "listing-1",
+    });
   });
 
   it("normalizes transport failures without losing the original records", async () => {
@@ -162,16 +231,47 @@ describe("intelligence filter API client", () => {
       throw new TypeError("Failed to fetch");
     });
 
-    await expect(
-      evaluateDetailedRecords("run-1", recipe, [detailedRecord()], { fetcher }),
-    ).rejects.toEqual(expect.objectContaining<Partial<FilterApiError>>({
-      name: "FilterApiError",
-      message: "Intelligence API is unavailable: Failed to fetch",
-    }));
+    const outcome = await evaluateDetailedRecords("run-1", recipe, [detailedRecord()], { fetcher });
+
+    expect(outcome).toEqual({
+      evaluations: [],
+      failures: [{
+        listingId: "listing-1",
+        code: "NETWORK_UNAVAILABLE",
+        stage: "provider",
+        retryable: true,
+      }],
+    });
+  });
+
+  it("turns an unclassified server error into retryable failures for every requested record", async () => {
+    const records = [detailedRecord(), detailedRecord("listing-2")];
+    const fetcher = vi.fn(async () => new Response("{}", { status: 503 }));
+
+    const outcome = await evaluateDetailedRecords("run-1", recipe, records, { fetcher });
+
+    expect(outcome.evaluations).toEqual([]);
+    expect(outcome.failures).toEqual([
+      expect.objectContaining({
+        listingId: "listing-1",
+        code: "OPENAI_UNAVAILABLE",
+        retryable: true,
+      }),
+      expect.objectContaining({
+        listingId: "listing-2",
+        code: "OPENAI_UNAVAILABLE",
+        retryable: true,
+      }),
+    ]);
   });
 
   it.each([
     ["OPENAI_TIMEOUT", "error.apiTimeout"],
+    ["OPENAI_INSUFFICIENT_QUOTA", "error.apiInsufficientQuota"],
+    ["MODEL_REFUSAL", "error.apiRefusal"],
+    ["MAX_OUTPUT_TOKENS", "error.apiIncomplete"],
+    ["CONTENT_FILTER", "error.apiContentFilter"],
+    ["SCHEMA_MISMATCH", "error.apiInvalidOutput"],
     ["ORIGIN_NOT_ALLOWED", "error.apiOriginNotAllowed"],
     ["NOT_FOUND", "error.apiNotFound"],
     ["INVALID_API_RESPONSE", "error.apiInvalidResponse"],
@@ -195,9 +295,9 @@ describe("intelligence filter API client", () => {
     const fetcher = vi.fn(async () => new Response(JSON.stringify(validPayload()), { status: 200 }));
     const first = detailedRecord();
     const second = detailedRecord("listing-2");
-    const evaluations = await evaluateDetailedRecords("run-1", recipe, [first], { fetcher });
+    const outcome = await evaluateDetailedRecords("run-1", recipe, [first], { fetcher });
 
-    const merged = mergeRecordEvaluations([first, second], evaluations);
+    const merged = mergeRecordEvaluations([first, second], outcome.evaluations);
 
     expect(merged[0].evaluation?.decision).toBe("relevant");
     expect(merged[1]).toBe(second);
@@ -212,20 +312,21 @@ describe("intelligence filter API client", () => {
       return new Response(JSON.stringify({
         ...validPayload(),
         runId: "reevaluation-1",
-        results: body.listingIds.map((id) => ({ ...validPayload(id).results[0], listingId: id })),
+        items: body.listingIds.map((id) => ({ ...validPayload(id).items[0], listingId: id })),
       }), { status: 200 });
     });
 
-    const evaluations = await evaluateDetailedRecordsInBatches("reevaluation-1", recipe, records, { fetcher });
+    const outcome = await evaluateDetailedRecordsInBatches("reevaluation-1", recipe, records, { fetcher });
 
     expect(fetcher).toHaveBeenCalledTimes(2);
-    expect(evaluations).toHaveLength(21);
-    expect(evaluations.at(-1)?.listingId).toBe("listing-21");
+    expect(outcome.evaluations).toHaveLength(21);
+    expect(outcome.failures).toEqual([]);
+    expect(outcome.evaluations.at(-1)?.listingId).toBe("listing-21");
   });
 
   it("reports each completed batch before a later batch fails", async () => {
     const records = Array.from({ length: 21 }, (_, index) => detailedRecord(`listing-${index + 1}`));
-    const completed: ListingEvaluation[][] = [];
+    const completed: Array<{ evaluations: ListingEvaluation[]; failures: unknown[] }> = [];
     let attempt = 0;
     const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       attempt += 1;
@@ -233,18 +334,58 @@ describe("intelligence filter API client", () => {
       const body = JSON.parse(String(init?.body)) as { listingIds: string[] };
       return new Response(JSON.stringify({
         ...validPayload(),
-        results: body.listingIds.map((id) => ({ ...validPayload(id).results[0], listingId: id })),
+        items: body.listingIds.map((id) => ({ ...validPayload(id).items[0], listingId: id })),
       }), { status: 200 });
     });
 
-    await expect(evaluateDetailedRecordsInBatches("run-1", recipe, records, {
+    const outcome = await evaluateDetailedRecordsInBatches("run-1", recipe, records, {
       fetcher,
       onBatchComplete(batch) {
         completed.push(batch);
       },
-    })).rejects.toThrow("API offline");
+    });
 
-    expect(completed).toHaveLength(1);
-    expect(completed[0]).toHaveLength(20);
+    expect(completed).toHaveLength(2);
+    expect(completed[0].evaluations).toHaveLength(20);
+    expect(completed[1].failures).toHaveLength(1);
+    expect(outcome.evaluations).toHaveLength(20);
+    expect(outcome.failures).toEqual([expect.objectContaining({
+      code: "NETWORK_UNAVAILABLE",
+      listingId: "listing-21",
+    })]);
+  });
+
+  it("keeps a previous valid evaluation while attaching a partial failure", () => {
+    const previous: ListingEvaluation = {
+      ...validPayload().items[0].evaluation,
+      listingId: "listing-1",
+      decision: "relevant",
+      criteria: [{
+        criterionId: "garden",
+        verdict: "pass",
+        reason: "The description explicitly mentions a private garden.",
+        evidence: ["jardin privatif"],
+      }],
+      evaluator: { provider: "openai", model: "gpt-5-mini-2025-08-07", version: "filter-v1" },
+      recipeId: recipe.id,
+      recipeVersion: recipe.version,
+    };
+    const record = { ...detailedRecord(), evaluation: previous };
+    const merged = mergeRecordEvaluationOutcome([record], {
+      evaluations: [],
+      failures: [{
+        listingId: "listing-1",
+        code: "UNKNOWN_EVIDENCE_ID",
+        stage: "semantic",
+        retryable: true,
+        requestId: "request-partial",
+      }],
+    });
+
+    expect(merged[0].evaluation).toBe(previous);
+    expect(merged[0].evaluationFailure).toMatchObject({
+      code: "UNKNOWN_EVIDENCE_ID",
+      requestId: "request-partial",
+    });
   });
 });

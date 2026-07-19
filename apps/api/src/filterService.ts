@@ -9,6 +9,13 @@ import type {
 import { MISSING_DATA_FIELDS } from "./contracts.js";
 import type { ModelEvaluationBatch } from "./modelOutput.js";
 
+/** Non-enumerable trace metadata shared only between API services. */
+export const EVALUATOR_RESPONSE_ID = Symbol("denicheur.evaluatorResponseId");
+
+export type FilterListingsServiceResponse = FilterListingsResponse & {
+  readonly [EVALUATOR_RESPONSE_ID]?: string;
+};
+
 export interface EvaluationContext {
   readonly requestId: string;
 }
@@ -25,9 +32,18 @@ export class FilterListingsService {
     private readonly now: () => Date = () => new Date(),
   ) {}
 
-  async filter(request: FilterListingsRequest, context: EvaluationContext): Promise<FilterListingsResponse> {
+  async filter(request: FilterListingsRequest, context: EvaluationContext): Promise<FilterListingsServiceResponse> {
     const modelBatch = await this.evaluator.evaluate(request, context);
-    return buildFilterResponse(request, modelBatch, this.evaluator.model, this.evaluator.version, this.now());
+    const response = buildFilterResponse(request, modelBatch, this.evaluator.model, this.evaluator.version, this.now());
+    if (modelBatch.responseId) {
+      Object.defineProperty(response, EVALUATOR_RESPONSE_ID, {
+        configurable: false,
+        enumerable: false,
+        value: modelBatch.responseId,
+        writable: false,
+      });
+    }
+    return response;
   }
 }
 

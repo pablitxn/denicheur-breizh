@@ -568,7 +568,7 @@ function createRunner(
 ): ScrapeRunner {
   return new ScrapeRunner(
     collector.observer,
-    vi.fn(async () => []),
+    vi.fn(async () => ({ evaluations: [], failures: [] })),
     { tabs, clock, random },
   );
 }
@@ -1745,7 +1745,10 @@ describe("scrape runner intelligence phase", () => {
     const activeRun = run();
     const detailed = record("listing-1", "detailed");
     const failed = record("listing-2", "failed");
-    const evaluator = vi.fn(async () => [evaluation(detailed.id)]);
+    const evaluator = vi.fn(async () => ({
+      evaluations: [evaluation(detailed.id)],
+      failures: [],
+    }));
     const snapshots: Array<{ status: ScrapeRun["status"]; intelligenceStatus: ScrapeRun["intelligenceStatus"] }> = [];
 
     const records = await runIntelligencePhase({
@@ -1792,7 +1795,15 @@ describe("scrape runner intelligence phase", () => {
       persist,
     });
 
-    expect(records[0]).toBe(detailed);
+    expect(records[0]).toMatchObject({
+      ...detailed,
+      evaluationFailure: {
+        listingId: detailed.id,
+        code: "INTERNAL_ERROR",
+        stage: "internal",
+        retryable: false,
+      },
+    });
     expect(activeRun).toMatchObject({
       status: "completed",
       intelligenceStatus: "failed",
@@ -1800,6 +1811,45 @@ describe("scrape runner intelligence phase", () => {
       collected: 1,
     });
     expect(persist).toHaveBeenCalledTimes(2);
+  });
+
+  it("persists successes and technical failures independently for a partial evaluation", async () => {
+    const activeRun = run();
+    const first = record("listing-1", "detailed");
+    const second = record("listing-2", "detailed");
+
+    const records = await runIntelligencePhase({
+      run: activeRun,
+      records: [first, second],
+      recipe,
+      evaluator: vi.fn(async () => ({
+        evaluations: [evaluation(first.id)],
+        failures: [{
+          listingId: second.id,
+          code: "UNKNOWN_EVIDENCE_ID",
+          stage: "semantic",
+          retryable: true,
+          requestId: "request-partial",
+        }],
+      })),
+      signal: new AbortController().signal,
+      persist: vi.fn(async () => undefined),
+    });
+
+    expect(records[0].evaluation?.listingId).toBe(first.id);
+    expect(records[1].evaluation).toBeUndefined();
+    expect(records[1].evaluationFailure).toMatchObject({
+      code: "UNKNOWN_EVIDENCE_ID",
+      requestId: "request-partial",
+    });
+    expect(activeRun).toMatchObject({
+      status: "completed",
+      intelligenceStatus: "partial",
+      evaluated: 1,
+      relevant: 1,
+      review: 0,
+      intelligenceError: { id: "error.apiInvalidOutput" },
+    });
   });
 
   it("keeps completed evaluation batches when a later batch fails", async () => {
@@ -1814,7 +1864,10 @@ describe("scrape runner intelligence phase", () => {
       records: [first, second],
       recipe,
       evaluator: vi.fn(async (_runId, _recipe, _records, _locale, _signal, onBatchComplete) => {
-        await onBatchComplete?.([firstEvaluation], [firstEvaluation]);
+        await onBatchComplete?.(
+          { evaluations: [firstEvaluation], failures: [] },
+          { evaluations: [firstEvaluation], failures: [] },
+        );
         throw new Error("second batch failed");
       }),
       signal: new AbortController().signal,
@@ -1823,9 +1876,13 @@ describe("scrape runner intelligence phase", () => {
 
     expect(records[0].evaluation).toEqual(firstEvaluation);
     expect(records[1].evaluation).toBeUndefined();
+    expect(records[1].evaluationFailure).toMatchObject({
+      code: "INTERNAL_ERROR",
+      retryable: false,
+    });
     expect(activeRun).toMatchObject({
       status: "completed",
-      intelligenceStatus: "failed",
+      intelligenceStatus: "partial",
       evaluated: 1,
       relevant: 1,
     });

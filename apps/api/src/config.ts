@@ -11,7 +11,11 @@ const DEFAULT_ALLOWED_ORIGINS = [
 
 const envSchema = z.object({
   OPENAI_API_KEY: z.string().trim().min(1).optional(),
-  OPENAI_FILTER_MODEL: z.string().trim().min(1).max(128).default(DEFAULT_FILTER_MODEL),
+  OPENAI_FILTER_MODEL: z.string().trim().min(1).max(128)
+    .refine((model) => !model.startsWith("ft:"), {
+      message: "Fine-tuned models are not supported by the strict evaluation schema.",
+    })
+    .default(DEFAULT_FILTER_MODEL),
   FILTER_API_PORT: z.preprocess(
     (value) => (value === undefined || value === "" ? 4310 : value),
     z.coerce.number().int().min(1).max(65_535),
@@ -50,7 +54,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env): ApiCon
     openAiApiKey: parsed.OPENAI_API_KEY,
     databasePath: parsed.DENICHEUR_DB_PATH,
     openAiModel: parsed.OPENAI_FILTER_MODEL,
-    evaluatorVersion: "1.1.0",
+    evaluatorVersion: "2.0.0",
     requestBodyLimit: "256kb",
     rateLimitMax: 30,
     rateLimitWindowMs: 60_000,

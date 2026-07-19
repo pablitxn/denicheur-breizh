@@ -40,7 +40,13 @@ const clearCollectedDataRequestSchema = z.object({
 
 export function createApp({ config, filterService, repository, logger, fetchImpl }: AppDependencies): Express {
   const app = express();
-  const evaluationService = new StoredEvaluationService(repository, filterService);
+  const evaluationService = new StoredEvaluationService(repository, filterService, {
+    evaluator: {
+      provider: "openai",
+      model: config.openAiModel,
+      version: config.evaluatorVersion,
+    },
+  });
   const realtimeSessionService = new RealtimeSessionService({
     apiKey: config.openAiApiKey,
     timeoutMs: config.openAiTimeoutMs,
@@ -293,6 +299,12 @@ function sendError(response: express.Response, error: ApiError): void {
       message: error.message,
       requestId: response.locals.requestId as string,
       ...(error.issues ? { issues: error.issues } : {}),
+      ...(error.stage ? { stage: error.stage } : {}),
+      ...(error.detailCode ? { detailCode: error.detailCode } : {}),
+      ...(error.listingId ? { listingId: error.listingId } : {}),
+      ...(error.criterionId ? { criterionId: error.criterionId } : {}),
+      ...(error.retryable !== undefined ? { retryable: error.retryable } : {}),
+      ...(error.responseId ? { responseId: error.responseId } : {}),
     },
   });
 }

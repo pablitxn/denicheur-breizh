@@ -130,7 +130,7 @@ export const runStatusSchema = z.enum([
   "legacy-import",
 ]);
 
-export const intelligenceStatusSchema = z.enum(["idle", "evaluating", "completed", "failed"]);
+export const intelligenceStatusSchema = z.enum(["idle", "evaluating", "completed", "partial", "failed"]);
 
 export const runIngestionSchema = z
   .object({
@@ -349,9 +349,106 @@ export const evaluationRequestSchema = z
     recipeId: identifierSchema,
     recipeVersion: z.number().int().min(1),
     listingIds: z.array(listingKeySchema).min(1).max(MAX_LISTINGS_PER_REQUEST),
+    force: z.boolean().optional(),
   })
   .strict()
   .superRefine((request, context) => addDuplicateValuesIssues(request.listingIds, ["listingIds"], "listing", context));
+
+export const evaluationFailureStageSchema = z.enum([
+  "provider",
+  "response",
+  "parse",
+  "schema",
+  "semantic",
+  "persistence",
+  "internal",
+]);
+
+export const evaluationItemErrorSchema = z
+  .object({
+    code: z.string().trim().min(1).max(128),
+    stage: evaluationFailureStageSchema,
+    retryable: z.boolean(),
+    requestId: identifierSchema,
+    attemptId: identifierSchema.optional(),
+    criterionId: identifierSchema.optional(),
+  })
+  .strict();
+
+export const evaluationSucceededItemSchema = z
+  .object({
+    listingId: listingKeySchema,
+    status: z.literal("succeeded"),
+    evaluation: listingEvaluationResultSchema,
+    evaluator: evaluatorSchema,
+    attemptId: identifierSchema,
+  })
+  .strict();
+
+export const evaluationCachedItemSchema = z
+  .object({
+    listingId: listingKeySchema,
+    status: z.literal("cached"),
+    evaluation: listingEvaluationResultSchema,
+    evaluator: evaluatorSchema,
+  })
+  .strict();
+
+export const evaluationSuccessItemSchema = z.discriminatedUnion("status", [
+  evaluationSucceededItemSchema,
+  evaluationCachedItemSchema,
+]);
+
+export const evaluationFailureItemSchema = z
+  .object({
+    listingId: listingKeySchema,
+    status: z.literal("failed"),
+    error: evaluationItemErrorSchema,
+  })
+  .strict();
+
+export const evaluationBatchItemSchema = z.discriminatedUnion("status", [
+  evaluationSucceededItemSchema,
+  evaluationCachedItemSchema,
+  evaluationFailureItemSchema,
+]);
+
+export const evaluationBatchResponseSchema = z
+  .object({
+    requestId: identifierSchema,
+    runId: identifierSchema,
+    locale: localeSchema,
+    recipeId: identifierSchema,
+    recipeVersion: z.number().int().min(1),
+    status: z.enum(["completed", "partial", "failed"]),
+    items: z.array(evaluationBatchItemSchema).min(1).max(MAX_LISTINGS_PER_REQUEST),
+  })
+  .strict()
+  .superRefine((response, context) => {
+    addDuplicateValuesIssues(response.items.map((item) => item.listingId), ["items"], "listing", context);
+    const successCount = response.items.filter((item) => item.status !== "failed").length;
+    const expectedStatus = successCount === 0
+      ? "failed"
+      : successCount === response.items.length
+        ? "completed"
+        : "partial";
+    if (response.status !== expectedStatus) {
+      context.addIssue({
+        code: "custom",
+        path: ["status"],
+        message: `Evaluation status must be ${expectedStatus} for the provided items.`,
+      });
+    }
+    response.items.forEach((item, index) => {
+      if (item.status !== "failed" && item.evaluation.listingId !== item.listingId) {
+        context.addIssue({
+          code: "custom",
+          path: ["items", index, "evaluation", "listingId"],
+          message: "Evaluation listing id must match its batch item listing id.",
+        });
+      }
+    });
+  });
 
 export const runRecordSchema = runIngestionSchema.extend({ updatedAt: isoDateTimeSchema });
 
@@ -457,6 +554,7 @@ export type CriterionVerdict = z.infer<typeof criterionVerdictSchema>;
 export type ListingDecision = z.infer<typeof listingDecisionSchema>;
 export type CriterionEvaluation = z.infer<typeof criterionEvaluationSchema>;
 export type ListingEvaluationResult = z.infer<typeof listingEvaluationResultSchema>;
+export type Evaluator = z.infer<typeof evaluatorSchema>;
 export type ListingEvaluationRecord = z.infer<typeof listingEvaluationRecordSchema>;
 export type FilterListingInput = z.infer<typeof filterListingInputSchema>;
 export type FilterListingsRequest = z.infer<typeof filterListingsRequestSchema>;
@@ -465,6 +563,14 @@ export type MissingDataField = (typeof MISSING_DATA_FIELDS)[number];
 export type IngestionRequest = z.infer<typeof ingestionRequestSchema>;
 export type IngestionResponse = z.infer<typeof ingestionResponseSchema>;
 export type EvaluationRequest = z.infer<typeof evaluationRequestSchema>;
+export type EvaluationFailureStage = z.infer<typeof evaluationFailureStageSchema>;
+export type EvaluationItemError = z.infer<typeof evaluationItemErrorSchema>;
+export type EvaluationSucceededItem = z.infer<typeof evaluationSucceededItemSchema>;
+export type EvaluationCachedItem = z.infer<typeof evaluationCachedItemSchema>;
+export type EvaluationSuccessItem = z.infer<typeof evaluationSuccessItemSchema>;
+export type EvaluationFailureItem = z.infer<typeof evaluationFailureItemSchema>;
+export type EvaluationBatchItem = z.infer<typeof evaluationBatchItemSchema>;
+export type EvaluationBatchResponse = z.infer<typeof evaluationBatchResponseSchema>;
 export type RunRecord = z.infer<typeof runRecordSchema>;
 export type ListingRecord = z.infer<typeof listingRecordSchema>;
 export type ListingRunObservation = z.infer<typeof listingRunObservationSchema>;

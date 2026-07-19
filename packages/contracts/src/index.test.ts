@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   createListingKey,
+  evaluationBatchResponseSchema,
+  evaluationRequestSchema,
   filterListingInputSchema,
   ingestionRequestSchema,
   MAX_CRITERIA_PER_RECIPE,
@@ -136,6 +138,89 @@ describe("shared contracts", () => {
     expect(filterListingInputSchema.safeParse({
       ...listing,
       imageUrls: ["http://img.leboncoin.fr/insecure.jpg"],
+    }).success).toBe(false);
+  });
+
+  it("accepts force on stored evaluation requests and rejects unknown controls", () => {
+    const request = {
+      locale: "fr",
+      recipeId: "recipe-1",
+      recipeVersion: 1,
+      listingIds: ["leboncoin:2876543210"],
+      force: true,
+    };
+
+    expect(evaluationRequestSchema.safeParse(request).success).toBe(true);
+    expect(evaluationRequestSchema.safeParse({ ...request, retryCount: 3 }).success).toBe(false);
+  });
+
+  it("validates completed, partial, and failed stored-evaluation batch semantics", () => {
+    const evaluation = {
+      listingId: "leboncoin:2876543210",
+      decision: "relevant",
+      score: 100,
+      summary: "Le bien correspond.",
+      criteria: [{
+        criterionId: "garden",
+        verdict: "pass",
+        reason: "Le jardin est mentionné.",
+        evidence: ["Jardin"],
+      }],
+      missingData: [],
+      evaluatedAt: "2026-07-18T10:00:00.000Z",
+    };
+    const success = {
+      listingId: evaluation.listingId,
+      status: "succeeded",
+      attemptId: "attempt-1",
+      evaluation,
+      evaluator: { provider: "openai", model: "gpt-test", version: "1.0.0" },
+    };
+    const failure = {
+      listingId: "leboncoin:2876543211",
+      status: "failed",
+      error: {
+        code: "EVIDENCE_REQUIRED",
+        stage: "semantic",
+        retryable: true,
+        requestId: "request-1",
+        criterionId: "garden",
+      },
+    };
+    const base = {
+      requestId: "request-1",
+      runId: "run-1",
+      locale: "fr",
+      recipeId: "recipe-1",
+      recipeVersion: 1,
+    };
+
+    expect(evaluationBatchResponseSchema.safeParse({ ...base, status: "completed", items: [success] }).success)
+      .toBe(true);
+    expect(evaluationBatchResponseSchema.safeParse({ ...base, status: "partial", items: [success, failure] }).success)
+      .toBe(true);
+    expect(evaluationBatchResponseSchema.safeParse({ ...base, status: "failed", items: [failure] }).success)
+      .toBe(true);
+    const { attemptId: _attemptId, ...cachedWithoutAttempt } = success;
+    const cached = { ...cachedWithoutAttempt, status: "cached" };
+    expect(evaluationBatchResponseSchema.safeParse({ ...base, status: "completed", items: [cached] }).success)
+      .toBe(true);
+    expect(evaluationBatchResponseSchema.safeParse({
+      ...base,
+      status: "completed",
+      items: [{ ...success, attemptId: undefined }],
+    }).success).toBe(false);
+    expect(evaluationBatchResponseSchema.safeParse({
+      ...base,
+      status: "completed",
+      items: [{ ...cached, attemptId: "attempt-cache" }],
+    }).success).toBe(false);
+    expect(evaluationBatchResponseSchema.safeParse({ ...base, status: "completed", items: [success, failure] }).success)
+      .toBe(false);
+    expect(evaluationBatchResponseSchema.safeParse({
+      ...base,
+      status: "completed",
+      items: [{ ...success, evaluation: { ...evaluation, listingId: "leboncoin:wrong" } }],
     }).success).toBe(false);
   });
 });

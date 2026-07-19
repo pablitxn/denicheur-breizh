@@ -17,6 +17,7 @@ import {
 } from "../sync/storage";
 import type {
   IntelligenceRecipe,
+  ListingEvaluationFailure,
   LocalizedText,
   ScrapeRun,
   ScrapedPropertyRecord,
@@ -257,13 +258,19 @@ export function migrateStoredRecords(records: ScrapedPropertyRecord[]): ScrapedP
     if (!id) continue;
 
     const evaluation = record.evaluation?.listingId === id ? record.evaluation : undefined;
-    const { coordinates: storedCoordinates, ...recordWithoutCoordinates } = record;
+    const evaluationFailure = normalizeEvaluationFailure(record.evaluationFailure, id);
+    const {
+      coordinates: storedCoordinates,
+      evaluationFailure: _storedEvaluationFailure,
+      ...recordWithoutCoordinates
+    } = record;
     const coordinates = normalizeVerifiedCoordinates(storedCoordinates);
     const candidate: ScrapedPropertyRecord = {
       ...recordWithoutCoordinates,
       id,
       listingUrl: canonicalUrl,
       evaluation,
+      ...(evaluationFailure ? { evaluationFailure } : {}),
       error: normalizeLocalizedText(record.error),
       ...(coordinates ? { coordinates } : {}),
     };
@@ -283,6 +290,48 @@ export function migrateStoredRecords(records: ScrapedPropertyRecord[]): ScrapedP
   }
 
   return [...byListingId.values()];
+}
+
+function normalizeEvaluationFailure(
+  value: unknown,
+  listingId: string,
+): ListingEvaluationFailure | undefined {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    !("listingId" in value) ||
+    value.listingId !== listingId ||
+    !("code" in value) ||
+    typeof value.code !== "string" ||
+    !value.code.trim() ||
+    !("stage" in value) ||
+    typeof value.stage !== "string" ||
+    !value.stage.trim() ||
+    !("retryable" in value) ||
+    typeof value.retryable !== "boolean"
+  ) {
+    return undefined;
+  }
+
+  const requestId = "requestId" in value && typeof value.requestId === "string" && value.requestId.trim()
+    ? value.requestId
+    : undefined;
+  const attemptId = "attemptId" in value && typeof value.attemptId === "string" && value.attemptId.trim()
+    ? value.attemptId
+    : undefined;
+  const criterionId = "criterionId" in value && typeof value.criterionId === "string" && value.criterionId.trim()
+    ? value.criterionId
+    : undefined;
+  return {
+    listingId,
+    code: value.code,
+    stage: value.stage,
+    retryable: value.retryable,
+    ...(requestId ? { requestId } : {}),
+    ...(attemptId ? { attemptId } : {}),
+    ...(criterionId ? { criterionId } : {}),
+  };
 }
 
 function preferMigratedRecord(

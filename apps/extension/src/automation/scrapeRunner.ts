@@ -6,9 +6,12 @@ import {
   validateSearchFilters,
 } from "../lib/leboncoinSearch";
 import {
+  createEvaluationFailureOutcome,
   evaluateDetailedRecordsInBatches,
+  evaluationFailureDescriptor,
   filterApiErrorDescriptor,
-  mergeRecordEvaluations,
+  FilterApiError,
+  mergeRecordEvaluationOutcome,
 } from "../intelligence/filterApi";
 import { recipeValidationError } from "../intelligence/recipe";
 import {
@@ -34,6 +37,7 @@ import type {
   ListingSummary,
   IntelligenceRecipe,
   ListingEvaluation,
+  ListingEvaluationOutcome,
   LocalizedText,
   ScrapeRun,
   ScrapedPropertyRecord,
@@ -51,10 +55,10 @@ export type ListingEvaluator = (
   locale: LocaleCode,
   signal: AbortSignal,
   onBatchComplete?: (
-    batch: ListingEvaluation[],
-    accumulated: ListingEvaluation[],
+    batch: ListingEvaluationOutcome,
+    accumulated: ListingEvaluationOutcome,
   ) => void | Promise<void>,
-) => Promise<ListingEvaluation[]>;
+) => Promise<ListingEvaluationOutcome>;
 
 const SEARCH_SETTLE_MS = 1600;
 const DETAIL_SETTLE_MS = 1200;
@@ -1791,12 +1795,18 @@ function defaultEvaluator(
   locale: LocaleCode,
   signal: AbortSignal,
   onBatchComplete?: (
-    batch: ListingEvaluation[],
-    accumulated: ListingEvaluation[],
+    batch: ListingEvaluationOutcome,
+    accumulated: ListingEvaluationOutcome,
   ) => void | Promise<void>,
-): Promise<ListingEvaluation[]> {
+): Promise<ListingEvaluationOutcome> {
   return requestImmediateSync().then((response) => {
-    if (!response.ok) throw new Error(response.error ?? "Listings could not be synchronized before evaluation.");
+    if (!response.ok) {
+      return createEvaluationFailureOutcome(records, new FilterApiError(
+        "Listings could not be synchronized before evaluation.",
+        undefined,
+        "SYNC_FAILED",
+      ));
+    }
     return evaluateDetailedRecordsInBatches(runId, recipe, records, {
       locale,
       signal,
@@ -1835,32 +1845,72 @@ export async function runIntelligencePhase({
   await persist(run, records);
 
   let latestRecords = records;
+  const resolvedListingIds = new Set<string>();
   try {
-    const evaluations = await evaluator(
+    const outcome = await evaluator(
       run.id,
       recipe,
       detailedRecords,
       locale,
       signal,
-      async (_batch, accumulated) => {
-        latestRecords = mergeRecordEvaluations(records, accumulated);
-        applyEvaluationCounts(run, accumulated);
+      async (batch, accumulated) => {
+        latestRecords = mergeRecordEvaluationOutcome(latestRecords, batch);
+        applyEvaluationCounts(run, accumulated.evaluations);
         await persist(run, latestRecords);
+        for (const listingId of [
+          ...batch.evaluations.map((item) => item.listingId),
+          ...batch.failures.map((item) => item.listingId),
+        ]) {
+          resolvedListingIds.add(listingId);
+        }
       },
     );
-    const evaluatedRecords = mergeRecordEvaluations(records, evaluations);
-    applyEvaluationCounts(run, evaluations);
+    const evaluatedRecords = mergeRecordEvaluationOutcome(latestRecords, outcome);
+    applyEvaluationCounts(run, outcome.evaluations);
     run.status = "completed";
-    run.intelligenceStatus = "completed";
-    run.message = message("run.evaluated", { count: evaluations.length });
+    run.intelligenceStatus = outcome.failures.length === 0
+      ? "completed"
+      : outcome.evaluations.length > 0
+        ? "partial"
+        : "failed";
+    run.intelligenceError = outcome.failures[0]
+      ? evaluationFailureDescriptor(outcome.failures[0])
+      : undefined;
+    run.message = outcome.failures.length === 0
+      ? message("run.evaluated", { count: outcome.evaluations.length })
+      : outcome.evaluations.length > 0
+        ? message("run.intelligencePartial", {
+            evaluated: outcome.evaluations.length,
+            pending: outcome.failures.length,
+            total: outcome.evaluations.length + outcome.failures.length,
+          })
+        : message("run.intelligenceFailedPreserved");
     await persist(run, evaluatedRecords);
     return evaluatedRecords;
   } catch (error) {
     if (signal.aborted) throw error;
+    const unresolvedRecords = detailedRecords.filter((record) => !resolvedListingIds.has(record.id));
+    const failureOutcome = createEvaluationFailureOutcome(unresolvedRecords, error);
+    latestRecords = mergeRecordEvaluationOutcome(latestRecords, failureOutcome);
+    const detailedIds = new Set(detailedRecords.map((record) => record.id));
+    const currentRecords = latestRecords.filter((record) => detailedIds.has(record.id));
+    const failures = currentRecords.flatMap((record) => (
+      record.evaluationFailure ? [record.evaluationFailure] : []
+    ));
+    const evaluations = currentRecords.flatMap((record) => (
+      record.evaluation && !record.evaluationFailure ? [record.evaluation] : []
+    ));
+    applyEvaluationCounts(run, evaluations);
     run.status = "completed";
-    run.intelligenceStatus = "failed";
+    run.intelligenceStatus = evaluations.length > 0 ? "partial" : "failed";
     run.intelligenceError = filterApiErrorDescriptor(error);
-    run.message = message("run.intelligenceFailed", { count: run.collected });
+    run.message = evaluations.length > 0
+      ? message("run.intelligencePartial", {
+          evaluated: evaluations.length,
+          pending: failures.length,
+          total: evaluations.length + failures.length,
+        })
+      : message("run.intelligenceFailedPreserved");
     await persist(run, latestRecords);
     return latestRecords;
   }

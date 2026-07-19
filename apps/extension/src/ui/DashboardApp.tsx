@@ -28,9 +28,11 @@ import {
   type ExtensionMessageId,
 } from "../i18n";
 import {
+  createEvaluationFailureOutcome,
   evaluateDetailedRecordsInBatches,
-  filterApiErrorDescriptor,
-  mergeRecordEvaluations,
+  evaluationFailureDescriptor,
+  FilterApiError,
+  mergeRecordEvaluationOutcome,
 } from "../intelligence/filterApi";
 import {
   createDefaultIntelligenceRecipe,
@@ -48,6 +50,8 @@ import {
 import type {
   IntelligenceRecipe,
   ListingEvaluation,
+  ListingEvaluationFailure,
+  ListingEvaluationOutcome,
   ScrapeRun,
   ScrapedPropertyRecord,
   SearchFilters,
@@ -97,8 +101,11 @@ const RUNNING_STATUSES = new Set<ScrapeRun["status"]>([
   "collecting-details",
   "evaluating",
 ]);
-const RECORDS_PAGE_SIZE = 24;
+const RECORDS_PAGE_SIZES = [12, 24, 48] as const;
+const DEFAULT_RECORDS_PAGE_SIZE = 24;
 const DASHBOARD_RUNNER_LOCK_NAME = "denicheur:crawler:dashboard-runner";
+
+type RecordsPageSize = (typeof RECORDS_PAGE_SIZES)[number];
 
 interface DashboardRunnerLockManager {
   query(): Promise<LockManagerSnapshot>;
@@ -141,6 +148,7 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
   const [decisionFilter, setDecisionFilter] = useState<"all" | ListingEvaluation["decision"]>(initialResultsState.decision);
   const [recordQuery, setRecordQuery] = useState(initialResultsState.query);
   const [resultsPage, setResultsPage] = useState(initialResultsState.page);
+  const [recordsPageSize, setRecordsPageSize] = useState(initialResultsState.pageSize);
   const [intelligenceExpanded, setIntelligenceExpanded] = useState(false);
   const [savingFilters, setSavingFilters] = useState(false);
   const [refreshingRecipe, setRefreshingRecipe] = useState(false);
@@ -162,6 +170,12 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
   const canControlActiveRun = Boolean(runnerRef.current || reevaluationAbortRef.current);
   const requiresReset = run.status === "blocked-captcha" || run.status === "blocked-activity";
   const formPending = savingFilters || refreshingRecipe || reevaluationPending || startPending;
+  const evaluationFailures = records.flatMap((record) => (
+    record.evaluationFailure ? [record.evaluationFailure] : []
+  ));
+  const successfulEvaluationCount = records.filter((record) => (
+    record.status === "detailed" && record.evaluation && !record.evaluationFailure
+  )).length;
   const filterIssues = useMemo(() => validateSearchFilters(filters), [filters]);
   const filterIssueMessages = useMemo(
     () => new Map(filterIssues.map((issue) => [
@@ -177,16 +191,16 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
     }),
     [decisionFilter, locale, recordQuery, records],
   );
-  const resultsPageCount = Math.max(1, Math.ceil(filteredRecords.length / RECORDS_PAGE_SIZE));
+  const resultsPageCount = Math.max(1, Math.ceil(filteredRecords.length / recordsPageSize));
   const currentResultsPage = resolveResultsPage(
     resultsPage,
     resultsPageCount,
     hydrationState === "ready",
   );
   const visibleRecords = useMemo(() => {
-    const offset = (currentResultsPage - 1) * RECORDS_PAGE_SIZE;
-    return filteredRecords.slice(offset, offset + RECORDS_PAGE_SIZE);
-  }, [currentResultsPage, filteredRecords]);
+    const offset = (currentResultsPage - 1) * recordsPageSize;
+    return filteredRecords.slice(offset, offset + recordsPageSize);
+  }, [currentResultsPage, filteredRecords, recordsPageSize]);
   useEffect(() => {
     let mounted = true;
     setHydrationState("loading");
@@ -304,8 +318,13 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
     setOptionalSearchParam(url, "decision", decisionFilter === "all" ? "" : decisionFilter);
     setOptionalSearchParam(url, "q", recordQuery.trim());
     setOptionalSearchParam(url, "page", currentResultsPage === 1 ? "" : String(currentResultsPage));
+    setOptionalSearchParam(
+      url,
+      "pageSize",
+      recordsPageSize === DEFAULT_RECORDS_PAGE_SIZE ? "" : String(recordsPageSize),
+    );
     window.history.replaceState(null, "", url);
-  }, [currentResultsPage, decisionFilter, hydrationState, recordQuery]);
+  }, [currentResultsPage, decisionFilter, hydrationState, recordQuery, recordsPageSize]);
 
   useEffect(() => {
     if (!filtersDirty) return;
@@ -416,6 +435,15 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
     }
   }
 
+  async function handleCopyRequestId(requestId: string) {
+    try {
+      await navigator.clipboard.writeText(requestId);
+      setActionFeedback(t("feedback.requestIdCopied"));
+    } catch {
+      // The selectable request id remains visible when clipboard access is unavailable.
+    }
+  }
+
   function focusFirstFilterIssue() {
     requestAnimationFrame(() => {
       formRef.current?.querySelector<HTMLElement>('[aria-invalid="true"]')?.focus();
@@ -479,7 +507,7 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
     runnerRef.current?.resume();
   }
 
-  async function handleReevaluate() {
+  async function handleReevaluate(pendingOnly = false) {
     if (reevaluationPendingRef.current) return;
     reevaluationPendingRef.current = true;
     setReevaluationPending(true);
@@ -488,7 +516,10 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
     try {
       const recipeForRun = activeRecipeForUse();
       if (!recipeForRun.enabled) throw extensionMessage("error.enableRecipe");
-      const detailedRecords = records.filter((record) => record.status === "detailed");
+      const allDetailedRecords = records.filter((record) => record.status === "detailed");
+      const detailedRecords = pendingOnly
+        ? allDetailedRecords.filter((record) => record.evaluationFailure?.retryable)
+        : allDetailedRecords;
       if (detailedRecords.length === 0) throw extensionMessage("error.noDetailedRecords");
 
       const abortController = new AbortController();
@@ -504,54 +535,64 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
       await saveCrawlerState({ run: evaluatingRun });
 
       let persistedRecords = records;
-      const persistedEvaluations: ListingEvaluation[] = [];
+      const attemptOutcome: ListingEvaluationOutcome = { evaluations: [], failures: [] };
+      const persistOutcome = async (batch: ListingEvaluationOutcome) => {
+        attemptOutcome.evaluations.push(...batch.evaluations);
+        attemptOutcome.failures.push(...batch.failures);
+        persistedRecords = mergeRecordEvaluationOutcome(persistedRecords, batch);
+        const progressRun: ScrapeRun = {
+          ...evaluatingRun,
+          evaluated: attemptOutcome.evaluations.length,
+          relevant: attemptOutcome.evaluations.filter((item) => item.decision === "relevant").length,
+          notRelevant: attemptOutcome.evaluations.filter((item) => item.decision === "not-relevant").length,
+          review: attemptOutcome.evaluations.filter((item) => item.decision === "review").length,
+        };
+        setRun(progressRun);
+        setRecords(persistedRecords);
+        await saveCrawlerState({ run: progressRun, records: persistedRecords });
+      };
       try {
         const syncResponse = await requestImmediateSync();
         if (!syncResponse.ok) {
-          throw new Error(syncResponse.error ?? "Listings could not be synchronized before evaluation.");
-        }
-        const recordsByRun = groupRecordsByRun(detailedRecords);
-        for (const [sourceRunId, sourceRecords] of recordsByRun) {
-          await evaluateDetailedRecordsInBatches(
-            sourceRunId,
-            recipeForRun,
-            sourceRecords,
-            {
-              locale,
-              signal: abortController.signal,
-              onBatchComplete: async (batch) => {
-                persistedEvaluations.push(...batch);
-                persistedRecords = mergeRecordEvaluations(persistedRecords, batch);
-                const progressRun: ScrapeRun = {
-                  ...evaluatingRun,
-                  evaluated: persistedEvaluations.length,
-                  relevant: persistedEvaluations.filter((item) => item.decision === "relevant").length,
-                  notRelevant: persistedEvaluations.filter((item) => item.decision === "not-relevant").length,
-                  review: persistedEvaluations.filter((item) => item.decision === "review").length,
-                };
-                setRun(progressRun);
-                setRecords(persistedRecords);
-                await saveCrawlerState({ run: progressRun, records: persistedRecords });
+          await persistOutcome(createEvaluationFailureOutcome(detailedRecords, new FilterApiError(
+            "Listings could not be synchronized before evaluation.",
+            undefined,
+            "SYNC_FAILED",
+          )));
+        } else {
+          const recordsByRun = groupRecordsByRun(detailedRecords);
+          for (const [sourceRunId, sourceRecords] of recordsByRun) {
+            await evaluateDetailedRecordsInBatches(
+              sourceRunId,
+              recipeForRun,
+              sourceRecords,
+              {
+                locale,
+                force: !pendingOnly,
+                signal: abortController.signal,
+                onBatchComplete: async (batch) => persistOutcome(batch),
               },
-            },
-          );
+            );
+          }
         }
-        const nextRun = runWithEvaluations(evaluatingRun, persistedEvaluations);
+        const nextRun = runWithEvaluationState(evaluatingRun, persistedRecords, allDetailedRecords);
         setRun(nextRun);
         setRecords(persistedRecords);
         await saveCrawlerState({ run: nextRun, records: persistedRecords });
       } catch (caught) {
-        const intelligenceError = filterApiErrorDescriptor(caught);
-        const nextRun: ScrapeRun = {
-          ...evaluatingRun,
-          status: "completed",
-          intelligenceStatus: "failed",
-          intelligenceError,
-          message: extensionMessage("run.reevaluationFailed"),
-        };
+        if (abortController.signal.aborted) throw caught;
+        const resolvedIds = new Set([
+          ...attemptOutcome.evaluations.map((item) => item.listingId),
+          ...attemptOutcome.failures.map((item) => item.listingId),
+        ]);
+        const unresolvedRecords = detailedRecords.filter((record) => !resolvedIds.has(record.id));
+        if (unresolvedRecords.length > 0) {
+          await persistOutcome(createEvaluationFailureOutcome(unresolvedRecords, caught));
+        }
+        const nextRun = runWithEvaluationState(evaluatingRun, persistedRecords, allDetailedRecords);
         setRun(nextRun);
+        setRecords(persistedRecords);
         await saveCrawlerState({ run: nextRun, records: persistedRecords });
-        throw intelligenceError;
       } finally {
         reevaluationAbortRef.current = undefined;
       }
@@ -888,7 +929,7 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
                   type="button"
                   size="sm"
                   variant="ghost"
-                  onClick={handleReevaluate}
+                  onClick={() => void handleReevaluate(false)}
                   disabled={reevaluationPending || isRunActive || !recipe.enabled || records.every((record) => record.status !== "detailed")}
                 >
                   {reevaluationPending ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}
@@ -1029,14 +1070,15 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
             </div>
           )}
 
-          {run.intelligenceStatus === "failed" && (
-            <div className="inline-alert danger" role="alert">
-              <AlertTriangle size={16} />
-              <LocalizedMessageView
-                value={run.intelligenceError}
-                fallbackId="results.intelligenceFailed"
-              />
-            </div>
+          {(run.intelligenceStatus === "partial" || run.intelligenceStatus === "failed") && (
+            <EvaluationRecoveryAlert
+              status={run.intelligenceStatus}
+              evaluated={successfulEvaluationCount}
+              failures={evaluationFailures}
+              pending={reevaluationPending}
+              onRetry={() => void handleReevaluate(true)}
+              onCopyRequestId={(requestId) => void handleCopyRequestId(requestId)}
+            />
           )}
 
           <div className="results-head">
@@ -1089,6 +1131,23 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
                 <option value="not-relevant">{t("decision.not-relevant")}</option>
                 <option value="review">{t("decision.review")}</option>
               </Select>
+              <label className="page-size-control">
+                <span>{t("results.recordsPerPage")}</span>
+                <Select
+                  aria-label={t("results.recordsPerPage")}
+                  value={recordsPageSize}
+                  onChange={(event) => {
+                    setRecordsPageSize(parseRecordsPageSize(event.target.value));
+                    setResultsPage(1);
+                  }}
+                >
+                  {RECORDS_PAGE_SIZES.map((pageSize) => (
+                    <option key={pageSize} value={pageSize}>
+                      {t("results.perPageOption", { count: pageSize })}
+                    </option>
+                  ))}
+                </Select>
+              </label>
               <Button
                 type="button"
                 size="sm"
@@ -1174,6 +1233,7 @@ interface ResultsViewState {
   decision: "all" | ListingEvaluation["decision"];
   query: string;
   page: number;
+  pageSize: RecordsPageSize;
 }
 
 export function parseResultsViewState(search: string): ResultsViewState {
@@ -1187,7 +1247,14 @@ export function parseResultsViewState(search: string): ResultsViewState {
     decision,
     query: params.get("q")?.trim() ?? "",
     page: Number.isInteger(rawPage) && rawPage > 0 ? rawPage : 1,
+    pageSize: parseRecordsPageSize(params.get("pageSize")),
   };
+}
+
+export function parseRecordsPageSize(value: unknown): RecordsPageSize {
+  const parsedValue = Number(value);
+  return RECORDS_PAGE_SIZES.find((pageSize) => pageSize === parsedValue)
+    ?? DEFAULT_RECORDS_PAGE_SIZE;
 }
 
 export function resolveResultsPage(
@@ -1376,30 +1443,139 @@ function Metric({ label, value }: MetricProps) {
   );
 }
 
+interface EvaluationRecoveryAlertProps {
+  status: "partial" | "failed";
+  evaluated: number;
+  failures: ListingEvaluationFailure[];
+  pending: boolean;
+  onRetry: () => void;
+  onCopyRequestId: (requestId: string) => void;
+}
+
+function EvaluationRecoveryAlert({
+  status,
+  evaluated,
+  failures,
+  pending,
+  onRetry,
+  onCopyRequestId,
+}: EvaluationRecoveryAlertProps) {
+  const { formatNumber, t } = useExtensionI18n();
+  const retryableCount = failures.filter((failure) => failure.retryable).length;
+  const requestIds = Array.from(new Set(
+    failures.flatMap((failure) => failure.requestId ? [failure.requestId] : []),
+  ));
+  const uniqueFailures = Array.from(new Map(
+    failures.map((failure) => [failure.code, failure]),
+  ).values());
+
+  return (
+    <div
+      className={`inline-alert intelligence-recovery ${status === "failed" ? "danger" : "warning"}`}
+      role={status === "failed" ? "alert" : "status"}
+      aria-atomic="true"
+    >
+      <AlertTriangle aria-hidden="true" size={16} />
+      <div className="intelligence-recovery-copy">
+        <strong>
+          {status === "failed"
+            ? t("results.intelligenceFailedPreserved")
+            : t("results.intelligencePartial", {
+                count: failures.length,
+                evaluated: formatNumber(evaluated),
+                pending: formatNumber(failures.length),
+                total: formatNumber(evaluated + failures.length),
+              })}
+        </strong>
+        {retryableCount > 0 && (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            disabled={pending}
+            onClick={onRetry}
+          >
+            {pending ? <LoaderCircle className="spin" aria-hidden="true" size={14} /> : <RefreshCw aria-hidden="true" size={14} />}
+            {pending
+              ? t("intelligence.reevaluating")
+              : t("intelligence.retryPending", {
+                  count: retryableCount,
+                })}
+          </Button>
+        )}
+        {(uniqueFailures.length > 0 || requestIds.length > 0) && (
+          <details className="intelligence-failure-details">
+            <summary>{t("results.intelligenceFailureDetails")}</summary>
+            <div>
+              {uniqueFailures.map((failure) => (
+                <LocalizedMessageView
+                  key={failure.code}
+                  value={evaluationFailureDescriptor(failure)}
+                />
+              ))}
+              {requestIds.map((requestId) => (
+                <div className="request-id-row" key={requestId}>
+                  <span>{t("results.requestId")}</span>
+                  <code translate="no">{requestId}</code>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => onCopyRequestId(requestId)}
+                  >
+                    {t("action.copyRequestId")}
+                  </Button>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+      </div>
+    </div>
+  );
+}
+
+interface EvaluationFailureNoticeProps {
+  failure: ListingEvaluationFailure;
+  hasPreviousEvaluation: boolean;
+}
+
+function EvaluationFailureNotice({
+  failure,
+  hasPreviousEvaluation,
+}: EvaluationFailureNoticeProps) {
+  const { t } = useExtensionI18n();
+  return (
+    <section className="evaluation-failure-notice" role="status">
+      <AlertTriangle aria-hidden="true" size={15} />
+      <div>
+        <strong>
+          {hasPreviousEvaluation
+            ? t("evaluation.pendingWithPrevious")
+            : t("evaluation.pending")}
+        </strong>
+        <LocalizedMessageView value={evaluationFailureDescriptor(failure)} />
+      </div>
+    </section>
+  );
+}
+
 interface PropertyRecordCardProps {
   record: ScrapedPropertyRecord;
 }
 
 function PropertyRecordCard({ record }: PropertyRecordCardProps) {
   const { formatNumber, resolveText, t } = useExtensionI18n();
-  const imageCount = record.imageUrls?.length ?? (record.imageUrl ? 1 : 0);
   const recordError = resolveText(record.error);
+  const displayTitle = record.title ?? t("record.titleUnavailable");
 
   return (
     <article className="record-card" role="listitem">
       <div className="record-main">
-        <div
-          className="image-fallback"
-          role="img"
-          aria-label={imageCount > 0
-            ? t("record.imagesStored", { count: imageCount })
-            : t("record.noImage")}
-        >
-          <Search size={22} />
-        </div>
+        <PropertyImagePreview record={record} title={displayTitle} />
         <div>
           <div className="record-title-row">
-            <h3>{record.title ?? t("record.titleUnavailable")}</h3>
+            <h3>{displayTitle}</h3>
             <a className="btn sm icon" href={record.listingUrl} target="_blank" rel="noreferrer" aria-label={t("record.openListing")}>
               <ExternalLink size={14} />
             </a>
@@ -1419,6 +1595,13 @@ function PropertyRecordCard({ record }: PropertyRecordCardProps) {
       </div>
 
       {record.description && <p className="record-description">{record.description}</p>}
+
+      {record.evaluationFailure && (
+        <EvaluationFailureNotice
+          failure={record.evaluationFailure}
+          hasPreviousEvaluation={Boolean(record.evaluation)}
+        />
+      )}
 
       {record.evaluation && <EvaluationSummary evaluation={record.evaluation} />}
 
@@ -1440,6 +1623,146 @@ function PropertyRecordCard({ record }: PropertyRecordCardProps) {
       </div>
     </article>
   );
+}
+
+interface PropertyImagePreviewProps {
+  record: ScrapedPropertyRecord;
+  title: string;
+}
+
+function PropertyImagePreview({ record, title }: PropertyImagePreviewProps) {
+  const { formatNumber, t } = useExtensionI18n();
+  const imageUrls = useMemo(() => getRecordImageUrls(record), [record]);
+  const imageSignature = imageUrls.join("\n");
+  const [activeImageIndex, setActiveImageIndex] = useState(0);
+  const [failedImageUrls, setFailedImageUrls] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    setActiveImageIndex(0);
+    setFailedImageUrls(new Set());
+  }, [imageSignature]);
+
+  const activeImageUrl = imageUrls[activeImageIndex];
+  const hasVisibleImage = Boolean(activeImageUrl && !failedImageUrls.has(activeImageUrl));
+  const availableImageCount = imageUrls.filter((url) => !failedImageUrls.has(url)).length;
+
+  function moveImage(direction: -1 | 1) {
+    const nextIndex = findAvailableImageIndex(
+      imageUrls,
+      activeImageIndex,
+      direction,
+      failedImageUrls,
+    );
+    if (nextIndex !== undefined) setActiveImageIndex(nextIndex);
+  }
+
+  function handleImageError() {
+    if (!activeImageUrl) return;
+    const nextFailedImageUrls = new Set(failedImageUrls);
+    nextFailedImageUrls.add(activeImageUrl);
+    setFailedImageUrls(nextFailedImageUrls);
+    const nextIndex = findAvailableImageIndex(
+      imageUrls,
+      activeImageIndex,
+      1,
+      nextFailedImageUrls,
+    );
+    if (nextIndex !== undefined) setActiveImageIndex(nextIndex);
+  }
+
+  return (
+    <figure className="record-gallery">
+      {hasVisibleImage && activeImageUrl ? (
+        <img
+          key={activeImageUrl}
+          src={activeImageUrl}
+          alt={t("record.imageAlt", {
+            index: formatNumber(activeImageIndex + 1),
+            title,
+            total: formatNumber(imageUrls.length),
+          })}
+          loading="lazy"
+          decoding="async"
+          referrerPolicy="no-referrer"
+          onError={handleImageError}
+        />
+      ) : (
+        <div
+          className="image-fallback"
+          role="img"
+          aria-label={imageUrls.length > 0 ? t("record.imageUnavailable") : t("record.noImage")}
+        >
+          <Search aria-hidden="true" size={22} />
+          <span>{imageUrls.length > 0 ? t("record.imageUnavailable") : t("record.noImage")}</span>
+        </div>
+      )}
+
+      {imageUrls.length > 1 && availableImageCount > 1 && (
+        <>
+          <Button
+            className="gallery-nav previous"
+            size="sm"
+            variant="ghost"
+            iconOnly
+            aria-label={t("record.previousImage", { title })}
+            onClick={() => moveImage(-1)}
+          >
+            <ChevronLeft aria-hidden="true" size={16} />
+          </Button>
+          <Button
+            className="gallery-nav next"
+            size="sm"
+            variant="ghost"
+            iconOnly
+            aria-label={t("record.nextImage", { title })}
+            onClick={() => moveImage(1)}
+          >
+            <ChevronRight aria-hidden="true" size={16} />
+          </Button>
+        </>
+      )}
+
+      {imageUrls.length > 1 && hasVisibleImage && (
+        <figcaption className="gallery-counter" aria-live="polite">
+          {formatNumber(activeImageIndex + 1)} / {formatNumber(imageUrls.length)}
+        </figcaption>
+      )}
+    </figure>
+  );
+}
+
+export function getRecordImageUrls(record: ScrapedPropertyRecord): string[] {
+  const imageUrls: string[] = [];
+  const seen = new Set<string>();
+
+  for (const candidate of [record.imageUrl, ...(record.imageUrls ?? [])]) {
+    if (typeof candidate !== "string" || !candidate.trim()) continue;
+    try {
+      const normalizedUrl = new URL(candidate.trim(), record.listingUrl);
+      if (normalizedUrl.protocol !== "http:" && normalizedUrl.protocol !== "https:") continue;
+      if (seen.has(normalizedUrl.href)) continue;
+      seen.add(normalizedUrl.href);
+      imageUrls.push(normalizedUrl.href);
+    } catch {
+      // Ignore malformed or unsafe image locations persisted by older builds.
+    }
+  }
+
+  return imageUrls;
+}
+
+function findAvailableImageIndex(
+  imageUrls: readonly string[],
+  activeIndex: number,
+  direction: -1 | 1,
+  failedImageUrls: ReadonlySet<string>,
+): number | undefined {
+  for (let offset = 1; offset <= imageUrls.length; offset += 1) {
+    const candidateIndex = (activeIndex + (offset * direction) + imageUrls.length) % imageUrls.length;
+    const candidateUrl = imageUrls[candidateIndex];
+    if (candidateUrl && !failedImageUrls.has(candidateUrl)) return candidateIndex;
+  }
+  return undefined;
 }
 
 interface FactProps {
@@ -1511,17 +1834,42 @@ function EvaluationSummary({ evaluation }: EvaluationSummaryProps) {
   );
 }
 
-function runWithEvaluations(run: ScrapeRun, evaluations: ListingEvaluation[]): ScrapeRun {
+function runWithEvaluationState(
+  run: ScrapeRun,
+  records: ScrapedPropertyRecord[],
+  scopedRecords: ScrapedPropertyRecord[],
+): ScrapeRun {
+  const scopedIds = new Set(scopedRecords.map((record) => record.id));
+  const currentRecords = records.filter((record) => scopedIds.has(record.id));
+  const failures = currentRecords.flatMap((record) => (
+    record.evaluationFailure ? [record.evaluationFailure] : []
+  ));
+  const evaluations = currentRecords.flatMap((record) => (
+    record.evaluation && !record.evaluationFailure ? [record.evaluation] : []
+  ));
+  const intelligenceStatus = failures.length === 0
+    ? "completed" as const
+    : evaluations.length > 0
+      ? "partial" as const
+      : "failed" as const;
   return {
     ...run,
     status: "completed",
-    intelligenceStatus: "completed",
-    intelligenceError: undefined,
+    intelligenceStatus,
+    intelligenceError: failures[0] ? evaluationFailureDescriptor(failures[0]) : undefined,
     evaluated: evaluations.length,
     relevant: evaluations.filter((evaluation) => evaluation.decision === "relevant").length,
     notRelevant: evaluations.filter((evaluation) => evaluation.decision === "not-relevant").length,
     review: evaluations.filter((evaluation) => evaluation.decision === "review").length,
-    message: extensionMessage("run.reevaluated", { count: evaluations.length }),
+    message: failures.length === 0
+      ? extensionMessage("run.reevaluated", { count: evaluations.length })
+      : evaluations.length > 0
+        ? extensionMessage("run.intelligencePartial", {
+            evaluated: evaluations.length,
+            pending: failures.length,
+            total: evaluations.length + failures.length,
+          })
+        : extensionMessage("run.intelligenceFailedPreserved"),
   };
 }
 

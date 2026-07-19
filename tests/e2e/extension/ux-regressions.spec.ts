@@ -320,6 +320,11 @@ test.describe("Denicheur extension UX regressions", () => {
           listingUrl: `https://www.leboncoin.fr/ad/ventes_immobilieres/${3_100_000_000 + number}`,
           title: `Fixture property ${number}`,
           location: number === 55 ? "Unique Plouha" : "Bretagne",
+          imageUrl: number === 1 ? "https://img.leboncoin.fr/fixture-1-a.png" : undefined,
+          imageUrls: number === 1 ? [
+            "https://img.leboncoin.fr/fixture-1-a.png",
+            "https://img.leboncoin.fr/fixture-1-b.png",
+          ] : undefined,
           features: [],
           scrapedAt: "2026-07-17T10:00:00.000Z",
           searchRunId: "ux-pagination",
@@ -333,6 +338,16 @@ test.describe("Denicheur extension UX regressions", () => {
 
     await expect(page.getByRole("listitem")).toHaveCount(24);
     await expect(page.getByRole("navigation", { name: "Page 1 of 3" })).toBeVisible();
+    const firstRecord = page.getByRole("listitem").filter({
+      has: page.getByRole("heading", { name: "Fixture property 1" }),
+    });
+    const firstImage = firstRecord.getByRole("img", { name: "Image 1 of 2: Fixture property 1" });
+    await expect(firstImage).toBeVisible();
+    await expect(firstImage).toHaveJSProperty("naturalWidth", 1);
+    await firstRecord.getByRole("button", { name: "Next image for Fixture property 1" }).click();
+    await expect(firstRecord.getByRole("img", { name: "Image 2 of 2: Fixture property 1" })).toBeVisible();
+    await firstRecord.getByRole("button", { name: "Previous image for Fixture property 1" }).click();
+    await expect(firstRecord.getByRole("img", { name: "Image 1 of 2: Fixture property 1" })).toBeVisible();
     await page.getByRole("button", { name: "Next page" }).click();
     await expect(page).toHaveURL(/(?:\?|&)page=2(?:&|$)/u);
     await expect(page.getByRole("listitem")).toHaveCount(24);
@@ -340,9 +355,26 @@ test.describe("Denicheur extension UX regressions", () => {
     await expect(page).toHaveURL(/(?:\?|&)page=3(?:&|$)/u);
     await expect(page.getByRole("listitem")).toHaveCount(7);
 
+    const recordsPerPage = page.getByRole("combobox", { name: "Listings per page" });
+    await recordsPerPage.selectOption("12");
+    await expect(recordsPerPage).toHaveValue("12");
+    await expect(page).toHaveURL(/(?:\?|&)pageSize=12(?:&|$)/u);
+    await expect(page).not.toHaveURL(/(?:\?|&)page=/u);
+    await expect(page.getByRole("listitem")).toHaveCount(12);
+    await expect(page.getByRole("navigation", { name: "Page 1 of 5" })).toBeVisible();
+
     await page.reload();
-    await expect(page).toHaveURL(/(?:\?|&)page=3(?:&|$)/u);
-    await expect(page.getByRole("listitem")).toHaveCount(7);
+    await expect(recordsPerPage).toHaveValue("12");
+    await expect(page.getByRole("listitem")).toHaveCount(12);
+
+    await recordsPerPage.selectOption("48");
+    await expect(page).toHaveURL(/(?:\?|&)pageSize=48(?:&|$)/u);
+    await expect(page.getByRole("listitem")).toHaveCount(48);
+    await expect(page.getByRole("navigation", { name: "Page 1 of 2" })).toBeVisible();
+
+    await page.reload();
+    await expect(recordsPerPage).toHaveValue("48");
+    await expect(page.getByRole("listitem")).toHaveCount(48);
 
     const popup = await context.newPage();
     await popup.goto(extensionUrl(extensionId, "popup.html"));
@@ -352,13 +384,233 @@ test.describe("Denicheur extension UX regressions", () => {
       const url = new URL(candidate.url());
       return url.protocol === "chrome-extension:" && url.pathname === "/dashboard.html";
     }).length).toBe(1);
-    await expect(page).toHaveURL(/(?:\?|&)page=3(?:&|$)/u);
+    await expect(page).toHaveURL(/(?:\?|&)pageSize=48(?:&|$)/u);
+    await expect(page).not.toHaveURL(/(?:\?|&)page=/u);
 
     await page.getByRole("searchbox", { name: "Search stored listings" }).fill("Unique Plouha");
     await expect(page.getByRole("heading", { name: "Fixture property 55" })).toBeVisible();
     await expect(page.getByRole("listitem")).toHaveCount(1);
     await expect(page).toHaveURL(/(?:\?|&)q=Unique\+Plouha(?:&|$)/u);
     await expect(page).not.toHaveURL(/(?:\?|&)page=/u);
+  });
+
+  test("recovers a partial evaluation by retrying only the failed listing", async ({
+    context,
+    page,
+    extensionId,
+  }) => {
+    const apiBaseUrl = "http://127.0.0.1:14310";
+    const recipe = {
+      id: "recovery-recipe",
+      version: 1,
+      name: "Recovery fixture",
+      threshold: 70,
+      enabled: true,
+      criteria: [{
+        id: "garden",
+        name: "Garden",
+        description: "The listing explicitly describes a garden.",
+        weight: 100,
+        required: true,
+      }],
+    };
+    const evaluationRequests: Array<Record<string, unknown>> = [];
+
+    await context.route(`${apiBaseUrl}/v1/recipes/active`, (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ...recipe,
+        active: true,
+        createdAt: "2026-07-19T10:00:00.000Z",
+        enabled: undefined,
+      }),
+    }));
+    await context.route(`${apiBaseUrl}/v1/ingestion/runs/recovery-run`, async (route) => {
+      const payload = route.request().postDataJSON() as { listings?: unknown[] };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          runId: "recovery-run",
+          accepted: payload.listings?.length ?? 0,
+          inserted: payload.listings?.length ?? 0,
+          updated: 0,
+          unchanged: 0,
+        }),
+      });
+    });
+    await context.route(`${apiBaseUrl}/v1/runs/recovery-run/evaluations`, async (route) => {
+      evaluationRequests.push(route.request().postDataJSON() as Record<string, unknown>);
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          requestId: "request-retry",
+          runId: "recovery-run",
+          locale: "en",
+          recipeId: recipe.id,
+          recipeVersion: recipe.version,
+          status: "completed",
+          items: [{
+            listingId: "leboncoin:3100000102",
+            status: "succeeded",
+            attemptId: "attempt-retry",
+            evaluation: {
+              listingId: "leboncoin:3100000102",
+              decision: "not-relevant",
+              score: 30,
+              summary: "The garden requirement is not documented.",
+              criteria: [{
+                criterionId: "garden",
+                verdict: "fail",
+                reason: "No private garden is described.",
+                evidence: ["Appartement sans extérieur"],
+              }],
+              missingData: [],
+              evaluatedAt: "2026-07-19T10:02:00.000Z",
+            },
+            evaluator: {
+              provider: "openai",
+              model: "gpt-5-mini-2025-08-07",
+              version: "filter-v2",
+            },
+          }],
+        }),
+      });
+    });
+
+    await page.goto(extensionUrl(extensionId, "dashboard.html"));
+    await clearExtensionStorage(page, "en");
+    await page.evaluate(async ({ recipe }) => {
+      const previousEvaluation = (listingId: string) => ({
+        listingId,
+        decision: "relevant",
+        score: 90,
+        summary: "Previous valid evaluation.",
+        criteria: [{
+          criterionId: "garden",
+          verdict: "pass",
+          reason: "The previous snapshot described a garden.",
+          evidence: ["Garden"],
+        }],
+        missingData: [],
+        evaluatedAt: "2026-07-19T09:00:00.000Z",
+        evaluator: { provider: "openai", model: "gpt-5-mini", version: "filter-v1" },
+        recipeId: recipe.id,
+        recipeVersion: recipe.version,
+        locale: "en",
+      });
+      await chrome.storage.local.set({
+        "denicheur:intelligence:recipe": recipe,
+        "denicheur:sync:state": {
+          version: 1,
+          status: "idle",
+          queue: [],
+          syncedFingerprints: {},
+          activeRecipe: {
+            status: "cached",
+            recipeId: recipe.id,
+            recipeVersion: recipe.version,
+            fetchedAt: "2026-07-19T09:30:00.000Z",
+          },
+        },
+        "denicheur:crawler:run": {
+          id: "recovery-run",
+          status: "completed",
+          target: 2,
+          found: 2,
+          pagesVisited: 1,
+          collected: 2,
+          evaluated: 1,
+          relevant: 1,
+          notRelevant: 0,
+          review: 0,
+          filterWarnings: [],
+          intelligenceStatus: "partial",
+          intelligenceError: { id: "error.apiInvalidOutput" },
+          message: {
+            id: "run.intelligencePartial",
+            values: { evaluated: 1, total: 2, pending: 1 },
+          },
+        },
+        "denicheur:crawler:records": [
+          {
+            id: "3100000101",
+            source: "leboncoin",
+            listingUrl: "https://www.leboncoin.fr/ad/ventes_immobilieres/3100000101",
+            title: "Successful fixture",
+            description: "Maison avec jardin.",
+            features: ["Garden"],
+            scrapedAt: "2026-07-19T08:00:00.000Z",
+            searchRunId: "recovery-run",
+            status: "detailed",
+            rawTextSample: "Maison avec jardin",
+            evaluation: previousEvaluation("3100000101"),
+          },
+          {
+            id: "3100000102",
+            source: "leboncoin",
+            listingUrl: "https://www.leboncoin.fr/ad/ventes_immobilieres/3100000102",
+            title: "Pending fixture",
+            description: "Appartement sans extérieur.",
+            features: [],
+            scrapedAt: "2026-07-19T08:01:00.000Z",
+            searchRunId: "recovery-run",
+            status: "detailed",
+            rawTextSample: "Appartement sans extérieur",
+            evaluation: previousEvaluation("3100000102"),
+            evaluationFailure: {
+              listingId: "3100000102",
+              code: "UNKNOWN_EVIDENCE_ID",
+              stage: "semantic",
+              retryable: true,
+              requestId: "request-partial",
+            },
+          },
+        ],
+      });
+    }, { recipe });
+    await page.reload();
+
+    await expect(page.getByText("1 of 2 evaluated · 1 pending", { exact: true })).toBeVisible();
+    await expect(page.getByText(
+      "Intelligence evaluation failed. Your scraped records were preserved.",
+      { exact: true },
+    )).toHaveCount(0);
+    await page.getByText("Evaluation details", { exact: true }).click();
+    await expect(page.getByText("request-partial", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Copy request ID" })).toBeVisible();
+    const pendingRecord = page.getByRole("listitem").filter({
+      has: page.getByRole("heading", { name: "Pending fixture" }),
+    });
+    await expect(pendingRecord).toContainText(
+      "A new evaluation is pending. The last valid result is preserved.",
+    );
+
+    await page.getByRole("button", { name: "Retry 1 evaluation" }).click();
+
+    await expect.poll(() => evaluationRequests).toEqual([expect.objectContaining({
+      locale: "en",
+      recipeId: recipe.id,
+      recipeVersion: recipe.version,
+      listingIds: ["leboncoin:3100000102"],
+    })]);
+    expect(evaluationRequests[0]).not.toHaveProperty("force");
+    await expect(page.getByText("1 of 2 evaluated · 1 pending", { exact: true })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Retry 1 evaluation" })).toHaveCount(0);
+    await expect(pendingRecord).not.toContainText("A new evaluation is pending.");
+
+    const persistedPending = await page.evaluate(async () => {
+      const values = await chrome.storage.local.get("denicheur:crawler:records");
+      return (values["denicheur:crawler:records"] as Array<Record<string, unknown>>)
+        .find((record) => record.id === "3100000102");
+    });
+    expect(persistedPending).not.toHaveProperty("evaluationFailure");
+    expect(persistedPending?.evaluation).toMatchObject({
+      decision: "not-relevant",
+      evaluator: { version: "filter-v2" },
+    });
   });
 });
 

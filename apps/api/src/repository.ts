@@ -17,11 +17,14 @@ import {
   runIngestionSchema,
   runRecordSchema,
   type EvaluationRequest,
+  type EvaluationFailureStage,
+  type Evaluator,
   type FilterListingsResponse,
   type IngestionRequest,
   type IngestionResponse,
   type ListingDetail,
   type ListingEvaluationRecord,
+  type ListingEvaluationResult,
   type ListingIdentity,
   type ListingIngestion,
   type ListingRecord,
@@ -125,6 +128,45 @@ export const DATABASE_MIGRATIONS: readonly Migration[] = [
       CREATE INDEX evaluations_run_idx ON evaluations(run_id, evaluated_at DESC);
     `,
   },
+  {
+    version: 2,
+    sql: `
+      ALTER TABLE evaluations ADD COLUMN input_fingerprint TEXT;
+
+      CREATE TABLE evaluation_attempts (
+        attempt_id TEXT PRIMARY KEY,
+        request_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        source TEXT NOT NULL,
+        external_id TEXT NOT NULL,
+        recipe_id TEXT NOT NULL,
+        recipe_version INTEGER NOT NULL,
+        locale TEXT NOT NULL,
+        input_fingerprint TEXT NOT NULL,
+        attempt_number INTEGER NOT NULL CHECK (attempt_number > 0),
+        status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed')),
+        started_at TEXT NOT NULL,
+        completed_at TEXT,
+        evaluator_json TEXT CHECK (evaluator_json IS NULL OR json_valid(evaluator_json)),
+        result_json TEXT CHECK (result_json IS NULL OR json_valid(result_json)),
+        response_id TEXT,
+        error_code TEXT,
+        error_stage TEXT,
+        criterion_id TEXT,
+        retryable INTEGER CHECK (retryable IS NULL OR retryable IN (0, 1)),
+        FOREIGN KEY (run_id, source, external_id)
+          REFERENCES run_listings(run_id, source, external_id) ON DELETE CASCADE,
+        FOREIGN KEY (recipe_id, recipe_version) REFERENCES recipe_versions(id, version)
+      ) STRICT;
+
+      CREATE INDEX evaluation_attempts_listing_idx
+        ON evaluation_attempts(run_id, source, external_id, recipe_id, recipe_version, locale, started_at DESC);
+      CREATE INDEX evaluation_attempts_fingerprint_idx
+        ON evaluation_attempts(input_fingerprint, status, started_at DESC);
+      CREATE INDEX evaluations_fingerprint_idx
+        ON evaluations(input_fingerprint);
+    `,
+  },
 ];
 
 interface StoredListingRow extends Record<string, unknown> {
@@ -167,6 +209,26 @@ interface StoredEvaluationRow extends Record<string, unknown> {
   readonly locale: string;
   readonly evaluator_json: string;
   readonly result_json: string;
+  readonly input_fingerprint: string | null;
+}
+
+export interface EvaluationAttemptInput {
+  readonly attemptId: string;
+  readonly requestId: string;
+  readonly runId: string;
+  readonly listingId: string;
+  readonly recipeId: string;
+  readonly recipeVersion: number;
+  readonly locale: EvaluationRequest["locale"];
+  readonly inputFingerprint: string;
+}
+
+export interface EvaluationAttemptFailure {
+  readonly code: string;
+  readonly stage: EvaluationFailureStage;
+  readonly retryable: boolean;
+  readonly responseId?: string;
+  readonly criterionId?: string;
 }
 
 export interface RepositoryOptions {
@@ -193,6 +255,7 @@ const ACTIVE_RUN_STATUSES = [
   "evaluating",
   "paused-captcha",
 ] as const;
+const ABANDONED_EVALUATION_ATTEMPT_AFTER_MS = 15 * 60 * 1_000;
 
 export class DenicheurRepository {
   private readonly database: DatabaseSync;
@@ -204,6 +267,7 @@ export class DenicheurRepository {
     this.now = options.now ?? (() => new Date());
     this.database.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;");
     this.migrate();
+    this.reconcileAbandonedEvaluationAttempts();
   }
 
   close(): void {
@@ -241,6 +305,7 @@ export class DenicheurRepository {
 
       const deleted = this.collectedDataCounts();
       this.database.exec(`
+        DELETE FROM evaluation_attempts;
         DELETE FROM evaluations;
         DELETE FROM run_listings;
         DELETE FROM listings;
@@ -248,7 +313,7 @@ export class DenicheurRepository {
       `);
 
       const remaining = this.collectedDataCounts();
-      if (Object.values(remaining).some((count) => count !== 0)) {
+      if (Object.values(remaining).some((count) => count !== 0) || this.countEvaluationAttempts() !== 0) {
         throw new Error("Collected data cleanup did not leave every iteration table empty.");
       }
       return deleted;
@@ -438,44 +503,154 @@ export class DenicheurRepository {
     runId: string,
     identity: ListingIdentity,
     request: EvaluationRequest,
+    inputFingerprint?: string,
   ): ListingEvaluationRecord | undefined {
-    const row = this.database.prepare(`
-      SELECT * FROM evaluations
-      WHERE run_id = ? AND source = ? AND external_id = ?
-        AND recipe_id = ? AND recipe_version = ? AND locale = ?
-    `).get(
+    const fingerprintClause = inputFingerprint ? "AND input_fingerprint = ?" : "";
+    const parameters: SQLInputValue[] = [
       runId,
       identity.source,
       identity.externalId,
       request.recipeId,
       request.recipeVersion,
       request.locale,
-    ) as StoredEvaluationRow | undefined;
+      ...(inputFingerprint ? [inputFingerprint] : []),
+    ];
+    const row = this.database.prepare(`
+      SELECT * FROM evaluations
+      WHERE run_id = ? AND source = ? AND external_id = ?
+        AND recipe_id = ? AND recipe_version = ? AND locale = ?
+        ${fingerprintClause}
+    `).get(...parameters) as StoredEvaluationRow | undefined;
     return row ? rowToEvaluation(row) : undefined;
+  }
+
+  startEvaluationAttempt(input: EvaluationAttemptInput): void {
+    const identity = parseListingKey(input.listingId);
+    if (!identity) throw new Error(`Invalid evaluation attempt listing id: ${input.listingId}`);
+    const attemptNumber = readNumber(this.database.prepare(`
+      SELECT COALESCE(MAX(attempt_number), 0) + 1 AS attempt_number
+      FROM evaluation_attempts
+      WHERE run_id = ? AND source = ? AND external_id = ?
+        AND recipe_id = ? AND recipe_version = ? AND locale = ? AND input_fingerprint = ?
+    `).get(
+      input.runId,
+      identity.source,
+      identity.externalId,
+      input.recipeId,
+      input.recipeVersion,
+      input.locale,
+      input.inputFingerprint,
+    ), "attempt_number");
+    this.database.prepare(`
+      INSERT INTO evaluation_attempts (
+        attempt_id, request_id, run_id, source, external_id, recipe_id, recipe_version,
+        locale, input_fingerprint, attempt_number, status, started_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)
+    `).run(
+      input.attemptId,
+      input.requestId,
+      input.runId,
+      identity.source,
+      identity.externalId,
+      input.recipeId,
+      input.recipeVersion,
+      input.locale,
+      input.inputFingerprint,
+      attemptNumber,
+      this.now().toISOString(),
+    );
+  }
+
+  saveEvaluationResult(input: {
+    readonly attemptId: string;
+    readonly runId: string;
+    readonly locale: EvaluationRequest["locale"];
+    readonly recipeId: string;
+    readonly recipeVersion: number;
+    readonly evaluator: Evaluator;
+    readonly result: ListingEvaluationResult;
+    readonly inputFingerprint: string;
+    readonly responseId?: string;
+  }): ListingEvaluationRecord {
+    return this.transaction(() => {
+      const identity = parseListingKey(input.result.listingId);
+      if (!identity) throw new Error(`Invalid persisted listing id: ${input.result.listingId}`);
+      const transition = this.database.prepare(`
+        UPDATE evaluation_attempts
+        SET status = 'succeeded', completed_at = ?, evaluator_json = ?, result_json = ?, response_id = ?
+        WHERE attempt_id = ? AND status = 'running'
+          AND run_id = ? AND source = ? AND external_id = ?
+          AND recipe_id = ? AND recipe_version = ? AND locale = ? AND input_fingerprint = ?
+      `).run(
+        this.now().toISOString(),
+        JSON.stringify(input.evaluator),
+        JSON.stringify(input.result),
+        input.responseId ?? null,
+        input.attemptId,
+        input.runId,
+        identity.source,
+        identity.externalId,
+        input.recipeId,
+        input.recipeVersion,
+        input.locale,
+        input.inputFingerprint,
+      );
+      if (transition.changes !== 1) {
+        throw new Error("The evaluation attempt is missing, completed, or does not match the result.");
+      }
+      this.upsertEvaluation({
+        runId: input.runId,
+        locale: input.locale,
+        recipeId: input.recipeId,
+        recipeVersion: input.recipeVersion,
+        evaluator: input.evaluator,
+        result: input.result,
+        inputFingerprint: input.inputFingerprint,
+      });
+      const stored = this.findEvaluation(input.runId, identity, {
+        locale: input.locale,
+        recipeId: input.recipeId,
+        recipeVersion: input.recipeVersion,
+        listingIds: [input.result.listingId],
+      }, input.inputFingerprint);
+      if (!stored) throw new Error("The evaluation was not persisted.");
+      return stored;
+    });
+  }
+
+  failEvaluationAttempt(attemptId: string, failure: EvaluationAttemptFailure): void {
+    this.database.prepare(`
+      UPDATE evaluation_attempts
+      SET status = 'failed', completed_at = ?, response_id = ?, error_code = ?, error_stage = ?,
+        criterion_id = ?, retryable = ?
+      WHERE attempt_id = ? AND status = 'running'
+    `).run(
+      this.now().toISOString(),
+      failure.responseId ?? null,
+      failure.code,
+      failure.stage,
+      failure.criterionId ?? null,
+      failure.retryable ? 1 : 0,
+      attemptId,
+    );
+  }
+
+  countEvaluationAttempts(): number {
+    return readNumber(this.database.prepare("SELECT COUNT(*) AS total FROM evaluation_attempts").get(), "total");
   }
 
   saveEvaluationBatch(response: FilterListingsResponse): ListingEvaluationRecord[] {
     return this.transaction(() => response.results.map((result) => {
       const identity = parseListingKey(result.listingId);
       if (!identity) throw new Error(`Invalid persisted listing id: ${result.listingId}`);
-      this.database.prepare(`
-        INSERT OR IGNORE INTO evaluations (
-          run_id, source, external_id, recipe_id, recipe_version, locale, evaluated_at,
-          decision, score, evaluator_json, result_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        response.runId,
-        identity.source,
-        identity.externalId,
-        response.recipeId,
-        response.recipeVersion,
-        response.locale,
-        result.evaluatedAt,
-        result.decision,
-        result.score,
-        JSON.stringify(response.evaluator),
-        JSON.stringify(result),
-      );
+      this.upsertEvaluation({
+        runId: response.runId,
+        locale: response.locale,
+        recipeId: response.recipeId,
+        recipeVersion: response.recipeVersion,
+        evaluator: response.evaluator,
+        result,
+      });
       const stored = this.findEvaluation(response.runId, identity, {
         locale: response.locale,
         recipeId: response.recipeId,
@@ -485,6 +660,45 @@ export class DenicheurRepository {
       if (!stored) throw new Error("The evaluation was not persisted.");
       return stored;
     }));
+  }
+
+  private upsertEvaluation(input: {
+    readonly runId: string;
+    readonly locale: EvaluationRequest["locale"];
+    readonly recipeId: string;
+    readonly recipeVersion: number;
+    readonly evaluator: Evaluator;
+    readonly result: ListingEvaluationResult;
+    readonly inputFingerprint?: string;
+  }): void {
+    const identity = parseListingKey(input.result.listingId);
+    if (!identity) throw new Error(`Invalid persisted listing id: ${input.result.listingId}`);
+    this.database.prepare(`
+      INSERT INTO evaluations (
+        run_id, source, external_id, recipe_id, recipe_version, locale, evaluated_at,
+        decision, score, evaluator_json, result_json, input_fingerprint
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(run_id, source, external_id, recipe_id, recipe_version, locale) DO UPDATE SET
+        evaluated_at = excluded.evaluated_at,
+        decision = excluded.decision,
+        score = excluded.score,
+        evaluator_json = excluded.evaluator_json,
+        result_json = excluded.result_json,
+        input_fingerprint = COALESCE(excluded.input_fingerprint, evaluations.input_fingerprint)
+    `).run(
+      input.runId,
+      identity.source,
+      identity.externalId,
+      input.recipeId,
+      input.recipeVersion,
+      input.locale,
+      input.result.evaluatedAt,
+      input.result.decision,
+      input.result.score,
+      JSON.stringify(input.evaluator),
+      JSON.stringify(input.result),
+      input.inputFingerprint ?? null,
+    );
   }
 
   private migrate(): void {
@@ -506,6 +720,17 @@ export class DenicheurRepository {
           .run(migration.version, this.now().toISOString());
       });
     }
+  }
+
+  private reconcileAbandonedEvaluationAttempts(): void {
+    const now = this.now();
+    const cutoff = new Date(now.getTime() - ABANDONED_EVALUATION_ATTEMPT_AFTER_MS).toISOString();
+    this.database.prepare(`
+      UPDATE evaluation_attempts
+      SET status = 'failed', completed_at = ?, error_code = 'ATTEMPT_ABANDONED',
+        error_stage = 'internal', retryable = 1
+      WHERE status = 'running' AND started_at < ?
+    `).run(now.toISOString(), cutoff);
   }
 
   private collectedDataCounts(): CollectedDataCounts {

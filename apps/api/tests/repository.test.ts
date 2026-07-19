@@ -18,6 +18,215 @@ afterEach(() => {
 });
 
 describe("DenicheurRepository", () => {
+  it("migrates a version-one database to fingerprinted evaluations and safe attempt history", () => {
+    const directory = mkdtempSync(join(tmpdir(), "denicheur-api-v1-migration-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "denicheur.sqlite");
+    const legacy = new DatabaseSync(path);
+    try {
+      legacy.exec(`
+        CREATE TABLE schema_migrations (
+          version INTEGER PRIMARY KEY,
+          applied_at TEXT NOT NULL
+        ) STRICT;
+      `);
+      legacy.exec(DATABASE_MIGRATIONS[0]!.sql);
+      legacy.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (1, ?)")
+        .run(NOW.toISOString());
+    } finally {
+      legacy.close();
+    }
+
+    const repository = new DenicheurRepository({ path, now: () => NOW });
+    repository.close();
+    const inspection = new DatabaseSync(path);
+    try {
+      const versions = inspection.prepare("SELECT version FROM schema_migrations ORDER BY version")
+        .all().map((row) => row.version);
+      const evaluationColumns = inspection.prepare("PRAGMA table_info(evaluations)")
+        .all().map((row) => row.name);
+      const attemptColumns = inspection.prepare("PRAGMA table_info(evaluation_attempts)")
+        .all().map((row) => row.name);
+
+      expect(versions).toEqual([1, 2]);
+      expect(evaluationColumns).toContain("input_fingerprint");
+      expect(attemptColumns).toContain("result_json");
+      expect(attemptColumns).not.toContain("prompt");
+      expect(attemptColumns).not.toContain("raw_output");
+    } finally {
+      inspection.close();
+    }
+  });
+
+  it("keeps successful attempt results and removes attempt history during collected-data cleanup", () => {
+    const directory = mkdtempSync(join(tmpdir(), "denicheur-api-attempt-history-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "denicheur.sqlite");
+    const repository = new DenicheurRepository({ path, now: () => NOW });
+    repository.ingest(createIngestion([createListing()]));
+    const recipe = repository.saveRecipe("recipe-attempt", {
+      name: "Maison avec jardin",
+      threshold: 70,
+      criteria: [{
+        id: "garden",
+        name: "Jardin",
+        description: "Le bien doit disposer d'un jardin.",
+        weight: 1,
+        required: false,
+      }],
+    });
+    const attemptId = "attempt-success-1";
+    const inputFingerprint = "a".repeat(64);
+    repository.startEvaluationAttempt({
+      attemptId,
+      requestId: "request-attempt-1",
+      runId: "run-1",
+      listingId: "leboncoin:2876543210",
+      recipeId: recipe.id,
+      recipeVersion: recipe.version,
+      locale: "fr",
+      inputFingerprint,
+    });
+    repository.saveEvaluationResult({
+      attemptId,
+      runId: "run-1",
+      locale: "fr",
+      recipeId: recipe.id,
+      recipeVersion: recipe.version,
+      evaluator: { provider: "openai", model: "gpt-test", version: "1.0.0" },
+      inputFingerprint,
+      result: {
+        listingId: "leboncoin:2876543210",
+        decision: "relevant",
+        score: 100,
+        summary: "Le jardin est confirmé.",
+        criteria: [{
+          criterionId: "garden",
+          verdict: "pass",
+          reason: "Le jardin est explicitement mentionné.",
+          evidence: ["Jardin"],
+        }],
+        missingData: [],
+        evaluatedAt: NOW.toISOString(),
+      },
+    });
+
+    const inspection = new DatabaseSync(path);
+    try {
+      const attempt = inspection.prepare(`
+        SELECT status, result_json, error_code FROM evaluation_attempts WHERE attempt_id = ?
+      `).get(attemptId) as Record<string, unknown> | undefined;
+      expect(attempt).toMatchObject({ status: "succeeded", error_code: null });
+      expect(JSON.parse(String(attempt?.result_json))).toMatchObject({ listingId: "leboncoin:2876543210" });
+    } finally {
+      inspection.close();
+    }
+
+    expect(repository.countEvaluationAttempts()).toBe(1);
+    repository.clearCollectedData();
+    expect(repository.countEvaluationAttempts()).toBe(0);
+    repository.close();
+  });
+
+  it("does not persist a result when its running attempt identity is missing", () => {
+    const repository = createMemoryRepository();
+    repository.ingest(createIngestion([createListing()]));
+    const recipe = repository.saveRecipe("recipe-attempt-guard", {
+      name: "Maison avec jardin",
+      threshold: 70,
+      criteria: [{
+        id: "garden",
+        name: "Jardin",
+        description: "Le bien doit disposer d'un jardin.",
+        weight: 1,
+        required: false,
+      }],
+    });
+    const result = {
+      listingId: "leboncoin:2876543210",
+      decision: "relevant" as const,
+      score: 100,
+      summary: "Le jardin est confirmé.",
+      criteria: [{
+        criterionId: "garden",
+        verdict: "pass" as const,
+        reason: "Le jardin est explicitement mentionné.",
+        evidence: ["Jardin"],
+      }],
+      missingData: [],
+      evaluatedAt: NOW.toISOString(),
+    };
+
+    expect(() => repository.saveEvaluationResult({
+      attemptId: "missing-attempt",
+      runId: "run-1",
+      locale: "fr",
+      recipeId: recipe.id,
+      recipeVersion: recipe.version,
+      evaluator: { provider: "openai", model: "gpt-test", version: "2.0.0" },
+      inputFingerprint: "b".repeat(64),
+      result,
+    })).toThrow("evaluation attempt is missing");
+    expect(repository.findEvaluation("run-1", {
+      source: "leboncoin",
+      externalId: "2876543210",
+    }, {
+      locale: "fr",
+      recipeId: recipe.id,
+      recipeVersion: recipe.version,
+      listingIds: [result.listingId],
+    })).toBeUndefined();
+  });
+
+  it("reconciles stale running attempts after a process restart", () => {
+    const directory = mkdtempSync(join(tmpdir(), "denicheur-api-abandoned-attempt-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "denicheur.sqlite");
+    const first = new DenicheurRepository({ path, now: () => NOW });
+    first.ingest(createIngestion([createListing()]));
+    const recipe = first.saveRecipe("recipe-abandoned", {
+      name: "Maison avec jardin",
+      threshold: 70,
+      criteria: [{
+        id: "garden",
+        name: "Jardin",
+        description: "Le bien doit disposer d'un jardin.",
+        weight: 1,
+        required: false,
+      }],
+    });
+    first.startEvaluationAttempt({
+      attemptId: "attempt-abandoned",
+      requestId: "request-before-crash",
+      runId: "run-1",
+      listingId: "leboncoin:2876543210",
+      recipeId: recipe.id,
+      recipeVersion: recipe.version,
+      locale: "fr",
+      inputFingerprint: "c".repeat(64),
+    });
+    first.close();
+
+    const restartedAt = new Date(NOW.getTime() + (16 * 60 * 1_000));
+    const restarted = new DenicheurRepository({ path, now: () => restartedAt });
+    restarted.close();
+    const inspection = new DatabaseSync(path);
+    try {
+      expect(inspection.prepare(`
+        SELECT status, completed_at, error_code, error_stage, retryable
+        FROM evaluation_attempts WHERE attempt_id = ?
+      `).get("attempt-abandoned")).toMatchObject({
+        status: "failed",
+        completed_at: restartedAt.toISOString(),
+        error_code: "ATTEMPT_ABANDONED",
+        error_stage: "internal",
+        retryable: 1,
+      });
+    } finally {
+      inspection.close();
+    }
+  });
+
   it("reopens the same SQLite file with the ingested listing intact", () => {
     const directory = mkdtempSync(join(tmpdir(), "denicheur-api-"));
     temporaryDirectories.push(directory);

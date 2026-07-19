@@ -1,12 +1,18 @@
 .view {
   display: grid;
-  grid-template-columns: 292px minmax(420px, 1fr) 370px;
+  grid-template-columns: 292px minmax(420px, 1fr);
   height: 100%;
+  min-width: 0;
   min-height: 0;
+}
+
+.viewWithDetail {
+  grid-template-columns: 292px minmax(420px, 1fr) 390px;
 }
 
 .filterPanel,
 .detailPanel {
+  min-width: 0;
   min-height: 0;
   overflow: auto;
   border-color: var(--color-border);
@@ -139,6 +145,135 @@
   gap: var(--space-3);
 }
 
+.resultsSection {
+  min-height: 0;
+  border-bottom: 0;
+}
+
+.resultsHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.resultsHeader > span:last-child {
+  color: var(--color-text-muted);
+  font-size: var(--fs-mono-xs);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.resultsHint {
+  margin: 0 !important;
+}
+
+.resultsList {
+  display: flex;
+  max-height: min(48vh, 560px);
+  margin: 0;
+  padding: 2px 4px 2px 2px;
+  flex-direction: column;
+  gap: var(--space-2);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  list-style: none;
+}
+
+.resultItem {
+  content-visibility: auto;
+  contain-intrinsic-size: 78px;
+}
+
+.resultButton {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-2);
+  grid-template-columns: 58px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-3);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-3);
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  touch-action: manipulation;
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.resultButton:hover {
+  border-color: var(--color-border);
+  background: var(--color-surface-3);
+}
+
+.resultButton:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.resultActive {
+  border-color: var(--cta);
+  background: var(--cta-soft);
+  box-shadow: inset 3px 0 0 var(--cta);
+}
+
+.resultCopy,
+.resultTitleRow {
+  min-width: 0;
+}
+
+.resultCopy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.resultTitleRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.resultTitleRow strong {
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  font-size: var(--fs-body-sm);
+  line-height: 1.25;
+  text-overflow: ellipsis;
+}
+
+.resultPrice {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+}
+
+.resultLocation,
+.resultMeta {
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: var(--fs-mono-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resultsEmpty {
+  min-height: 150px;
+  padding: var(--space-5);
+}
+
 .mapStage {
   position: relative;
   min-width: 0;
@@ -152,6 +287,29 @@
 .mapCanvas {
   position: absolute;
   inset: 0;
+}
+
+.selectedMarker {
+  width: 34px;
+  height: 34px;
+  border: 4px solid var(--color-surface);
+  border-radius: 50%;
+  background: var(--cta);
+  box-shadow:
+    0 0 0 5px color-mix(in oklab, var(--cta) 34%, transparent),
+    var(--shadow-panel);
+  pointer-events: none;
+}
+
+.selectedMarker::after {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-surface);
+  content: "";
+  inset: 50% auto auto 50%;
+  translate: -50% -50%;
 }
 
 .statusOverlay {
@@ -326,6 +484,10 @@
   line-height: 1.45;
 }
 
+.unmappedNotice {
+  overflow-wrap: anywhere;
+}
+
 .decisionLegend {
   display: flex;
   flex-wrap: wrap;
@@ -335,6 +497,21 @@
 
 .detailCard {
   min-width: 0;
+}
+
+.detailVisual {
+  position: relative;
+}
+
+.closeDetail {
+  position: absolute;
+  z-index: 2;
+  top: var(--space-3);
+  right: var(--space-3);
+  border-color: color-mix(in oklab, var(--color-border) 72%, transparent) !important;
+  background: color-mix(in oklab, var(--color-surface) 92%, transparent) !important;
+  box-shadow: var(--shadow-panel);
+  backdrop-filter: blur(8px);
 }
 
 .detailHeading {
@@ -352,40 +529,165 @@
 }
 
 .detailHeading p {
+  display: flex;
   margin: var(--space-2) 0 0;
+  align-items: center;
+  gap: var(--space-1);
   color: var(--color-text-muted);
+  overflow-wrap: anywhere;
 }
 
 .detailPrice {
   display: block;
-  margin-top: var(--space-5);
-  font-size: var(--fs-h3);
+  font-family: var(--font-display);
+  font-size: var(--fs-h2);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
 }
 
 .detailFacts {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  margin: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-2);
-  margin: var(--space-4) 0;
 }
 
-.detailFacts span {
-  padding: var(--space-2) var(--space-3);
+.detailFacts > div {
+  min-width: 0;
+  padding: var(--space-3);
   border-radius: var(--radius-3);
   background: var(--color-surface-2);
 }
 
+.detailFacts dt,
+.detailFacts dd,
+.detailMetaList dt,
+.detailMetaList dd {
+  margin: 0;
+}
+
+.detailFacts dt,
+.detailMetaList dt {
+  color: var(--color-text-muted);
+  font-size: var(--fs-mono-xs);
+}
+
+.detailFacts dd {
+  margin-top: var(--space-1);
+  font-variant-numeric: tabular-nums;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.detailSection {
+  display: flex;
+  padding-top: var(--space-4);
+  flex-direction: column;
+  gap: var(--space-3);
+  border-top: 1px solid var(--color-border-soft);
+}
+
+.locationCard {
+  display: flex;
+  padding: var(--space-3);
+  align-items: flex-start;
+  gap: var(--space-3);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-3);
+  background: var(--color-surface-2);
+}
+
+.locationCard > svg {
+  flex: 0 0 auto;
+  color: var(--cta);
+}
+
+.locationCard > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.locationCard strong,
+.locationCard span {
+  overflow-wrap: anywhere;
+}
+
+.locationCard span {
+  color: var(--color-text-muted);
+  font-size: var(--fs-mono-xs);
+}
+
+.evaluationHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.detailText {
+  margin: 0;
+  color: var(--color-text-muted);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.detailDescription {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 8;
+  text-overflow: ellipsis;
+  white-space: pre-wrap;
+}
+
+.detailMetaList {
+  display: grid;
+  margin: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.detailMetaList > div {
+  min-width: 0;
+}
+
+.detailMetaList dd {
+  margin-top: var(--space-1);
+  overflow-wrap: anywhere;
+}
+
+.featureList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
 .sourceLink {
   display: inline-flex;
+  min-height: 42px;
+  padding: var(--space-3) var(--space-4);
   align-items: center;
+  justify-content: center;
   gap: var(--space-2);
+  border: 1px solid var(--cta);
+  border-radius: var(--radius-3);
+  background: var(--cta-soft);
   color: var(--cta);
   font-weight: 700;
   text-decoration: none;
+  touch-action: manipulation;
 }
 
 .sourceLink:hover {
-  text-decoration: underline;
+  background: color-mix(in oklab, var(--cta-soft) 72%, var(--cta));
+}
+
+.sourceLink:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 @media (max-width: 1180px) {
@@ -405,10 +707,17 @@
 
 @media (max-width: 820px) {
   .view {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     grid-template-rows: max-content 460px max-content;
     align-content: start;
     overflow: auto;
+  }
+
+  .filterPanel,
+  .mapStage,
+  .detailPanel {
+    width: 100%;
+    max-width: 100%;
   }
 
   .filterPanel {
@@ -422,6 +731,16 @@
 
   .detailPanel {
     grid-column: 1;
+  }
+
+  .resultsList {
+    max-height: 380px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .resultButton {
+    transition: none;
   }
 }
 

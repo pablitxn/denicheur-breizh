@@ -65,35 +65,99 @@ test.describe("Denicheur web against the real local API", () => {
     await peer.close();
   });
 
-  test("maps only listings with verified coordinates and explains the missing coverage", async ({ page, request }, testInfo) => {
+  test("keeps the result list in sync with the map and opens a removable property preview", async ({ page, request }, testInfo) => {
     const token = testToken(testInfo, "map-coverage");
     const propertyType = `Fixture cartographique ${token}`;
-    const mappedTitle = `Coordonnées vérifiées ${token}`;
+    const mappedTitle = `Maison visible en Bretagne ${token}`;
+    const distantTitle = `Maison hors zone ${token}`;
     const unmappedTitle = `Coordonnées absentes ${token}`;
     const mapped = listingFixture(token, "mapped", {
       title: mappedTitle,
       propertyType,
+      priceEuros: 425_000,
+      surfaceM2: 118,
+      rooms: 6,
+      bedrooms: 4,
+      landSurfaceM2: 920,
+      location: "Rennes 35000",
+      description: "Une maison lumineuse avec jardin, proche des services.",
+      sellerName: "Agence du littoral",
+      energyClass: "C",
+      gesClass: "A",
+      features: ["Jardin", "Garage"],
       coordinates: {
         latitude: 48.202,
         longitude: -2.932,
         verifiedAt: FIXTURE_TIME,
-        provenance: `Fixture E2E ${token}`,
+        provenance: JSON.stringify({
+          site: "fixture",
+          container: "#__NEXT_DATA__",
+          path: `props.pageProps.ad.location.${token}`,
+          provider: "fixture",
+        }),
+        locationKind: "source-property",
+      },
+    });
+    const distant = listingFixture(token, "distant", {
+      title: distantTitle,
+      propertyType,
+      location: "Centre-Val de Loire",
+      coordinates: {
+        latitude: 48.2,
+        longitude: 1.8,
+        verifiedAt: FIXTURE_TIME,
+        provenance: `Fixture distante ${token}`,
+        locationKind: "source-locality",
       },
     });
     const unmapped = listingFixture(token, "unmapped", { title: unmappedTitle, propertyType });
-    await ingestListings(request, `web-map-${token}`, [mapped, unmapped]);
+    await ingestListings(request, `web-map-${token}`, [mapped, distant, unmapped]);
 
     await page.goto("/?view=map");
     await expect(page.getByText("API connectée", { exact: true })).toBeVisible();
     await page.getByRole("combobox", { name: "Type de bien", exact: true }).selectOption(propertyType);
 
-    await expect(page.getByText("1 sur 2 biens sont cartographiés", { exact: true }).first()).toBeVisible();
-    await expect(page.getByText("1 biens ne disposent pas encore de coordonnées vérifiées.", { exact: true })).toBeVisible();
-    const resultPicker = page.getByRole("combobox", { name: "Résultats", exact: true });
-    await expect(resultPicker.getByRole("option", { name: mappedTitle, exact: true })).toHaveCount(1);
-    await expect(resultPicker.getByRole("option", { name: unmappedTitle, exact: true })).toHaveCount(0);
-    await expect(page.getByRole("heading", { level: 2, name: mappedTitle, exact: true })).toBeVisible();
-    await expect(page.getByRole("region", { name: "Carte des biens immobiliers", exact: true })).toBeVisible();
+    const map = page.getByRole("region", { name: "Carte des biens immobiliers", exact: true });
+    const zoomOut = map.getByRole("button", { name: "Dézoomer", exact: true });
+    await expect(zoomOut).toBeVisible();
+    await expect(page.getByText("1 bien filtré n’apparaît pas sur la carte, faute de localisation.", { exact: true })).toBeVisible();
+    await expect(page.getByRole("combobox", { name: "Résultats", exact: true })).toHaveCount(0);
+
+    const results = page.getByRole("list", { name: "Résultats", exact: true });
+    const mappedResult = results.getByRole("button", {
+      name: `Afficher le détail de ${mappedTitle}`,
+      exact: true,
+    });
+    const distantResult = results.getByRole("button", {
+      name: `Afficher le détail de ${distantTitle}`,
+      exact: true,
+    });
+    await expect(mappedResult).toBeVisible();
+    await expect(distantResult).toHaveCount(0);
+    await expect(results.getByRole("button", {
+      name: `Afficher le détail de ${unmappedTitle}`,
+      exact: true,
+    })).toHaveCount(0);
+
+    await zoomOut.click();
+    await expect(distantResult).toBeVisible();
+
+    await mappedResult.click();
+    const detail = page.getByRole("complementary", { name: "Détails du bien sélectionné", exact: true });
+    await expect(detail.getByRole("heading", { level: 2, name: mappedTitle, exact: true })).toBeVisible();
+    await expect(detail.getByText("Une maison lumineuse avec jardin, proche des services.", { exact: true })).toBeVisible();
+    await expect(detail).not.toContainText("#__NEXT_DATA__");
+    await expect(mappedResult).toHaveAttribute("aria-pressed", "true");
+    await expect(distantResult).toHaveCount(0);
+    await expect(page.getByRole("img", { name: `Bien sélectionné : ${mappedTitle}`, exact: true })).toBeVisible();
+    await expect.poll(() => new URL(page.url()).searchParams.get("pid"))
+      .toBe(`leboncoin:${mapped.externalId}`);
+
+    await detail.getByRole("button", { name: "Retirer de l’aperçu", exact: true }).click();
+    await expect(detail).toHaveCount(0);
+    await expect(page.getByRole("img", { name: `Bien sélectionné : ${mappedTitle}`, exact: true })).toHaveCount(0);
+    await expect(mappedResult).toHaveAttribute("aria-pressed", "false");
+    await expect.poll(() => new URL(page.url()).searchParams.has("pid")).toBe(false);
   });
 
   test("creates a recipe version in Atelier and activates that exact version", async ({ page, request }, testInfo) => {

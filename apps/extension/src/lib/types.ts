@@ -141,6 +141,8 @@ export interface ScrapedPropertyRecord {
   error?: LocalizedText;
   rawTextSample: string;
   evaluation?: ListingEvaluation;
+  /** The last technical evaluation failure. A previous valid evaluation may coexist with it. */
+  evaluationFailure?: ListingEvaluationFailure;
 }
 
 export type CriterionVerdict = "pass" | "fail" | "unknown";
@@ -189,6 +191,21 @@ export interface ListingEvaluation {
   locale?: LocaleCode;
 }
 
+export interface ListingEvaluationFailure {
+  listingId: string;
+  code: string;
+  stage: string;
+  retryable: boolean;
+  requestId?: string;
+  attemptId?: string;
+  criterionId?: string;
+}
+
+export interface ListingEvaluationOutcome {
+  evaluations: ListingEvaluation[];
+  failures: ListingEvaluationFailure[];
+}
+
 export type ScrapeRunStatus =
   | "idle"
   | "opening-search"
@@ -216,7 +233,7 @@ export interface ScrapeRun {
   currentUrl?: string;
   message?: LocalizedText;
   error?: LocalizedText;
-  intelligenceStatus?: "idle" | "evaluating" | "completed" | "failed";
+  intelligenceStatus?: "idle" | "evaluating" | "completed" | "partial" | "failed";
   intelligenceError?: LocalizedText;
   evaluated: number;
   relevant: number;

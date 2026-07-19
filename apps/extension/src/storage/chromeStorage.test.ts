@@ -357,6 +357,64 @@ describe("crawler run recovery", () => {
     expect(migrated[0].priceEuros).toBeUndefined();
   });
 
+  it("preserves valid evaluation failure metadata alongside the last successful evaluation", () => {
+    const record: ScrapedPropertyRecord = {
+      id: "3007106066",
+      source: "leboncoin",
+      listingUrl: "https://www.leboncoin.fr/ad/ventes_immobilieres/3007106066",
+      features: [],
+      scrapedAt: "2026-07-18T09:00:00.000Z",
+      searchRunId: "run-1",
+      status: "detailed",
+      rawTextSample: "Maison",
+      evaluation: {
+        listingId: "3007106066",
+        decision: "relevant",
+        score: 80,
+        summary: "Evaluation précédente valide.",
+        criteria: [],
+        missingData: [],
+        evaluatedAt: "2026-07-18T09:01:00.000Z",
+        evaluator: { provider: "openai", model: "gpt-5-mini", version: "filter-v1" },
+        recipeId: "personal-fit",
+        recipeVersion: 1,
+      },
+      evaluationFailure: {
+        listingId: "3007106066",
+        code: "UNKNOWN_EVIDENCE_ID",
+        stage: "semantic",
+        retryable: true,
+        requestId: "request-partial",
+      },
+    };
+
+    const [migrated] = migrateStoredRecords([record]);
+
+    expect(migrated.evaluation).toEqual(record.evaluation);
+    expect(migrated.evaluationFailure).toEqual(record.evaluationFailure);
+  });
+
+  it("drops evaluation failure metadata belonging to a different listing", () => {
+    const record = {
+      id: "3007106066",
+      source: "leboncoin" as const,
+      listingUrl: "https://www.leboncoin.fr/ad/ventes_immobilieres/3007106066",
+      features: [],
+      scrapedAt: "2026-07-18T09:00:00.000Z",
+      searchRunId: "run-1",
+      status: "detailed" as const,
+      rawTextSample: "Maison",
+      evaluationFailure: {
+        listingId: "another-listing",
+        code: "UNKNOWN_EVIDENCE_ID",
+        stage: "semantic",
+        retryable: true,
+      },
+    };
+
+    expect(migrateStoredRecords([record])[0].evaluationFailure).toBeUndefined();
+  });
+
   it("preserves the highest-quality valid coordinates across duplicate records", () => {
     const base: ScrapedPropertyRecord = {
       id: "3007106066",

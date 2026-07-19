@@ -2,9 +2,10 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { FIXTURE_TIME, ingestListings, listingFixture, testToken } from "./realApiFixture.js";
 
-const mobileViewports = [
+const responsiveViewports = [
   { width: 320, height: 844 },
   { width: 390, height: 844 },
+  { width: 1024, height: 844 },
 ] as const;
 
 const coreViews = [
@@ -15,7 +16,7 @@ const coreViews = [
 ] as const;
 
 test.describe("integrated web responsive navigation", () => {
-  for (const viewport of mobileViewports) {
+  for (const viewport of responsiveViewports) {
     test(`${viewport.width}x${viewport.height} keeps every enabled real-data view reachable without overflow`, async ({ page, request }, testInfo) => {
       const token = testToken(testInfo, `responsive-${viewport.width}`);
       const listing = listingFixture(token, "responsive", {
@@ -25,7 +26,14 @@ test.describe("integrated web responsive navigation", () => {
           latitude: 48.391,
           longitude: -4.486,
           verifiedAt: FIXTURE_TIME,
-          provenance: `Fixture responsive ${token}`,
+          locationKind: "source-property",
+          provenance: JSON.stringify({
+            site: "fixture",
+            container: "#__NEXT_DATA__",
+            path: `props.pageProps.ad.location.${token}`,
+            locationSource: "city",
+            provider: "fixture",
+          }),
         },
       });
       await ingestListings(request, `web-responsive-${token}`, [listing]);
@@ -46,6 +54,7 @@ test.describe("integrated web responsive navigation", () => {
         enabledViews.push({ id: "realtime", name: "Voix" });
       }
       await expect(navigation.getByRole("link")).toHaveCount(enabledViews.length);
+      await expectHeaderLayout(page);
 
       for (const view of enabledViews) {
         const link = navigation.getByRole("link", { name: view.name, exact: true });
@@ -55,13 +64,53 @@ test.describe("integrated web responsive navigation", () => {
         await expectSearchParam(page, "view", view.id);
         await expect(link).toHaveAttribute("aria-current", "page");
         await expectViewReady(page, view.id);
+        await expectViewFitsWidth(page, `${viewport.width}x${viewport.height}/${view.id}`);
         await expectNoUnexpectedHorizontalOverflow(page, `${viewport.width}x${viewport.height}/${view.id}`);
+        await expectNoClippedText(page, `${viewport.width}x${viewport.height}/${view.id}`);
       }
 
       expect(pageErrors).toEqual([]);
     });
   }
 });
+
+async function expectHeaderLayout(page: Page): Promise<void> {
+  await expect.poll(() => page.getByRole("banner").evaluate((banner) => {
+    const tolerance = 2;
+    const bannerRect = banner.getBoundingClientRect();
+    const visibleDescendants = [...banner.querySelectorAll<HTMLElement>("*")].filter((element) => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+    });
+    const outside = visibleDescendants.filter((element) => {
+      const rect = element.getBoundingClientRect();
+      return rect.top < bannerRect.top - tolerance || rect.bottom > bannerRect.bottom + tolerance;
+    }).map((element) => element.tagName.toLowerCase());
+    const links = [...banner.querySelectorAll<HTMLElement>("nav a")];
+    const linkTops = links.map((link) => Math.round(link.getBoundingClientRect().top));
+    const rowCounts = [...linkTops.reduce((rows, top) => rows.set(top, (rows.get(top) ?? 0) + 1), new Map<number, number>()).values()];
+    const overflowingLabels = links.filter((link) => {
+      const label = link.querySelector<HTMLElement>("span");
+      if (!label) return false;
+      const linkRect = link.getBoundingClientRect();
+      const labelRect = label.getBoundingClientRect();
+      return labelRect.left < linkRect.left - tolerance || labelRect.right > linkRect.right + tolerance;
+    }).length;
+
+    const navigationBalanced = rowCounts.length === 1
+      || (links.length === 5 && rowCounts.length === 2 && rowCounts[0] === 3 && rowCounts[1] === 2);
+
+    return { outside, navigationBalanced, overflowingLabels };
+  })).toEqual({ outside: [], navigationBalanced: true, overflowingLabels: 0 });
+}
+
+async function expectViewFitsWidth(page: Page, context: string): Promise<void> {
+  await expect.poll(
+    () => page.locator("main > section").evaluate((view) => view.scrollWidth - view.clientWidth),
+    { message: `workspace view should not scroll horizontally in ${context}` },
+  ).toBeLessThanOrEqual(2);
+}
 
 async function expectViewReady(page: Page, view: string): Promise<void> {
   if (view === "map") {
@@ -172,5 +221,49 @@ async function expectNoUnexpectedHorizontalOverflow(page: Page, context: string)
       return issues;
     }),
     { message: `unexpected horizontal overflow in ${context}` },
+  ).toEqual([]);
+}
+
+async function expectNoClippedText(page: Page, context: string): Promise<void> {
+  await expect.poll(
+    () => page.evaluate(() => {
+      const tolerance = 2;
+      const issues: Array<Record<string, string | number>> = [];
+      const candidates = document.querySelectorAll<HTMLElement>(
+        "button, a, h1, h2, h3, p, span, strong, small, dt, dd, th, td, label",
+      );
+
+      for (const element of candidates) {
+        const style = getComputedStyle(element);
+        const rect = element.getBoundingClientRect();
+        const text = (element.textContent ?? "").trim().replace(/\s+/gu, " ");
+        const intentionallyEllipsized = style.textOverflow === "ellipsis";
+        const canScrollVertically = style.overflowY === "auto" || style.overflowY === "scroll";
+
+        if (
+          text.length > 0
+          && !element.closest(".maplibregl-map")
+          && style.display !== "none"
+          && style.visibility !== "hidden"
+          && rect.width > 0
+          && rect.height > 0
+          && !intentionallyEllipsized
+          && !canScrollVertically
+          && element.scrollHeight > element.clientHeight + tolerance
+        ) {
+          issues.push({
+            element: element.tagName.toLowerCase(),
+            text: text.slice(0, 80),
+            clientHeight: element.clientHeight,
+            scrollHeight: element.scrollHeight,
+          });
+        }
+
+        if (issues.length >= 20) break;
+      }
+
+      return issues;
+    }),
+    { message: `unexpected clipped text in ${context}` },
   ).toEqual([]);
 }

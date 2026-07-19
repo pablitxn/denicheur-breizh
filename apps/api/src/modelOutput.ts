@@ -1,201 +1,399 @@
 import { z } from "zod";
 
-import {
-  MAX_CRITERIA_PER_RECIPE,
-  MAX_LISTINGS_PER_REQUEST,
-  criterionEvaluationSchema,
-  type FilterListingInput,
-  type FilterListingsRequest,
+import type {
+  CriterionEvaluation,
+  CriterionVerdict,
+  FilterListingInput,
+  FilterListingsRequest,
 } from "./contracts.js";
-import { invalidModelOutput } from "./errors.js";
+import { invalidModelOutput, type SafeEvaluatorFailureDetails } from "./errors.js";
 
-const modelListingResultSchema = z
+const MAX_EVIDENCE_ITEMS = 5;
+const MAX_EVIDENCE_VALUE_LENGTH = 500;
+
+const generatedCriterionSchema = z
   .object({
-    listingId: z.string().min(1).max(260),
+    verdict: z.enum(["pass", "fail", "unknown"]),
+    reason: z.string().trim().min(1).max(1_000),
+    evidenceIds: z.array(z.string().min(1).max(128)).max(MAX_EVIDENCE_ITEMS),
+  })
+  .strict();
+
+const generatedListingResultSchema = z
+  .object({
     summary: z.string().trim().min(1).max(1_000),
-    criteria: z.array(criterionEvaluationSchema).min(1).max(MAX_CRITERIA_PER_RECIPE),
+    criteria: z.record(z.string(), generatedCriterionSchema),
   })
   .strict();
 
-const modelEvaluationBatchSchema = z
+const generatedEvaluationBatchSchema = z
   .object({
-    results: z.array(modelListingResultSchema).min(1).max(MAX_LISTINGS_PER_REQUEST),
+    results: z.record(z.string(), generatedListingResultSchema),
   })
   .strict();
 
-export type ModelListingResult = z.infer<typeof modelListingResultSchema>;
-export type ModelEvaluationBatch = z.infer<typeof modelEvaluationBatchSchema>;
+export interface ModelListingResult {
+  listingId: string;
+  summary: string;
+  criteria: CriterionEvaluation[];
+}
 
-export const MODEL_OUTPUT_JSON_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["results"],
-  properties: {
-    results: {
-      type: "array",
-      minItems: 1,
-      maxItems: MAX_LISTINGS_PER_REQUEST,
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["listingId", "summary", "criteria"],
-        properties: {
-          listingId: { type: "string" },
-          summary: { type: "string" },
-          criteria: {
-            type: "array",
-            minItems: 1,
-            maxItems: MAX_CRITERIA_PER_RECIPE,
-            items: {
-              type: "object",
-              additionalProperties: false,
-              required: ["criterionId", "verdict", "reason", "evidence"],
-              properties: {
-                criterionId: { type: "string" },
-                verdict: { type: "string", enum: ["pass", "fail", "unknown"] },
-                reason: { type: "string" },
-                evidence: {
-                  type: "array",
-                  maxItems: 5,
-                  items: { type: "string" },
-                },
-              },
-            },
-          },
+export interface ModelEvaluationBatch {
+  results: ModelListingResult[];
+  /** Provider trace identifier. Kept internal and never serialized in the public filter response. */
+  responseId?: string;
+}
+
+export type EvidenceCatalogKind = "field" | "description" | "feature" | "image";
+
+export interface EvidenceCatalogEntry {
+  readonly id: string;
+  readonly kind: EvidenceCatalogKind;
+  readonly value: string;
+}
+
+export interface ParseModelOutputOptions {
+  readonly responseId?: string;
+}
+
+type JsonSchema = Readonly<Record<string, unknown>>;
+
+const EVIDENCE_FIELD_NAMES = [
+  "title",
+  "priceEuros",
+  "propertyType",
+  "rooms",
+  "bedrooms",
+  "surfaceM2",
+  "landSurfaceM2",
+  "location",
+  "sellerName",
+  "sellerType",
+  "energyClass",
+  "gesClass",
+] as const satisfies readonly (keyof FilterListingInput)[];
+
+export function buildEvidenceCatalog(listing: FilterListingInput): EvidenceCatalogEntry[] {
+  const entries: EvidenceCatalogEntry[] = [];
+
+  for (const field of EVIDENCE_FIELD_NAMES) {
+    const value = listing[field];
+    if (value === undefined) continue;
+    entries.push({ id: `field:${field}`, kind: "field", value: String(value) });
+  }
+
+  if (listing.description) {
+    for (const [index, value] of chunkEvidenceText(listing.description).entries()) {
+      entries.push({ id: `description:${index}`, kind: "description", value });
+    }
+  }
+
+  listing.features.forEach((value, index) => {
+    entries.push({ id: `feature:${index}`, kind: "feature", value });
+  });
+
+  listing.imageUrls?.forEach((value, index) => {
+    entries.push({ id: `image:${index}`, kind: "image", value });
+  });
+
+  return entries;
+}
+
+export function buildModelOutputJsonSchema(request: FilterListingsRequest): JsonSchema {
+  const definitions: Record<string, JsonSchema> = {};
+  const listingProperties = Object.fromEntries(request.listings.map((listing, listingIndex) => {
+    const evidenceIds = buildEvidenceCatalog(listing).map((entry) => entry.id);
+    const evidenceDefinition = `evidenceId${listingIndex}`;
+    const criterionDefinition = `criterion${listingIndex}`;
+    if (evidenceIds.length > 0) {
+      definitions[evidenceDefinition] = {
+        type: "string",
+        minLength: 1,
+        maxLength: 128,
+        enum: evidenceIds,
+      };
+    }
+    definitions[criterionDefinition] = buildCriterionJsonSchema(
+      evidenceIds,
+      evidenceIds.length > 0 ? `#/$defs/${evidenceDefinition}` : undefined,
+    );
+    const criterionProperties = Object.fromEntries(request.recipe.criteria.map((criterion) => [
+      criterion.id,
+      { $ref: `#/$defs/${criterionDefinition}` },
+    ]));
+
+    return [listing.id, {
+      type: "object",
+      additionalProperties: false,
+      required: ["summary", "criteria"],
+      properties: {
+        summary: { type: "string", minLength: 1, maxLength: 1_000 },
+        criteria: {
+          type: "object",
+          additionalProperties: false,
+          required: request.recipe.criteria.map((criterion) => criterion.id),
+          properties: criterionProperties,
         },
       },
+    }];
+  }));
+
+  return {
+    type: "object",
+    $defs: definitions,
+    additionalProperties: false,
+    required: ["results"],
+    properties: {
+      results: {
+        type: "object",
+        additionalProperties: false,
+        required: request.listings.map((listing) => listing.id),
+        properties: listingProperties,
+      },
     },
-  },
-} as const;
+  };
+}
 
 export function parseAndValidateModelOutput(
   outputText: string,
   request: FilterListingsRequest,
+  options: ParseModelOutputOptions = {},
 ): ModelEvaluationBatch {
   let decoded: unknown;
 
   try {
     decoded = JSON.parse(outputText);
   } catch (error) {
-    throw invalidModelOutput(error);
+    throw invalidOutput({
+      stage: "parse",
+      detailCode: "INVALID_JSON",
+      retryable: true,
+      ...options,
+    }, error);
   }
 
-  const parsed = modelEvaluationBatchSchema.safeParse(decoded);
+  const parsed = generatedEvaluationBatchSchema.safeParse(decoded);
 
   if (!parsed.success) {
-    throw invalidModelOutput(parsed.error);
+    const location = locateSchemaFailure(parsed.error, request);
+    throw invalidOutput({
+      stage: "schema",
+      detailCode: "SCHEMA_MISMATCH",
+      retryable: true,
+      ...options,
+      ...location,
+    }, parsed.error);
   }
 
-  const resultByListingId = uniqueMap(parsed.data.results, (result) => result.listingId);
-  const expectedListingIds = new Set(request.listings.map((listing) => listing.id));
+  assertExactKeys(
+    Object.keys(parsed.data.results),
+    request.listings.map((listing) => listing.id),
+    "LISTING",
+    options,
+  );
 
-  if (!resultByListingId || resultByListingId.size !== expectedListingIds.size) {
-    throw invalidModelOutput();
-  }
-
-  for (const listingId of resultByListingId.keys()) {
-    if (!expectedListingIds.has(listingId)) {
-      throw invalidModelOutput();
-    }
-  }
-
-  const criterionIds = new Set(request.recipe.criteria.map((criterion) => criterion.id));
-  const orderedResults = request.listings.map((listing) => {
-    const result = resultByListingId.get(listing.id);
+  const orderedResults = request.listings.map((listing): ModelListingResult => {
+    const result = parsed.data.results[listing.id];
 
     if (!result) {
-      throw invalidModelOutput();
+      throw invalidOutput({
+        stage: "semantic",
+        detailCode: "MISSING_LISTING",
+        listingId: listing.id,
+        retryable: true,
+        ...options,
+      });
     }
 
-    const evaluationByCriterionId = uniqueMap(result.criteria, (criterion) => criterion.criterionId);
+    assertExactKeys(
+      Object.keys(result.criteria),
+      request.recipe.criteria.map((criterion) => criterion.id),
+      "CRITERION",
+      options,
+      listing.id,
+    );
 
-    if (!evaluationByCriterionId || evaluationByCriterionId.size !== criterionIds.size) {
-      throw invalidModelOutput();
-    }
+    const evidenceById = new Map(buildEvidenceCatalog(listing).map((entry) => [entry.id, entry.value]));
+    const criteria = request.recipe.criteria.map((criterion): CriterionEvaluation => {
+      const generated = result.criteria[criterion.id];
 
-    for (const evaluation of result.criteria) {
-      if (!criterionIds.has(evaluation.criterionId)) {
-        throw invalidModelOutput();
+      if (!generated) {
+        throw invalidOutput({
+          stage: "semantic",
+          detailCode: "MISSING_CRITERION",
+          listingId: listing.id,
+          criterionId: criterion.id,
+          retryable: true,
+          ...options,
+        });
       }
 
-      if (evaluation.verdict !== "unknown" && evaluation.evidence.length === 0) {
-        throw invalidModelOutput();
-      }
+      validateEvidenceIds(generated.verdict, generated.evidenceIds, evidenceById, {
+        listingId: listing.id,
+        criterionId: criterion.id,
+        ...options,
+      });
 
-      if (!evidenceBelongsToListing(evaluation.evidence, listing)) {
-        throw invalidModelOutput();
-      }
-    }
+      return {
+        criterionId: criterion.id,
+        verdict: generated.verdict,
+        reason: generated.reason,
+        evidence: generated.evidenceIds.map((evidenceId) => evidenceById.get(evidenceId)!),
+      };
+    });
 
     return {
-      ...result,
-      criteria: request.recipe.criteria.map((criterion) => {
-        const evaluation = evaluationByCriterionId.get(criterion.id);
-
-        if (!evaluation) {
-          throw invalidModelOutput();
-        }
-
-        return evaluation;
-      }),
+      listingId: listing.id,
+      summary: result.summary,
+      criteria,
     };
   });
 
   return { results: orderedResults };
 }
 
-function uniqueMap<T>(values: readonly T[], getId: (value: T) => string): Map<string, T> | undefined {
-  const byId = new Map<string, T>();
+function buildCriterionJsonSchema(evidenceIds: readonly string[], evidenceReference?: string): JsonSchema {
+  const hasEvidence = evidenceIds.length > 0;
 
-  for (const value of values) {
-    const id = getId(value);
+  return {
+    type: "object",
+    additionalProperties: false,
+    required: ["verdict", "reason", "evidenceIds"],
+    properties: {
+      verdict: {
+        type: "string",
+        enum: hasEvidence ? ["pass", "fail", "unknown"] : ["unknown"],
+      },
+      reason: { type: "string", minLength: 1, maxLength: 1_000 },
+      evidenceIds: {
+        type: "array",
+        maxItems: hasEvidence ? MAX_EVIDENCE_ITEMS : 0,
+        items: hasEvidence
+          ? { $ref: evidenceReference }
+          : { type: "string", minLength: 1, maxLength: 128 },
+      },
+    },
+  };
+}
 
-    if (byId.has(id)) {
-      return undefined;
+function chunkEvidenceText(value: string): string[] {
+  const chunks: string[] = [];
+  let remaining = value.trim();
+
+  while (remaining.length > MAX_EVIDENCE_VALUE_LENGTH) {
+    const whitespaceIndex = findLastWhitespace(remaining, MAX_EVIDENCE_VALUE_LENGTH);
+    const splitIndex = whitespaceIndex > 0 ? whitespaceIndex : MAX_EVIDENCE_VALUE_LENGTH;
+    const chunk = remaining.slice(0, splitIndex).trim();
+    if (chunk) chunks.push(chunk);
+    remaining = remaining.slice(splitIndex).trimStart();
+  }
+
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
+function findLastWhitespace(value: string, beforeIndex: number): number {
+  for (let index = beforeIndex; index > 0; index -= 1) {
+    if (/\s/u.test(value[index - 1]!)) return index - 1;
+  }
+  return -1;
+}
+
+function validateEvidenceIds(
+  verdict: CriterionVerdict,
+  evidenceIds: readonly string[],
+  evidenceById: ReadonlyMap<string, string>,
+  context: Pick<SafeEvaluatorFailureDetails, "listingId" | "criterionId" | "responseId">,
+): void {
+  if (verdict !== "unknown" && evidenceIds.length === 0) {
+    throw invalidOutput({
+      stage: "semantic",
+      detailCode: "EVIDENCE_REQUIRED",
+      retryable: true,
+      ...context,
+    });
+  }
+
+  if (new Set(evidenceIds).size !== evidenceIds.length) {
+    throw invalidOutput({
+      stage: "semantic",
+      detailCode: "DUPLICATE_EVIDENCE_ID",
+      retryable: true,
+      ...context,
+    });
+  }
+
+  for (const evidenceId of evidenceIds) {
+    if (!evidenceById.has(evidenceId)) {
+      throw invalidOutput({
+        stage: "semantic",
+        detailCode: "UNKNOWN_EVIDENCE_ID",
+        retryable: true,
+        ...context,
+      });
     }
+  }
+}
 
-    byId.set(id, value);
+function assertExactKeys(
+  actual: readonly string[],
+  expected: readonly string[],
+  entity: "LISTING" | "CRITERION",
+  options: ParseModelOutputOptions,
+  listingId?: string,
+): void {
+  const expectedIds = new Set(expected);
+  const unexpected = actual.find((id) => !expectedIds.has(id));
+  if (unexpected) {
+    const location = entity === "LISTING"
+      ? { listingId: unexpected }
+      : { ...(listingId ? { listingId } : {}), criterionId: unexpected };
+    throw invalidOutput({
+      stage: "semantic",
+      detailCode: `UNEXPECTED_${entity}`,
+      ...location,
+      retryable: true,
+      ...options,
+    });
   }
 
-  return byId;
-}
-
-function evidenceBelongsToListing(evidence: readonly string[], listing: FilterListingInput): boolean {
-  const sourceValues = listingEvidenceValues(listing);
-
-  return evidence.every((excerpt) => {
-    if (isUrl(excerpt)) return listing.imageUrls?.includes(excerpt) ?? false;
-    return sourceValues.some((value) => (excerpt.length < 3 ? value === excerpt : value.includes(excerpt)));
-  });
-}
-
-function listingEvidenceValues(listing: FilterListingInput): string[] {
-  const values: Array<string | number | undefined> = [
-    listing.url,
-    listing.title,
-    listing.priceEuros,
-    listing.propertyType,
-    listing.rooms,
-    listing.bedrooms,
-    listing.surfaceM2,
-    listing.landSurfaceM2,
-    listing.location,
-    listing.sellerName,
-    listing.sellerType,
-    listing.energyClass,
-    listing.gesClass,
-    listing.description,
-    ...listing.features,
-    ...(listing.imageUrls ?? []),
-  ];
-
-  return values.filter((value): value is string | number => value !== undefined).map(String);
-}
-
-function isUrl(value: string): boolean {
-  try {
-    return new URL(value).protocol === "https:";
-  } catch {
-    return false;
+  const actualIds = new Set(actual);
+  const missing = expected.find((id) => !actualIds.has(id));
+  if (missing) {
+    const location = entity === "LISTING"
+      ? { listingId: missing }
+      : { ...(listingId ? { listingId } : {}), criterionId: missing };
+    throw invalidOutput({
+      stage: "semantic",
+      detailCode: `MISSING_${entity}`,
+      ...location,
+      retryable: true,
+      ...options,
+    });
   }
+}
+
+function locateSchemaFailure(
+  error: z.ZodError,
+  request: FilterListingsRequest,
+): Pick<SafeEvaluatorFailureDetails, "listingId" | "criterionId"> {
+  const path = error.issues[0]?.path;
+  if (!path || path[0] !== "results") return {};
+
+  const listingId = typeof path[1] === "string" && request.listings.some((listing) => listing.id === path[1])
+    ? path[1]
+    : undefined;
+  const criterionId = listingId && path[2] === "criteria" && typeof path[3] === "string" &&
+    request.recipe.criteria.some((criterion) => criterion.id === path[3])
+    ? path[3]
+    : undefined;
+
+  return {
+    ...(listingId ? { listingId } : {}),
+    ...(criterionId ? { criterionId } : {}),
+  };
+}
+
+function invalidOutput(details: SafeEvaluatorFailureDetails, cause?: unknown): ReturnType<typeof invalidModelOutput> {
+  return invalidModelOutput(details, cause);
 }

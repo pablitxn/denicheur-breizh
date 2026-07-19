@@ -3,7 +3,9 @@ import { IDLE_RUN } from "../storage/chromeStorage";
 import { createDefaultIntelligenceRecipe } from "../intelligence/recipe";
 import type { ScrapeRun, ScrapedPropertyRecord } from "../lib/types";
 import {
+  getRecordImageUrls,
   hasLiveDashboardRunner,
+  parseRecordsPageSize,
   parseResultsViewState,
   recipeFromDrafts,
   reconcileDashboardRun,
@@ -124,16 +126,40 @@ describe("dashboard result and recipe drafts", () => {
   };
 
   it("parses shareable result filters and rejects invalid page values", () => {
-    expect(parseResultsViewState("?decision=review&q=jardin&page=3")).toEqual({
+    expect(parseResultsViewState("?decision=review&q=jardin&page=3&pageSize=48")).toEqual({
       decision: "review",
       query: "jardin",
       page: 3,
+      pageSize: 48,
     });
-    expect(parseResultsViewState("?decision=unknown&page=-2")).toEqual({
+    expect(parseResultsViewState("?decision=unknown&page=-2&pageSize=13")).toEqual({
       decision: "all",
       query: "",
       page: 1,
+      pageSize: 24,
     });
+  });
+
+  it("accepts only supported records-per-page values", () => {
+    expect(parseRecordsPageSize("12")).toBe(12);
+    expect(parseRecordsPageSize(48)).toBe(48);
+    expect(parseRecordsPageSize("96")).toBe(24);
+  });
+
+  it("normalizes, resolves and deduplicates safe image URLs", () => {
+    expect(getRecordImageUrls({
+      ...record,
+      imageUrl: "https://img.leboncoin.fr/primary.jpg",
+      imageUrls: [
+        "https://img.leboncoin.fr/primary.jpg",
+        "/secondary.jpg",
+        "javascript:alert(1)",
+        "http://[",
+      ],
+    })).toEqual([
+      "https://img.leboncoin.fr/primary.jpg",
+      "https://www.leboncoin.fr/secondary.jpg",
+    ]);
   });
 
   it("preserves the requested page through hydration, then clamps against loaded records", () => {

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PropertyListing } from "../types";
-import { propertiesToGeoJson, summarizeMapCoverage } from "./mapData";
+import { propertiesToGeoJson, propertiesWithinBounds, summarizeMapCoverage } from "./mapData";
 
 const observedAt = "2026-07-18T10:00:00.000Z";
 
@@ -88,5 +88,47 @@ describe("summarizeMapCoverage", () => {
       approximateCount: 3,
       unmappedCount: 1,
     });
+  });
+});
+
+describe("propertiesWithinBounds", () => {
+  const coordinates = (latitude: number, longitude: number): NonNullable<PropertyListing["coordinates"]> => ({
+    latitude,
+    longitude,
+    verifiedAt: observedAt,
+    provenance: "viewport test",
+    locationKind: "source-property",
+  });
+
+  it("keeps only mapped listings inside the visible area, including its boundary", () => {
+    const result = propertiesWithinBounds([
+      listing("inside", coordinates(48.4, -3.1)),
+      listing("boundary", coordinates(49, 1)),
+      listing("outside-latitude", coordinates(50, -3.1)),
+      listing("outside-longitude", coordinates(48.4, 2)),
+      listing("unmapped"),
+    ], {
+      west: -5,
+      south: 47,
+      east: 1,
+      north: 49,
+    });
+
+    expect(result.map((property) => property.externalId)).toEqual(["inside", "boundary"]);
+  });
+
+  it("supports viewports that cross the antimeridian", () => {
+    const result = propertiesWithinBounds([
+      listing("west", coordinates(0, 175)),
+      listing("east", coordinates(0, -175)),
+      listing("middle", coordinates(0, 0)),
+    ], {
+      west: 170,
+      south: -10,
+      east: -170,
+      north: 10,
+    });
+
+    expect(result.map((property) => property.externalId)).toEqual(["west", "east"]);
   });
 });

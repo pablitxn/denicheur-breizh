@@ -12,7 +12,7 @@ describe("loadConfig", () => {
     expect(config.host).toBe("127.0.0.1");
     expect(config.port).toBe(4310);
     expect(config.databasePath).toBe(".data/denicheur.sqlite");
-    expect(config.evaluatorVersion).toBe("1.1.0");
+    expect(config.evaluatorVersion).toBe("2.0.0");
     expect(config.openAiTimeoutMs).toBe(60_000);
     expect(config.allowedOrigins).toContain(VALID_EXTENSION_ORIGIN);
     expect(config.allowedOrigins).not.toContain("chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
@@ -51,6 +51,12 @@ describe("loadConfig", () => {
     expect(config.port).toBe(4500);
     expect(config.openAiModel).toBe("gpt-fixed-snapshot");
     expect(config.databasePath).toBe(":memory:");
+  });
+
+  it("rejects fine-tuned models that cannot honor the strict schema keywords", () => {
+    expect(() => loadConfig({ OPENAI_FILTER_MODEL: "ft:gpt-5-mini:org:custom" })).toThrow(
+      /fine-tuned models are not supported/i,
+    );
   });
 });
 

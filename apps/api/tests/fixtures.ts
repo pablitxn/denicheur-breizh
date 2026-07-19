@@ -67,6 +67,25 @@ export function createModelBatch(
   };
 }
 
+export function createGeneratedModelOutput(
+  request = createRequest(),
+  verdicts: readonly ["pass" | "fail" | "unknown", "pass" | "fail" | "unknown"] = ["pass", "pass"],
+) {
+  return {
+    results: Object.fromEntries(request.listings.map((listing) => [listing.id, {
+      summary: "Le bien correspond globalement aux critères.",
+      criteria: Object.fromEntries(request.recipe.criteria.map((criterion, criterionIndex) => {
+        const verdict = verdicts[criterionIndex] ?? "unknown";
+        return [criterion.id, {
+          verdict,
+          reason: verdict === "unknown" ? "Donnée insuffisante." : "Le catalogue fournit une preuve explicite.",
+          evidenceIds: verdict === "unknown" ? [] : [criterionIndex === 0 ? "field:surfaceM2" : "description:0"],
+        }];
+      })),
+    }])),
+  };
+}
+
 export function createResponse(request = createRequest()): FilterListingsResponse {
   return {
     runId: request.runId,

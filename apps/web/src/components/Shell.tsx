@@ -98,6 +98,7 @@ export function Shell({ children }: { children: ReactNode }) {
             ))}
           </div>
           <Button
+            className={styles.themeToggle}
             variant="ghost"
             iconOnly
             onClick={toggleTheme}

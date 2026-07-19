@@ -101,7 +101,7 @@ export function BuilderView() {
         </div>
         <div className={styles.presets}>
           {recipes.map((recipe) => (
-            <button key={recipeKey(recipe)} className={recipeKey(recipe) === recipeKey(selectedRecipe) ? styles.presetActive : ""} type="button" onClick={() => selectRecipe(recipe)} aria-pressed={recipeKey(recipe) === recipeKey(selectedRecipe)}>
+            <button key={recipeKey(recipe)} className={recipeKey(recipe) === recipeKey(selectedRecipe) ? styles.presetActive : ""} type="button" onClick={() => selectRecipe(recipe)} aria-pressed={recipeKey(recipe) === recipeKey(selectedRecipe)} title={`${recipe.name} · v${recipe.version}`}>
               <SlidersHorizontal size={14} aria-hidden="true" />
               <span>{recipe.name} · v{recipe.version}</span>
               {recipe.active && <Check size={14} aria-label={t("builder.active")} />}

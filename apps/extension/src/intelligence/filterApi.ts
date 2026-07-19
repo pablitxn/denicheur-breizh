@@ -1,7 +1,7 @@
 import {
   createListingKey,
+  evaluationBatchResponseSchema,
   evaluationRequestSchema,
-  filterListingsResponseSchema,
   MAX_LISTINGS_PER_REQUEST,
   parseListingKey,
 } from "@denicheur-breizh/contracts";
@@ -9,6 +9,8 @@ import { DEFAULT_LOCALE, type LocaleCode } from "@denicheur-breizh/i18n";
 import type {
   IntelligenceRecipe,
   ListingEvaluation,
+  ListingEvaluationFailure,
+  ListingEvaluationOutcome,
   LocalizedText,
   ScrapedPropertyRecord,
 } from "../lib/types";
@@ -21,8 +23,15 @@ const FILTER_API_ERROR_MESSAGE_IDS: Record<string, string> = {
   OPENAI_NOT_CONFIGURED: "error.apiNotConfigured",
   OPENAI_TIMEOUT: "error.apiTimeout",
   OPENAI_RATE_LIMITED: "error.apiRateLimited",
+  OPENAI_INSUFFICIENT_QUOTA: "error.apiInsufficientQuota",
   OPENAI_UNAVAILABLE: "error.apiUnavailable",
   OPENAI_REJECTED: "error.apiRejected",
+  OPENAI_REFUSAL: "error.apiRefusal",
+  MODEL_REFUSAL: "error.apiRefusal",
+  OPENAI_INCOMPLETE: "error.apiIncomplete",
+  MAX_OUTPUT_TOKENS: "error.apiIncomplete",
+  OPENAI_CONTENT_FILTER: "error.apiContentFilter",
+  CONTENT_FILTER: "error.apiContentFilter",
   OPENAI_FAILURE: "error.apiFailure",
   INVALID_MODEL_OUTPUT: "error.apiInvalidOutput",
   RATE_LIMITED: "error.apiRateLimited",
@@ -34,6 +43,18 @@ const FILTER_API_ERROR_MESSAGE_IDS: Record<string, string> = {
   NOT_FOUND: "error.apiNotFound",
   INVALID_API_RESPONSE: "error.apiInvalidResponse",
   CLIENT_VALIDATION: "error.apiInvalidRequest",
+  SYNC_FAILED: "error.apiUnavailable",
+  MISSING_LISTING: "error.apiInvalidOutput",
+  DUPLICATE_LISTING: "error.apiInvalidOutput",
+  UNEXPECTED_LISTING: "error.apiInvalidOutput",
+  MISSING_CRITERION: "error.apiInvalidOutput",
+  DUPLICATE_CRITERION: "error.apiInvalidOutput",
+  UNEXPECTED_CRITERION: "error.apiInvalidOutput",
+  EVIDENCE_REQUIRED: "error.apiInvalidOutput",
+  UNKNOWN_EVIDENCE_ID: "error.apiInvalidOutput",
+  CROSS_LISTING_EVIDENCE: "error.apiInvalidOutput",
+  EMPTY_OUTPUT: "error.apiInvalidOutput",
+  SCHEMA_MISMATCH: "error.apiInvalidOutput",
 };
 
 interface EvaluationOptions {
@@ -41,9 +62,10 @@ interface EvaluationOptions {
   fetcher?: Fetcher;
   baseUrl?: string;
   locale?: LocaleCode;
+  force?: boolean;
   onBatchComplete?: (
-    batch: ListingEvaluation[],
-    accumulated: ListingEvaluation[],
+    batch: ListingEvaluationOutcome,
+    accumulated: ListingEvaluationOutcome,
   ) => void | Promise<void>;
 }
 
@@ -52,6 +74,7 @@ export class FilterApiError extends Error {
     message: string,
     readonly status?: number,
     readonly code?: string,
+    readonly requestId?: string,
   ) {
     super(message);
     this.name = "FilterApiError";
@@ -63,7 +86,7 @@ export async function evaluateDetailedRecords(
   recipe: IntelligenceRecipe,
   records: ScrapedPropertyRecord[],
   options: EvaluationOptions = {},
-): Promise<ListingEvaluation[]> {
+): Promise<ListingEvaluationOutcome> {
   const locale = options.locale ?? DEFAULT_LOCALE;
   const detailedRecords = records.filter((record) => record.status === "detailed");
   if (detailedRecords.length === 0) {
@@ -81,6 +104,7 @@ export async function evaluateDetailedRecords(
       source: record.source,
       externalId: record.id,
     })),
+    ...(options.force ? { force: true } : {}),
   });
   if (!request.success) {
     throw clientValidationError("The evaluation request is invalid.");
@@ -98,57 +122,93 @@ export async function evaluateDetailedRecords(
     });
   } catch (error) {
     if (options.signal?.aborted) throw error;
-    throw new FilterApiError(
+    return createEvaluationFailureOutcome(detailedRecords, new FilterApiError(
       `Intelligence API is unavailable: ${errorMessage(error)}`,
       undefined,
       "NETWORK_UNAVAILABLE",
-    );
+    ));
   }
 
   const payload: unknown = await response.json().catch(() => undefined);
   if (!response.ok) {
     const apiError = readApiError(payload, response.status);
-    throw new FilterApiError(apiError.message, response.status, apiError.code);
+    return createEvaluationFailureOutcome(detailedRecords, new FilterApiError(
+      apiError.message,
+      response.status,
+      apiError.code ?? fallbackHttpErrorCode(response.status),
+      apiError.requestId,
+    ));
   }
 
-  const parsed = filterListingsResponseSchema.safeParse(payload);
+  const parsed = evaluationBatchResponseSchema.safeParse(payload);
   if (!parsed.success ||
     parsed.data.runId !== runId ||
     parsed.data.locale !== locale ||
     parsed.data.recipeId !== recipe.id ||
     parsed.data.recipeVersion !== recipe.version) {
-    throw invalidApiResponse("Intelligence API response does not match the request.");
+    return createEvaluationFailureOutcome(
+      detailedRecords,
+      invalidApiResponse("Intelligence API response does not match the request.", readRequestId(payload)),
+    );
   }
 
   const expected = new Set(request.data.listingIds);
   const seen = new Set<string>();
   const expectedCriteria = new Set(recipe.criteria.map((criterion) => criterion.id));
-  const evaluations = parsed.data.results.map((result): ListingEvaluation => {
-    const identity = parseListingKey(result.listingId);
-    if (!identity || !expected.has(result.listingId) || seen.has(result.listingId)) {
-      throw invalidApiResponse("Intelligence API returned unexpected or duplicate listing ids.");
+  const evaluations: ListingEvaluation[] = [];
+  const failures: ListingEvaluationFailure[] = [];
+  for (const item of parsed.data.items) {
+    const identity = parseListingKey(item.listingId);
+    if (!identity || !expected.has(item.listingId) || seen.has(item.listingId)) {
+      return createEvaluationFailureOutcome(
+        detailedRecords,
+        invalidApiResponse("Intelligence API returned unexpected or duplicate listing ids.", parsed.data.requestId),
+      );
     }
-    seen.add(result.listingId);
+    seen.add(item.listingId);
 
-    const criterionIds = result.criteria.map((criterion) => criterion.criterionId);
+    if (item.status === "failed") {
+      failures.push({
+        listingId: identity.externalId,
+        code: item.error.code,
+        stage: item.error.stage,
+        retryable: item.error.retryable,
+        requestId: item.error.requestId,
+        ...(item.error.attemptId ? { attemptId: item.error.attemptId } : {}),
+        ...(item.error.criterionId ? { criterionId: item.error.criterionId } : {}),
+      });
+      continue;
+    }
+
+    const criterionIds = item.evaluation.criteria.map((criterion) => criterion.criterionId);
     if (new Set(criterionIds).size !== expectedCriteria.size ||
       criterionIds.some((criterionId) => !expectedCriteria.has(criterionId))) {
-      throw invalidApiResponse("Intelligence API did not evaluate every criterion.");
+      failures.push({
+        listingId: identity.externalId,
+        code: "INVALID_API_RESPONSE",
+        stage: "response",
+        retryable: true,
+        requestId: parsed.data.requestId,
+      });
+      continue;
     }
 
-    return {
-      ...result,
+    evaluations.push({
+      ...item.evaluation,
       listingId: identity.externalId,
       locale: parsed.data.locale,
-      evaluator: parsed.data.evaluator,
+      evaluator: item.evaluator,
       recipeId: parsed.data.recipeId,
       recipeVersion: parsed.data.recipeVersion,
-    };
-  });
-  if (seen.size !== expected.size) {
-    throw invalidApiResponse("Intelligence API did not evaluate every listing.");
+    });
   }
-  return evaluations;
+  if (seen.size !== expected.size) {
+    return createEvaluationFailureOutcome(
+      detailedRecords,
+      invalidApiResponse("Intelligence API did not evaluate every listing.", parsed.data.requestId),
+    );
+  }
+  return { evaluations, failures };
 }
 
 export function filterApiErrorDescriptor(error: unknown): LocalizedText {
@@ -163,12 +223,18 @@ export function filterApiErrorDescriptor(error: unknown): LocalizedText {
   };
 }
 
+export function evaluationFailureDescriptor(failure: ListingEvaluationFailure): LocalizedText {
+  return {
+    id: FILTER_API_ERROR_MESSAGE_IDS[failure.code] ?? "error.intelligenceFailed",
+  };
+}
+
 export async function evaluateDetailedRecordsInBatches(
   runId: string,
   recipe: IntelligenceRecipe,
   records: ScrapedPropertyRecord[],
   options: EvaluationOptions = {},
-): Promise<ListingEvaluation[]> {
+): Promise<ListingEvaluationOutcome> {
   const detailedRecords = records.filter((record) => record.status === "detailed");
   if (detailedRecords.length === 0) {
     throw clientValidationError("No detailed listings are available for evaluation.");
@@ -177,7 +243,7 @@ export async function evaluateDetailedRecordsInBatches(
     throw clientValidationError("Detailed listings must have unique ids before evaluation.");
   }
 
-  const evaluations: ListingEvaluation[] = [];
+  const accumulated: ListingEvaluationOutcome = { evaluations: [], failures: [] };
   for (let index = 0; index < detailedRecords.length; index += MAX_LISTINGS_PER_REQUEST) {
     if (options.signal?.aborted) throw new DOMException("Evaluation cancelled.", "AbortError");
     const batch = await evaluateDetailedRecords(
@@ -186,30 +252,78 @@ export async function evaluateDetailedRecordsInBatches(
       detailedRecords.slice(index, index + MAX_LISTINGS_PER_REQUEST),
       options,
     );
-    evaluations.push(...batch);
-    await options.onBatchComplete?.(batch, [...evaluations]);
+    accumulated.evaluations.push(...batch.evaluations);
+    accumulated.failures.push(...batch.failures);
+    await options.onBatchComplete?.(batch, {
+      evaluations: [...accumulated.evaluations],
+      failures: [...accumulated.failures],
+    });
   }
-  return evaluations;
+  return accumulated;
 }
 
 export function mergeRecordEvaluations(
   records: ScrapedPropertyRecord[],
   evaluations: ListingEvaluation[],
 ): ScrapedPropertyRecord[] {
-  const byId = new Map(evaluations.map((evaluation) => [evaluation.listingId, evaluation]));
+  return mergeRecordEvaluationOutcome(records, { evaluations, failures: [] });
+}
+
+export function mergeRecordEvaluationOutcome(
+  records: ScrapedPropertyRecord[],
+  outcome: ListingEvaluationOutcome,
+): ScrapedPropertyRecord[] {
+  const evaluationsById = new Map(
+    outcome.evaluations.map((evaluation) => [evaluation.listingId, evaluation]),
+  );
+  const failuresById = new Map(
+    outcome.failures.map((failure) => [failure.listingId, failure]),
+  );
   return records.map((record) => {
-    const evaluation = byId.get(record.id);
-    return evaluation ? { ...record, evaluation } : record;
+    const evaluation = evaluationsById.get(record.id);
+    if (evaluation) {
+      const { evaluationFailure: _evaluationFailure, ...recordWithoutFailure } = record;
+      return { ...recordWithoutFailure, evaluation };
+    }
+    const evaluationFailure = failuresById.get(record.id);
+    return evaluationFailure ? { ...record, evaluationFailure } : record;
   });
 }
 
-function readApiError(payload: unknown, status: number): { message: string; code?: string } {
+export function createEvaluationFailureOutcome(
+  records: ScrapedPropertyRecord[],
+  error: unknown,
+): ListingEvaluationOutcome {
+  const code = error instanceof FilterApiError && error.code
+    ? error.code
+    : "INTERNAL_ERROR";
+  return {
+    evaluations: [],
+    failures: records.map((record) => ({
+      listingId: record.id,
+      code,
+      stage: failureStage(code),
+      retryable: isRetryableFailure(code),
+      ...(error instanceof FilterApiError && error.requestId
+        ? { requestId: error.requestId }
+        : {}),
+    })),
+  };
+}
+
+function readApiError(
+  payload: unknown,
+  status: number,
+): { message: string; code?: string; requestId?: string } {
   if (isRecord(payload) && isRecord(payload.error)) {
     const message = typeof payload.error.message === "string"
       ? payload.error.message
       : `Intelligence API request failed with status ${status}.`;
     const code = typeof payload.error.code === "string" ? payload.error.code : undefined;
-    return { message, code };
+    const requestId = typeof payload.error.requestId === "string"
+      ? payload.error.requestId
+      : readRequestId(payload);
+    return { message, code, requestId };
   }
   return { message: `Intelligence API request failed with status ${status}.` };
 }
@@ -226,6 +340,54 @@ function clientValidationError(message: string): FilterApiError {
   return new FilterApiError(message, undefined, "CLIENT_VALIDATION");
 }
 
-function invalidApiResponse(message: string): FilterApiError {
-  return new FilterApiError(message, undefined, "INVALID_API_RESPONSE");
+function invalidApiResponse(message: string, requestId?: string): FilterApiError {
+  return new FilterApiError(message, undefined, "INVALID_API_RESPONSE", requestId);
+}
+
+function readRequestId(payload: unknown): string | undefined {
+  return isRecord(payload) && typeof payload.requestId === "string"
+    ? payload.requestId
+    : undefined;
+}
+
+function fallbackHttpErrorCode(status: number): string {
+  if (status === 408 || status === 504) return "OPENAI_TIMEOUT";
+  if (status === 429) return "RATE_LIMITED";
+  if (status >= 500) return "OPENAI_UNAVAILABLE";
+  return "INTERNAL_ERROR";
+}
+
+function failureStage(code: string): string {
+  if (code === "NETWORK_UNAVAILABLE") return "provider";
+  if (code === "INVALID_API_RESPONSE" || code === "INVALID_JSON") return "response";
+  if (code === "SYNC_FAILED") return "internal";
+  return code.startsWith("OPENAI_") || code === "RATE_LIMITED" ? "provider" : "internal";
+}
+
+function isRetryableFailure(code: string): boolean {
+  return new Set([
+    "NETWORK_UNAVAILABLE",
+    "OPENAI_TIMEOUT",
+    "OPENAI_RATE_LIMITED",
+    "OPENAI_UNAVAILABLE",
+    "OPENAI_INCOMPLETE",
+    "MAX_OUTPUT_TOKENS",
+    "INVALID_MODEL_OUTPUT",
+    "EMPTY_OUTPUT",
+    "SCHEMA_MISMATCH",
+    "INVALID_API_RESPONSE",
+    "INVALID_JSON",
+    "RATE_LIMITED",
+    "SYNC_FAILED",
+  ]).has(code) || [
+    "MISSING_LISTING",
+    "DUPLICATE_LISTING",
+    "UNEXPECTED_LISTING",
+    "MISSING_CRITERION",
+    "DUPLICATE_CRITERION",
+    "UNEXPECTED_CRITERION",
+    "EVIDENCE_REQUIRED",
+    "UNKNOWN_EVIDENCE_ID",
+    "CROSS_LISTING_EVIDENCE",
+  ].includes(code);
 }

@@ -199,7 +199,14 @@ describe("HTTP API", () => {
     }).expect(200);
     const detail = await request(app).get("/v1/listings/leboncoin/2876543210").expect(200);
 
-    expect(evaluation.body.results[0]).toMatchObject({ listingId: "leboncoin:2876543210", decision: "relevant" });
+    expect(evaluation.body).toMatchObject({
+      status: "completed",
+      items: [{
+        listingId: "leboncoin:2876543210",
+        status: "succeeded",
+        evaluation: { listingId: "leboncoin:2876543210", decision: "relevant" },
+      }],
+    });
     expect(detail.body.evaluations).toHaveLength(1);
     expect(detail.body.evaluations[0]).toMatchObject({ runId: "run-evaluation" });
     expect(detail.body.latestEvaluation.criteria[0].evidence).toEqual(["Jardin"]);
@@ -428,6 +435,10 @@ describe("HTTP API", () => {
     const logger = createLogger();
     const evaluatorError = new ApiError(503, "OPENAI_UNAVAILABLE", "The evaluator is temporarily unavailable.", {
       cause: new Error(secret),
+      stage: "provider",
+      detailCode: "UNAVAILABLE",
+      retryable: true,
+      responseId: "resp-safe-1",
     });
     const { app } = createTestApp({ error: evaluatorError, logger });
     const input = {
@@ -442,6 +453,10 @@ describe("HTTP API", () => {
     expect(upstreamResponse.body.error).toMatchObject({
       code: "OPENAI_UNAVAILABLE",
       message: "The evaluator is temporarily unavailable.",
+      stage: "provider",
+      detailCode: "UNAVAILABLE",
+      retryable: true,
+      responseId: "resp-safe-1",
     });
     expect(JSON.stringify(upstreamResponse.body)).not.toContain(secret);
     expect(JSON.stringify(logger.info.mock.calls)).not.toContain(secret);
