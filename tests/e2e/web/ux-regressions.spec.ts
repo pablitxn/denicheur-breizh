@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 
 import { FIXTURE_TIME, ingestListings, listingFixture, testToken } from "./realApiFixture.js";
 
@@ -74,6 +74,72 @@ test.describe("integrated web responsive navigation", () => {
   }
 });
 
+test.describe("responsive Bretagne map", () => {
+  for (const viewport of responsiveViewports) {
+    test(`${viewport.width}x${viewport.height} keeps map markers anchored without overflow`, async ({ page }) => {
+      await page.setViewportSize(viewport);
+      await page.goto("/?view=map");
+      await expectViewReady(page, "map");
+
+      const map = page.getByRole("region", {
+        name: "Carte de Bretagne et des biens immobiliers",
+        exact: true,
+      });
+      await map.scrollIntoViewIfNeeded();
+      const pointeDuRaz = map.getByRole("button", { name: "Découvrir Pointe du Raz", exact: true });
+      await expect(pointeDuRaz).toBeVisible();
+      await expect.poll(() => pointeDuRaz.evaluate((element) => getComputedStyle(element).position))
+        .toBe("absolute");
+      await expectViewFitsWidth(page, `${viewport.width}x${viewport.height}/map-only`);
+      await expectNoUnexpectedHorizontalOverflow(page, `${viewport.width}x${viewport.height}/map-only`);
+      await expectNoClippedText(page, `${viewport.width}x${viewport.height}/map-only`);
+    });
+  }
+});
+
+test.describe("responsive property gallery", () => {
+  for (const viewport of responsiveViewports) {
+    test(`${viewport.width}x${viewport.height} navigates card photos without overflow`, async ({ page, request }, testInfo) => {
+      const token = testToken(testInfo, `responsive-gallery-${viewport.width}`);
+      const title = `Galerie responsive ${viewport.width} ${token}`;
+      const imageUrls = [1, 2].map((index) => `https://fixtures.invalid/${token}/responsive-${index}.svg`);
+      const listing = listingFixture(token, "responsive-gallery", { title, imageUrls });
+
+      await page.route("https://fixtures.invalid/**", (route) => route.fulfill({
+        status: 200,
+        contentType: "image/svg+xml",
+        body: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 12"><rect width="16" height="12" fill="#7257d4"/></svg>',
+      }));
+      await ingestListings(request, `web-responsive-gallery-${token}`, [listing]);
+      await page.setViewportSize(viewport);
+      await page.goto("/?view=properties&pmode=cards");
+      await expectViewReady(page, "properties");
+
+      const selectCard = page.getByRole("button", {
+        name: `Afficher le détail de ${title}`,
+        exact: true,
+      });
+      const gallery = page.locator("article").filter({ has: selectCard }).getByRole("group", {
+        name: `Galerie photos de ${title}`,
+        exact: true,
+      });
+      await gallery.scrollIntoViewIfNeeded();
+      await expectLoadedImage(
+        gallery.getByRole("img", { name: `Photo 1 sur 2 : ${title}`, exact: true }),
+        imageUrls[0],
+      );
+      await gallery.getByRole("button", { name: `Photo suivante de ${title}`, exact: true }).click();
+      await expectLoadedImage(
+        gallery.getByRole("img", { name: `Photo 2 sur 2 : ${title}`, exact: true }),
+        imageUrls[1],
+      );
+      await expectViewFitsWidth(page, `${viewport.width}x${viewport.height}/properties-gallery`);
+      await expectNoUnexpectedHorizontalOverflow(page, `${viewport.width}x${viewport.height}/properties-gallery`);
+      await expectNoClippedText(page, `${viewport.width}x${viewport.height}/properties-gallery`);
+    });
+  }
+});
+
 async function expectHeaderLayout(page: Page): Promise<void> {
   await expect.poll(() => page.getByRole("banner").evaluate((banner) => {
     const tolerance = 2;
@@ -114,7 +180,7 @@ async function expectViewFitsWidth(page: Page, context: string): Promise<void> {
 
 async function expectViewReady(page: Page, view: string): Promise<void> {
   if (view === "map") {
-    await expect(page.getByRole("region", { name: "Carte des biens immobiliers", exact: true })).toBeVisible();
+    await expect(page.getByRole("region", { name: "Carte de Bretagne et des biens immobiliers", exact: true })).toBeVisible();
     return;
   }
   if (view === "properties") {
@@ -134,6 +200,13 @@ async function expectViewReady(page: Page, view: string): Promise<void> {
 
 async function expectSearchParam(page: Page, key: string, value: string): Promise<void> {
   await expect.poll(() => new URL(page.url()).searchParams.get(key)).toBe(value);
+}
+
+async function expectLoadedImage(image: Locator, expectedSrc: string): Promise<void> {
+  await expect(image).toBeVisible();
+  await expect(image).toHaveAttribute("src", expectedSrc);
+  await expect.poll(() => image.evaluate((element) => (element as HTMLImageElement).naturalWidth))
+    .toBeGreaterThan(0);
 }
 
 async function expectNoUnexpectedHorizontalOverflow(page: Page, context: string): Promise<void> {

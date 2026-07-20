@@ -4,6 +4,7 @@ import {
   normalizeSearchFilters,
 } from "../lib/leboncoinSearch";
 import { createDefaultIntelligenceRecipe, normalizeIntelligenceRecipe } from "../intelligence/recipe";
+import { parseResolvedEvaluationPlan } from "../intelligence/plan";
 import {
   normalizeVerifiedCoordinates,
   selectBestCoordinates,
@@ -17,6 +18,7 @@ import {
 } from "../sync/storage";
 import type {
   IntelligenceRecipe,
+  EvaluationPlan,
   ListingEvaluationFailure,
   LocalizedText,
   ScrapeRun,
@@ -30,12 +32,14 @@ export const CRAWLER_STORAGE_KEYS = {
   run: "denicheur:crawler:run",
   records: "denicheur:crawler:records",
   recipe: "denicheur:intelligence:recipe",
+  plan: "denicheur:intelligence:plan",
 } as const;
 
 const FILTERS_KEY = CRAWLER_STORAGE_KEYS.filters;
 const RUN_KEY = CRAWLER_STORAGE_KEYS.run;
 const RECORDS_KEY = CRAWLER_STORAGE_KEYS.records;
 const RECIPE_KEY = CRAWLER_STORAGE_KEYS.recipe;
+const PLAN_KEY = CRAWLER_STORAGE_KEYS.plan;
 const INTERRUPTIBLE_RUN_STATUSES = new Set<ScrapeRun["status"]>([
   "opening-search",
   "configuring-search",
@@ -104,6 +108,19 @@ export async function saveRecipe(recipe: IntelligenceRecipe): Promise<void> {
   await setStorage({ [RECIPE_KEY]: normalizeIntelligenceRecipe(recipe) });
 }
 
+export async function loadEvaluationPlan(): Promise<EvaluationPlan | undefined> {
+  const values = await getStorage<{ [PLAN_KEY]?: unknown }>([PLAN_KEY]);
+  return parseResolvedEvaluationPlan(values[PLAN_KEY]);
+}
+
+export async function saveEvaluationPlan(plan: EvaluationPlan): Promise<void> {
+  await setStorage({ [PLAN_KEY]: plan });
+}
+
+export async function clearEvaluationPlan(): Promise<void> {
+  await removeStorage([PLAN_KEY]);
+}
+
 export function reconcileInterruptedRun(run: ScrapeRun, finishedAt = new Date().toISOString()): ScrapeRun {
   if (!INTERRUPTIBLE_RUN_STATUSES.has(run.status)) return run;
 
@@ -155,6 +172,7 @@ export async function clearRecordsAndSyncQueue(): Promise<void> {
     [RUN_KEY]: IDLE_RUN,
     [SYNC_STORAGE_KEY]: {
       ...structuredClone(EMPTY_SYNC_STATE),
+      activePlan: syncState.activePlan,
       activeRecipe: syncState.activeRecipe,
     },
   });
@@ -258,10 +276,12 @@ export function migrateStoredRecords(records: ScrapedPropertyRecord[]): ScrapedP
     if (!id) continue;
 
     const evaluation = record.evaluation?.listingId === id ? record.evaluation : undefined;
+    const planEvaluation = record.planEvaluation?.listingId === id ? record.planEvaluation : undefined;
     const evaluationFailure = normalizeEvaluationFailure(record.evaluationFailure, id);
     const {
       coordinates: storedCoordinates,
       evaluationFailure: _storedEvaluationFailure,
+      planEvaluation: _storedPlanEvaluation,
       ...recordWithoutCoordinates
     } = record;
     const coordinates = normalizeVerifiedCoordinates(storedCoordinates);
@@ -270,6 +290,7 @@ export function migrateStoredRecords(records: ScrapedPropertyRecord[]): ScrapedP
       id,
       listingUrl: canonicalUrl,
       evaluation,
+      ...(planEvaluation ? { planEvaluation } : {}),
       ...(evaluationFailure ? { evaluationFailure } : {}),
       error: normalizeLocalizedText(record.error),
       ...(coordinates ? { coordinates } : {}),
@@ -374,6 +395,19 @@ function setStorage(values: Record<string, unknown>): Promise<void> {
         return;
       }
 
+      resolve();
+    });
+  });
+}
+
+function removeStorage(keys: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    chrome.storage.local.remove(keys, () => {
+      const error = chrome.runtime.lastError;
+      if (error) {
+        reject(new Error(error.message));
+        return;
+      }
       resolve();
     });
   });

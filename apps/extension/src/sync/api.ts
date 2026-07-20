@@ -1,12 +1,28 @@
 import {
+  evaluationExecutionCreateRequestSchema,
+  evaluationExecutionRecordSchema,
+  evaluationExecutionResultsSchema,
   ingestionResponseSchema,
+  parseListingKey,
   recipeVersionSchema,
+  resolvedEvaluationPlanVersionSchema,
   type RecipeVersion,
 } from "@denicheur-breizh/contracts";
+import type { LocaleCode } from "@denicheur-breizh/i18n";
+import {
+  resolveRuntimeApiConfig,
+  withOperatorAuthorization,
+} from "../api/runtimeConfig";
+import { parseResolvedEvaluationPlan } from "../intelligence/plan";
 import type { IntelligenceRecipe } from "../lib/types";
+import type {
+  EvaluationExecution,
+  EvaluationPlan,
+  PlanRecipeEvaluation,
+  PlanEvaluation,
+  PlanEvaluationStep,
+} from "../lib/types";
 import type { IngestionRequestPayload } from "./types";
-
-const DEFAULT_API_URL = "http://127.0.0.1:4310";
 
 export type SyncFetcher = typeof fetch;
 
@@ -15,6 +31,19 @@ export interface ClearedCollectedDataCounts {
   readonly runs: number;
   readonly runListings: number;
   readonly evaluations: number;
+}
+
+export interface EvaluationExecutionCreatePayload {
+  planId: string;
+  planVersion: number;
+  locale: LocaleCode;
+  listingIds?: string[];
+  force?: boolean;
+}
+
+export interface EvaluationExecutionDetail {
+  execution: EvaluationExecution;
+  items: PlanEvaluation[];
 }
 
 export class ExtensionApiError extends Error {
@@ -28,9 +57,8 @@ export class ExtensionApiError extends Error {
   }
 }
 
-export function configuredApiUrl(): string {
-  const configured = import.meta.env.WXT_FILTER_API_URL as string | undefined;
-  return (configured?.trim() || DEFAULT_API_URL).replace(/\/$/, "");
+export async function configuredApiUrl(): Promise<string> {
+  return (await resolveRuntimeApiConfig()).baseUrl;
 }
 
 export async function ingestRunBatch(
@@ -38,11 +66,12 @@ export async function ingestRunBatch(
   payload: IngestionRequestPayload,
   options: { fetcher?: SyncFetcher; baseUrl?: string; signal?: AbortSignal } = {},
 ): Promise<void> {
+  const config = await resolveRuntimeApiConfig(options.baseUrl);
   const response = await request(
-    `${normalizedBaseUrl(options.baseUrl)}/v1/ingestion/runs/${encodeURIComponent(runId)}`,
+    `${config.baseUrl}/v1/ingestion/runs/${encodeURIComponent(runId)}`,
     {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: withOperatorAuthorization({ "Content-Type": "application/json" }, config.operatorToken),
       body: JSON.stringify(payload),
       signal: options.signal,
     },
@@ -57,8 +86,9 @@ export async function ingestRunBatch(
 export async function fetchActiveRecipe(
   options: { fetcher?: SyncFetcher; baseUrl?: string; signal?: AbortSignal } = {},
 ): Promise<IntelligenceRecipe> {
+  const config = await resolveRuntimeApiConfig(options.baseUrl);
   const response = await request(
-    `${normalizedBaseUrl(options.baseUrl)}/v1/recipes/active`,
+    `${config.baseUrl}/v1/recipes/active`,
     { method: "GET", signal: options.signal },
     options.fetcher,
   );
@@ -70,14 +100,108 @@ export async function fetchActiveRecipe(
   return toLocalRecipe(parsed.data);
 }
 
+export async function fetchDefaultEvaluationPlan(
+  options: { fetcher?: SyncFetcher; baseUrl?: string; signal?: AbortSignal } = {},
+): Promise<EvaluationPlan | undefined> {
+  const config = await resolveRuntimeApiConfig(options.baseUrl);
+  const response = await request(
+    `${config.baseUrl}/v1/evaluation-plans/default`,
+    { method: "GET", signal: options.signal },
+    options.fetcher,
+  );
+  if (response.status === 404) return undefined;
+  const payload = await readSuccessJson(response);
+  const canonical = resolvedEvaluationPlanVersionSchema.safeParse(payload);
+  const parsed = canonical.success ? parseResolvedEvaluationPlan(canonical.data) : undefined;
+  if (!parsed || !parsed.isDefault) {
+    throw new ExtensionApiError("The API returned an invalid default evaluation plan.", response.status, "INVALID_API_RESPONSE");
+  }
+  return parsed;
+}
+
+export async function createEvaluationExecution(
+  runId: string,
+  payload: EvaluationExecutionCreatePayload,
+  idempotencyKey: string,
+  options: { fetcher?: SyncFetcher; baseUrl?: string; signal?: AbortSignal } = {},
+): Promise<EvaluationExecution> {
+  const requestPayload = evaluationExecutionCreateRequestSchema.safeParse(payload);
+  if (!requestPayload.success) {
+    throw new ExtensionApiError("The evaluation execution request is invalid.", 400, "CLIENT_VALIDATION");
+  }
+  const config = await resolveRuntimeApiConfig(options.baseUrl);
+  const response = await request(
+    `${config.baseUrl}/v1/runs/${encodeURIComponent(runId)}/evaluation-executions`,
+    {
+      method: "POST",
+      headers: withOperatorAuthorization({
+        "Content-Type": "application/json",
+        "Idempotency-Key": idempotencyKey,
+      }, config.operatorToken),
+      body: JSON.stringify(requestPayload.data),
+      signal: options.signal,
+    },
+    options.fetcher,
+  );
+  const responsePayload = await readSuccessJson(response);
+  const canonicalExecution = evaluationExecutionRecordSchema.safeParse(responsePayload);
+  const execution = canonicalExecution.success ? parseEvaluationExecution(canonicalExecution.data) : undefined;
+  if (!execution || execution.runId !== runId ||
+    execution.planId !== requestPayload.data.planId || execution.planVersion !== requestPayload.data.planVersion ||
+    execution.locale !== requestPayload.data.locale) {
+    throw new ExtensionApiError("The API returned an invalid evaluation execution.", response.status, "INVALID_API_RESPONSE");
+  }
+  return execution;
+}
+
+export async function fetchEvaluationExecution(
+  executionId: string,
+  options: { fetcher?: SyncFetcher; baseUrl?: string; signal?: AbortSignal } = {},
+): Promise<EvaluationExecutionDetail> {
+  const config = await resolveRuntimeApiConfig(options.baseUrl);
+  const response = await request(
+    `${config.baseUrl}/v1/evaluation-executions/${encodeURIComponent(executionId)}`,
+    { method: "GET", signal: options.signal },
+    options.fetcher,
+  );
+  return parseExecutionDetail(await readSuccessJson(response), executionId, response.status);
+}
+
+export async function fetchEvaluationExecutionResults(
+  executionId: string,
+  options: { fetcher?: SyncFetcher; baseUrl?: string; signal?: AbortSignal } = {},
+): Promise<EvaluationExecutionDetail> {
+  const { execution } = await fetchEvaluationExecution(executionId, options);
+  const config = await resolveRuntimeApiConfig(options.baseUrl);
+  const response = await request(
+    `${config.baseUrl}/v1/evaluation-executions/${encodeURIComponent(executionId)}/results`,
+    { method: "GET", signal: options.signal },
+    options.fetcher,
+  );
+  const payload = await readSuccessJson(response);
+  const canonical = evaluationExecutionResultsSchema.safeParse(payload);
+  if (!canonical.success || canonical.data.executionId !== executionId) {
+    throw new ExtensionApiError("The API returned invalid evaluation results.", response.status, "INVALID_API_RESPONSE");
+  }
+  const items = canonical.data.items.flatMap((item) => {
+    const parsed = parsePlanEvaluation(item, execution);
+    return parsed ? [parsed] : [];
+  });
+  if (items.length !== canonical.data.items.length) {
+    throw new ExtensionApiError("The API returned invalid evaluation results.", response.status, "INVALID_API_RESPONSE");
+  }
+  return { execution, items };
+}
+
 export async function clearApiCollectedData(
   options: { fetcher?: SyncFetcher; baseUrl?: string; signal?: AbortSignal } = {},
 ): Promise<ClearedCollectedDataCounts> {
+  const config = await resolveRuntimeApiConfig(options.baseUrl);
   const response = await request(
-    `${normalizedBaseUrl(options.baseUrl)}/v1/maintenance/collected-data/clear`,
+    `${config.baseUrl}/v1/maintenance/collected-data/clear`,
     {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: withOperatorAuthorization({ "Content-Type": "application/json" }, config.operatorToken),
       body: JSON.stringify({ confirm: "clear-collected-data", runnerLease: "held" }),
       signal: options.signal,
     },
@@ -122,10 +246,6 @@ async function readSuccessJson(response: Response): Promise<unknown> {
   throw new ExtensionApiError(message, response.status, code);
 }
 
-function normalizedBaseUrl(baseUrl?: string): string {
-  return (baseUrl?.trim() || configuredApiUrl()).replace(/\/$/, "");
-}
-
 function toLocalRecipe(recipe: RecipeVersion): IntelligenceRecipe {
   return {
     id: recipe.id,
@@ -133,14 +253,192 @@ function toLocalRecipe(recipe: RecipeVersion): IntelligenceRecipe {
     name: recipe.name,
     threshold: recipe.threshold,
     enabled: recipe.active,
-    criteria: recipe.criteria.map(({ id, name, description, weight, required }) => ({
+    criteria: recipe.criteria.map(({ id, name, description, weight, required, evidenceRequired }) => ({
       id,
       name,
       description,
       weight,
       required,
+      evidenceRequired: evidenceRequired !== false,
     })),
   };
+}
+
+function parseExecutionDetail(
+  payload: unknown,
+  expectedExecutionId: string,
+  status: number,
+): EvaluationExecutionDetail {
+  if (!isRecord(payload)) {
+    throw new ExtensionApiError("The API returned an invalid evaluation execution detail.", status, "INVALID_API_RESPONSE");
+  }
+  const execution = parseEvaluationExecution(isRecord(payload.execution) ? payload.execution : payload);
+  const canonicalExecution = evaluationExecutionRecordSchema.safeParse(
+    isRecord(payload.execution) ? payload.execution : payload,
+  );
+  const rawItems = Array.isArray(payload.items)
+    ? payload.items
+    : isRecord(payload.execution) && Array.isArray(payload.results)
+      ? payload.results
+      : [];
+  if (!canonicalExecution.success || !execution || execution.id !== expectedExecutionId) {
+    throw new ExtensionApiError("The API returned an invalid evaluation execution detail.", status, "INVALID_API_RESPONSE");
+  }
+  const items = rawItems.flatMap((item) => {
+    const parsed = parsePlanEvaluation(item, execution);
+    return parsed ? [parsed] : [];
+  });
+  return { execution, items };
+}
+
+function parseEvaluationExecution(value: unknown): EvaluationExecution | undefined {
+  if (!isRecord(value)) return undefined;
+  const id = requiredText(value.id);
+  const runId = requiredText(value.runId);
+  const planId = requiredText(value.planId);
+  const planVersion = positiveInteger(value.planVersion);
+  const locale = value.locale === "fr" || value.locale === "es" || value.locale === "en"
+    ? value.locale
+    : undefined;
+  const statuses = new Set(["queued", "running", "completed", "partial", "failed", "cancelled"]);
+  const executionStatus = typeof value.status === "string" && statuses.has(value.status)
+    ? value.status as EvaluationExecution["status"]
+    : undefined;
+  if (!id || !runId || !planId || !planVersion || !locale || !executionStatus) return undefined;
+  return {
+    id,
+    runId,
+    planId,
+    planVersion,
+    locale,
+    status: executionStatus,
+    createdAt: optionalTextValue(value.createdAt),
+    startedAt: optionalTextValue(value.startedAt),
+    completedAt: optionalTextValue(value.completedAt),
+    error: optionalTextValue(value.error) ?? optionalTextValue(value.lastError),
+  };
+}
+
+function parsePlanEvaluation(value: unknown, execution: EvaluationExecution): PlanEvaluation | undefined {
+  if (!isRecord(value)) return undefined;
+  const listingKey = requiredText(value.listingId);
+  const identity = listingKey ? parseListingKey(listingKey) : undefined;
+  const listingId = identity?.externalId ?? listingKey;
+  const decision = value.decision === "relevant" || value.decision === "not-relevant" || value.decision === "review"
+    ? value.decision
+    : undefined;
+  const score = value.score === null || (typeof value.score === "number" && Number.isFinite(value.score))
+    ? value.score
+    : null;
+  const rawSteps = Array.isArray(value.steps) ? value.steps : [];
+  const steps = rawSteps.flatMap((step) => {
+    const parsed = parsePlanEvaluationStep(step, listingId);
+    return parsed ? [parsed] : [];
+  });
+  if (!listingId || !decision || steps.length !== rawSteps.length) return undefined;
+  return {
+    executionId: execution.id,
+    listingId,
+    planId: execution.planId,
+    planVersion: execution.planVersion,
+    decision,
+    score,
+    summary: optionalTextValue(value.summary) ?? decision,
+    locale: execution.locale,
+    evaluatedAt: optionalTextValue(value.evaluatedAt) ?? execution.completedAt,
+    steps,
+  };
+}
+
+function parsePlanEvaluationStep(
+  value: unknown,
+  listingId: string | undefined,
+): PlanEvaluationStep | undefined {
+  if (!isRecord(value)) return undefined;
+  const recipeId = requiredText(value.recipeId);
+  const recipeVersion = positiveInteger(value.recipeVersion);
+  const statuses = new Set(["succeeded", "cached", "failed", "skipped"]);
+  const status = typeof value.status === "string" && statuses.has(value.status)
+    ? value.status as PlanEvaluationStep["status"]
+    : undefined;
+  if (!recipeId || !recipeVersion || !status) return undefined;
+  const evaluation = parseListingEvaluation(value.evaluation, listingId);
+  const evaluator = isRecord(value.evaluator) && value.evaluator.provider === "openai" &&
+    requiredText(value.evaluator.model) && requiredText(value.evaluator.version)
+    ? {
+        provider: "openai" as const,
+        model: requiredText(value.evaluator.model)!,
+        version: requiredText(value.evaluator.version)!,
+      }
+    : undefined;
+  const error = isRecord(value.error) && requiredText(value.error.code)
+    ? {
+        code: requiredText(value.error.code)!,
+        message: optionalTextValue(value.error.message),
+        retryable: typeof value.error.retryable === "boolean" ? value.error.retryable : undefined,
+      }
+    : undefined;
+  return {
+    recipeId,
+    recipeVersion,
+    status,
+    ...(evaluation ? { evaluation } : {}),
+    ...(evaluator ? { evaluator } : {}),
+    ...(error ? { error } : {}),
+  };
+}
+
+function parseListingEvaluation(
+  value: unknown,
+  listingId: string | undefined,
+): PlanRecipeEvaluation | undefined {
+  if (!isRecord(value) || !listingId) return undefined;
+  const decision = value.decision === "relevant" || value.decision === "not-relevant" || value.decision === "review"
+    ? value.decision
+    : undefined;
+  const score = value.score === null || (typeof value.score === "number" && Number.isFinite(value.score))
+    ? value.score
+    : undefined;
+  const criteria = Array.isArray(value.criteria) ? value.criteria.flatMap((criterion) => {
+    if (!isRecord(criterion)) return [];
+    const criterionId = requiredText(criterion.criterionId);
+    const verdict = criterion.verdict === "pass" || criterion.verdict === "fail" || criterion.verdict === "unknown"
+      ? criterion.verdict
+      : undefined;
+    if (!criterionId || !verdict) return [];
+    return [{
+      criterionId,
+      verdict: verdict as "pass" | "fail" | "unknown",
+      reason: optionalTextValue(criterion.reason) ?? "",
+      evidence: Array.isArray(criterion.evidence)
+        ? criterion.evidence.filter((item): item is string => typeof item === "string")
+        : [],
+    }];
+  }) : [];
+  if (!decision || score === undefined) return undefined;
+  return {
+    listingId,
+    decision,
+    score,
+    summary: optionalTextValue(value.summary) ?? decision,
+    criteria,
+    missingData: Array.isArray(value.missingData)
+      ? value.missingData.filter((item): item is string => typeof item === "string")
+      : [],
+    evaluatedAt: optionalTextValue(value.evaluatedAt) ?? new Date(0).toISOString(),
+  };
+}
+
+function requiredText(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function optionalTextValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

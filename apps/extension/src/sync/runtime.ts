@@ -2,6 +2,7 @@ import type {
   ExtensionRuntimeRequest,
   ExtensionRuntimeResponse,
 } from "./types";
+import type { LocaleCode } from "@denicheur-breizh/i18n";
 
 export function sendExtensionRuntimeRequest(
   request: ExtensionRuntimeRequest,
@@ -34,5 +35,21 @@ export function requestIterationReset(deadlineAt?: number): Promise<ExtensionRun
 }
 
 export function requestActiveRecipeRefresh(): Promise<ExtensionRuntimeResponse> {
-  return sendExtensionRuntimeRequest({ type: "REFRESH_ACTIVE_RECIPE" });
+  return requestDefaultPlanRefresh();
+}
+
+export function requestDefaultPlanRefresh(): Promise<ExtensionRuntimeResponse> {
+  return sendExtensionRuntimeRequest({ type: "REFRESH_DEFAULT_PLAN" });
+}
+
+export function requestPlanEvaluation(request: {
+  runId: string;
+  locale: LocaleCode;
+  listingIds?: string[];
+  force?: boolean;
+}): Promise<ExtensionRuntimeResponse> {
+  return sendExtensionRuntimeRequest({
+    type: "QUEUE_PLAN_EVALUATION",
+    ...request,
+  });
 }

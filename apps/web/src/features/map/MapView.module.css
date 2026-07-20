@@ -312,6 +312,149 @@
   translate: -50% -50%;
 }
 
+.interestMarker {
+  position: absolute;
+  display: grid;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--color-surface);
+  border-radius: 50%;
+  background: var(--color-surface);
+  box-shadow: var(--shadow-panel);
+  color: var(--color-good);
+  cursor: pointer;
+  font: inherit;
+  touch-action: manipulation;
+}
+
+.interestMarkerHeritage {
+  color: var(--color-sunset);
+}
+
+.interestMarkerNatural {
+  color: var(--color-good);
+}
+
+.interestMarkerDot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in oklab, currentColor 16%, transparent);
+}
+
+.interestMarkerLabel {
+  position: absolute;
+  left: calc(100% + var(--space-2));
+  width: max-content;
+  max-width: 220px;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2);
+  background: color-mix(in oklab, var(--color-surface) 95%, transparent);
+  box-shadow: var(--shadow-panel);
+  color: var(--color-text);
+  font-size: var(--fs-mono-xs);
+  font-weight: 700;
+  line-height: 1.25;
+  opacity: 0;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  text-align: left;
+  transform: translateX(-4px);
+  transition: opacity 120ms ease, transform 120ms ease;
+  visibility: hidden;
+}
+
+.interestMarker:hover .interestMarkerLabel,
+.interestMarker:focus-visible .interestMarkerLabel {
+  opacity: 1;
+  transform: translateX(0);
+  visibility: visible;
+}
+
+.interestMarker:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+
+.interestDetail {
+  position: absolute;
+  z-index: 7;
+  top: 64px;
+  right: var(--space-3);
+  display: flex;
+  width: min(330px, calc(100% - 24px));
+  padding: var(--space-4);
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-3);
+  background: color-mix(in oklab, var(--color-surface) 96%, transparent);
+  box-shadow: var(--shadow-panel);
+  backdrop-filter: blur(10px);
+}
+
+.interestDetailHeader {
+  display: flex;
+  width: 100%;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.interestDetailHeader h2 {
+  margin: var(--space-2) 0 0;
+  font-family: var(--font-display);
+  font-size: var(--fs-h4);
+  line-height: 1.15;
+  overflow-wrap: anywhere;
+}
+
+.interestDetail p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.interestProvenance {
+  color: var(--color-text-muted);
+  font-size: var(--fs-mono-xs);
+}
+
+.interestSources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.interestSource {
+  display: inline-flex;
+  min-height: 36px;
+  padding: var(--space-2) var(--space-3);
+  align-items: center;
+  gap: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2);
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  font-size: var(--fs-body-sm);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.interestSource:hover {
+  border-color: var(--focus-ring);
+  background: var(--surface-hover);
+}
+
+.interestSource:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
 .statusOverlay {
   position: absolute;
   z-index: 6;
@@ -329,7 +472,6 @@
   gap: var(--space-4);
 }
 
-.legend,
 .mapNotice {
   position: absolute;
   z-index: 5;
@@ -367,11 +509,67 @@
   color: var(--color-danger);
 }
 
-.legend {
-  bottom: 12px;
-  left: 12px;
-  width: 230px;
-  padding: 12px;
+.mapKeySection {
+  gap: var(--space-2);
+  padding-block: var(--space-3);
+}
+
+.scopeNote {
+  margin: var(--space-2) 0 var(--space-3);
+  color: var(--color-text-muted);
+  font-size: var(--fs-mono-xs);
+}
+
+.contextLegend {
+  display: grid;
+  margin: var(--space-2) 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.contextLegendThree {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.legendItem {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--fs-mono-xs);
+  line-height: 1.25;
+}
+
+.legendSwatch,
+.nearbyDot {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in oklab, currentColor 55%, var(--color-border));
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.outsideSwatch {
+  color: var(--color-border-strong);
+}
+
+.finistereSwatch {
+  color: var(--color-lavender);
+}
+
+.quimperSwatch,
+.heritageSwatch {
+  color: var(--color-sunset);
+}
+
+.naturalSwatch {
+  color: var(--color-good);
+}
+
+.dangerSwatch {
+  color: var(--color-danger);
 }
 
 .gradientBar {
@@ -619,6 +817,64 @@
   font-size: var(--fs-mono-xs);
 }
 
+.nearbyHint {
+  margin: 0 !important;
+  color: var(--color-text-muted);
+  font-size: var(--fs-body-sm);
+}
+
+.nearbyList {
+  display: flex;
+  margin: 0;
+  padding: 0;
+  flex-direction: column;
+  gap: var(--space-2);
+  list-style: none;
+}
+
+.nearbyButton {
+  display: flex;
+  width: 100%;
+  min-height: 42px;
+  padding: var(--space-2) var(--space-3);
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-2);
+  background: var(--color-surface-2);
+  color: var(--color-text);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.nearbyButton:hover {
+  border-color: var(--color-border);
+  background: var(--surface-hover);
+}
+
+.nearbyButton:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.nearbyButton > span {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+  overflow-wrap: anywhere;
+}
+
+.nearbyButton strong {
+  flex: 0 0 auto;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  font-variant-numeric: tabular-nums;
+}
+
 .evaluationHeader {
   display: flex;
   align-items: center;
@@ -736,10 +992,15 @@
   .resultsList {
     max-height: 380px;
   }
+
+  .interestDetail {
+    top: 56px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .resultButton {
+  .resultButton,
+  .interestMarkerLabel {
     transition: none;
   }
 }

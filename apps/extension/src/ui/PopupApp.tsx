@@ -110,6 +110,8 @@ export function PopupApp({ initialThemePreference = "system" }: PopupAppProps) {
     run.status === "collecting-details" ||
     run.status === "evaluating";
   const progressMessage = resolveText(run.message, "popup.ready");
+  const pendingSyncCount = syncState.queue.length + syncState.evaluationQueue.filter((entry) =>
+    entry.status === "queued" || entry.status === "creating" || entry.status === "polling").length;
 
   return (
     <main className="popup-shell" aria-busy={loadState === "loading"}>
@@ -183,14 +185,14 @@ export function PopupApp({ initialThemePreference = "system" }: PopupAppProps) {
             )}
 
             <section className="popup-status" aria-live="polite">
-              <Chip tone={syncState.status === "error" ? "danger" : syncState.queue.length > 0 ? "sunset" : "good"}>
+              <Chip tone={syncState.status === "error" ? "danger" : pendingSyncCount > 0 ? "sunset" : "good"}>
                 {(syncPending || syncState.status === "syncing") && <LoaderCircle className="spin" size={13} />}
                 {syncPending || syncState.status === "syncing"
                   ? t("sync.syncing")
                   : syncState.status === "error"
                     ? t("sync.failed", { detail: syncState.lastError ?? "API" })
-                    : syncState.queue.length > 0
-                      ? t("sync.pending", { count: syncState.queue.length })
+                    : pendingSyncCount > 0
+                      ? t("sync.pending", { count: pendingSyncCount })
                       : t("sync.upToDate")}
               </Chip>
             </section>

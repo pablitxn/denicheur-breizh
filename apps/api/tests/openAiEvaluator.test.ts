@@ -100,6 +100,7 @@ describe("buildOpenAiRequest", () => {
 
     expect(openAiRequest.instructions).toContain(`summary and criterion reason in ${language}`);
     expect(openAiRequest.instructions).toContain("Evidence IDs are opaque server references");
+    expect(openAiRequest.instructions).toContain("When evidenceRequired is false, pass or fail may use an empty evidenceIds array");
     expect(openAiRequest.instructions).toContain("Never invent");
   });
 

@@ -1,3 +1,17 @@
+import type {
+  EvaluationExecutionCreateRequest as SharedEvaluationExecutionCreateRequest,
+  EvaluationExecutionListingResult as SharedEvaluationExecutionListingResult,
+  EvaluationExecutionRecord as SharedEvaluationExecutionRecord,
+  EvaluationExecutionResults as SharedEvaluationExecutionResults,
+  EvaluationExecutionStatus as SharedEvaluationExecutionStatus,
+  EvaluationExecutionStepResult as SharedEvaluationExecutionStepResult,
+  EvaluationPlanDraft as SharedEvaluationPlanDraft,
+  EvaluationPlanOperator as SharedEvaluationPlanOperator,
+  EvaluationPlanRecipeReference as SharedEvaluationPlanRecipeReference,
+  EvaluationPlanVersion as SharedEvaluationPlanVersion,
+  ListingImageAssetStatus as SharedListingImageAssetStatus,
+} from "@denicheur-breizh/contracts";
+
 export type ListingDecision = "relevant" | "not-relevant" | "review";
 export type CriterionVerdict = "pass" | "fail" | "unknown";
 
@@ -47,6 +61,16 @@ export interface PropertyCoordinates {
   locationKind: CoordinateLocationKind;
 }
 
+export type PropertyImageAssetStatus = SharedListingImageAssetStatus;
+
+export interface PropertyImageAsset {
+  id: string;
+  sourceUrl: string;
+  status: PropertyImageAssetStatus;
+  thumbnailUrl?: string;
+  galleryUrl?: string;
+}
+
 export interface PropertyListing {
   source: string;
   externalId: string;
@@ -69,6 +93,7 @@ export interface PropertyListing {
   energyClass?: string;
   gesClass?: string;
   imageUrls: string[];
+  imageAssets?: PropertyImageAsset[];
   features: string[];
   status?: string;
   scrapedAt?: string;
@@ -105,6 +130,22 @@ export interface RecipeDraft {
   criteria: IntelligenceCriterion[];
 }
 
+export type EvaluationPlanOperator = SharedEvaluationPlanOperator;
+export type EvaluationPlanRecipeRef = SharedEvaluationPlanRecipeReference;
+export type EvaluationPlan = SharedEvaluationPlanVersion;
+export interface EvaluationPlanDraft extends SharedEvaluationPlanDraft { id: string }
+export type EvaluationExecutionStatus = SharedEvaluationExecutionStatus;
+export type EvaluationExecution = SharedEvaluationExecutionRecord;
+export type EvaluationExecutionStepResult = SharedEvaluationExecutionStepResult;
+export type EvaluationExecutionResult = SharedEvaluationExecutionListingResult;
+export type EvaluationExecutionDetail = SharedEvaluationExecutionRecord;
+export type EvaluationExecutionResults = SharedEvaluationExecutionResults;
+
+export interface StartEvaluationExecutionInput extends SharedEvaluationExecutionCreateRequest {
+  runId: string;
+  idempotencyKey: string;
+}
+
 export interface ListingFilters {
   sources?: string[];
   runId?: string;
@@ -128,6 +169,13 @@ export interface PaginatedListings {
 export interface HealthStatus {
   status: "ok" | "degraded";
   database: "ok" | "unavailable";
+  media: {
+    status: "disabled" | "ok" | "degraded";
+    pending: number;
+    processing: number;
+    ready: number;
+    failed: number;
+  };
   openAiConfigured: boolean;
 }
 

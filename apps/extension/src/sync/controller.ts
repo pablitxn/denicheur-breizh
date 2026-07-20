@@ -1,15 +1,19 @@
 import {
   clearRecordsAndSyncQueue,
   loadCrawlerState,
+  loadEvaluationPlan,
 } from "../storage/chromeStorage";
 import {
+  enqueueDefaultPlanEvaluation,
+  flushEvaluationQueue,
   flushQueuedIngestion,
   reconcileStoredCrawlerState,
-  refreshActiveRecipeCache,
+  refreshDefaultPlanCache,
 } from "./syncService";
 import { clearApiCollectedData } from "./api";
 import { loadExtensionSyncState } from "./storage";
 import type { ExtensionRuntimeResponse } from "./types";
+import type { LocaleCode } from "@denicheur-breizh/i18n";
 
 export const ITERATION_RESET_TIMEOUT_MS = 15_000;
 const ITERATION_RESET_CALLBACK_MARGIN_MS = 1_000;
@@ -25,7 +29,7 @@ class IterationResetTimeoutError extends Error {
 
 let activeSynchronization: Promise<ExtensionRuntimeResponse> | undefined;
 let activeReset: Promise<ExtensionRuntimeResponse> | undefined;
-let activeRecipeRefresh: Promise<ExtensionRuntimeResponse> | undefined;
+let activePlanRefresh: Promise<ExtensionRuntimeResponse> | undefined;
 let rerunRequested = false;
 let forceRequested = false;
 
@@ -50,24 +54,50 @@ export function resetExtensionIteration(deadlineAt?: number): Promise<ExtensionR
 }
 
 export function refreshCachedActiveRecipe(): Promise<ExtensionRuntimeResponse> {
-  if (activeReset) {
-    return activeReset.then(() => refreshCachedActiveRecipe());
-  }
-  if (activeRecipeRefresh) return activeRecipeRefresh;
-  activeRecipeRefresh = runActiveRecipeRefresh().finally(() => {
-    activeRecipeRefresh = undefined;
-  });
-  return activeRecipeRefresh;
+  return refreshCachedDefaultPlan();
 }
 
-async function runActiveRecipeRefresh(): Promise<ExtensionRuntimeResponse> {
-  const state = await refreshActiveRecipeCache();
-  const recipe = (await loadCrawlerState()).recipe;
+export function refreshCachedDefaultPlan(): Promise<ExtensionRuntimeResponse> {
+  if (activeReset) {
+    return activeReset.then(() => refreshCachedDefaultPlan());
+  }
+  if (activePlanRefresh) return activePlanRefresh;
+  activePlanRefresh = runDefaultPlanRefresh().finally(() => {
+    activePlanRefresh = undefined;
+  });
+  return activePlanRefresh;
+}
+
+export async function queueDefaultPlanEvaluation(request: {
+  runId: string;
+  locale: LocaleCode;
+  listingIds?: string[];
+  force?: boolean;
+}): Promise<ExtensionRuntimeResponse> {
+  if (activeReset) return activeReset.then(() => queueDefaultPlanEvaluation(request));
+  // A crawl completion can already be reconciling ingestion state. Let that
+  // synchronization persist its snapshot before appending the durable job so
+  // a stale reconciliation write cannot drop the new evaluation entry.
+  if (activeSynchronization) await activeSynchronization;
+  await refreshDefaultPlanCache();
+  const entry = await enqueueDefaultPlanEvaluation(request);
+  const response = await scheduleExtensionSync(true);
+  const current = response.state.evaluationQueue.find((candidate) => candidate.key === entry.key);
   return {
-    ok: state.activeRecipe.status === "cached",
+    ...response,
+    ok: current?.status !== "failed" && current?.status !== "cancelled",
+    ...(current?.lastError ? { error: current.lastError } : {}),
+  };
+}
+
+async function runDefaultPlanRefresh(): Promise<ExtensionRuntimeResponse> {
+  const state = await refreshDefaultPlanCache();
+  const [crawler, plan] = await Promise.all([loadCrawlerState(), loadEvaluationPlan()]);
+  return {
+    ok: state.activePlan.status === "cached",
     state,
-    ...(state.activeRecipe.status === "cached" ? { recipe } : {}),
-    ...(state.activeRecipe.lastError ? { error: state.activeRecipe.lastError } : {}),
+    ...(state.activePlan.status === "cached" && plan ? { plan, recipe: crawler.recipe } : {}),
+    ...(state.activePlan.lastError ? { error: state.activePlan.lastError } : {}),
   };
 }
 
@@ -88,8 +118,9 @@ async function runSynchronizationLoop(): Promise<ExtensionRuntimeResponse> {
     const force = forceRequested;
     forceRequested = false;
     await reconcileStoredCrawlerState();
-    await refreshActiveRecipeCache();
-    const state = await flushQueuedIngestion({ force });
+    await refreshDefaultPlanCache();
+    await flushQueuedIngestion({ force });
+    const state = await flushEvaluationQueue({ force });
     response = {
       ok: state.status !== "error",
       state,
@@ -111,7 +142,7 @@ async function runIterationReset(deadlineAt?: number): Promise<ExtensionRuntimeR
 
   try {
     await waitForResetDependency(activeSynchronization, abortController.signal, effectiveDeadlineAt);
-    await waitForResetDependency(activeRecipeRefresh, abortController.signal, effectiveDeadlineAt);
+    await waitForResetDependency(activePlanRefresh, abortController.signal, effectiveDeadlineAt);
     await runResetPhase(clearRecordsAndSyncQueue, abortController.signal, effectiveDeadlineAt);
     await runResetPhase(
       () => clearApiCollectedData({ signal: abortController.signal }),

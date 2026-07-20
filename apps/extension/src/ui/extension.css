@@ -207,12 +207,48 @@ a {
   grid-column: 1 / -1;
 }
 
+.runtime-api-surface,
 .control-surface,
 .results-surface {
   min-width: 0;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-3);
   background: color-mix(in oklab, var(--color-surface) 94%, transparent);
+}
+
+.runtime-api-surface {
+  padding: var(--space-4) var(--space-5);
+}
+
+.runtime-api-form {
+  display: grid;
+  grid-template-columns: minmax(280px, 1.35fr) minmax(240px, 1fr) auto;
+  align-items: end;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+
+.runtime-api-form small {
+  color: var(--color-text-muted);
+  font-size: var(--fs-mono-xs);
+}
+
+.runtime-api-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding-bottom: 1px;
+}
+
+.runtime-api-feedback {
+  min-height: 1.25rem;
+  margin-top: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: var(--fs-mono-xs);
+}
+
+.runtime-api-feedback .field-error {
+  color: var(--color-danger);
 }
 
 .control-surface {
@@ -1069,6 +1105,14 @@ a {
   .dashboard-layout {
     grid-template-columns: 1fr;
   }
+
+  .runtime-api-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .runtime-api-actions {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 620px) {
@@ -1089,6 +1133,7 @@ a {
   }
 
   .form-grid,
+  .runtime-api-form,
   .recipe-grid,
   .records-grid {
     grid-template-columns: 1fr;
@@ -1113,6 +1158,7 @@ a {
     padding: var(--space-3);
   }
 
+  .runtime-api-surface,
   .control-surface,
   .results-surface {
     padding: var(--space-4);

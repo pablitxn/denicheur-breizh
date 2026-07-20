@@ -6,24 +6,44 @@ import {
   type ListingIngestion,
   type RunIngestion,
 } from "@denicheur-breizh/contracts";
-import { localizedTextDetail } from "../lib/localizedText";
+import type { LocaleCode } from "@denicheur-breizh/i18n";
+import { errorMessageDescriptor, localizedTextDetail, message } from "../lib/localizedText";
 import {
   normalizeVerifiedCoordinates,
   selectBestCoordinates,
 } from "../lib/coordinates";
 import type {
+  EvaluationExecution,
   ScrapeRun,
   ScrapedPropertyRecord,
   StoredCrawlerState,
 } from "../lib/types";
-import { loadCrawlerState, saveRecipe } from "../storage/chromeStorage";
-import { fetchActiveRecipe, ingestRunBatch, type SyncFetcher } from "./api";
+import { primaryPlanRecipe } from "../intelligence/plan";
+import {
+  clearEvaluationPlan,
+  loadCrawlerState,
+  loadEvaluationPlan,
+  saveCrawlerState,
+  saveEvaluationPlan,
+  saveRecipe,
+} from "../storage/chromeStorage";
+import {
+  createEvaluationExecution,
+  ExtensionApiError,
+  fetchActiveRecipe,
+  fetchDefaultEvaluationPlan,
+  fetchEvaluationExecution,
+  fetchEvaluationExecutionResults,
+  ingestRunBatch,
+  type SyncFetcher,
+} from "./api";
 import {
   loadExtensionSyncState,
   saveExtensionSyncState,
 } from "./storage";
 import {
   INGESTION_BATCH_SIZE,
+  type EvaluationQueueEntry,
   type ExtensionSyncState,
   type SyncQueueEntry,
 } from "./types";
@@ -31,6 +51,9 @@ import {
 const MAX_RETRY_DELAY_MS = 60 * 60 * 1_000;
 const MIN_RETRY_DELAY_MS = 60 * 1_000;
 const MAX_SYNCED_FINGERPRINTS = 1_000;
+export const EVALUATION_POLL_INTERVAL_MS = 2_000;
+const MAX_EVALUATION_RETRY_DELAY_MS = 60_000;
+const MAX_EVALUATION_HISTORY = 25;
 
 interface SyncOptions {
   fetcher?: SyncFetcher;
@@ -167,10 +190,337 @@ export async function refreshActiveRecipeCache(options: SyncOptions = {}): Promi
   }
 }
 
+export async function refreshDefaultPlanCache(options: SyncOptions = {}): Promise<ExtensionSyncState> {
+  const now = options.now ?? (() => new Date());
+
+  try {
+    const plan = await fetchDefaultEvaluationPlan(options);
+    const state = await loadExtensionSyncState();
+    if (!plan) {
+      await clearEvaluationPlan();
+      const next: ExtensionSyncState = {
+        ...state,
+        activePlan: {
+          status: "none",
+          fetchedAt: now().toISOString(),
+        },
+      };
+      await saveExtensionSyncState(next);
+      return next;
+    }
+
+    await saveEvaluationPlan(plan);
+    const primaryRecipe = primaryPlanRecipe(plan);
+    if (primaryRecipe) await saveRecipe(primaryRecipe);
+    const next: ExtensionSyncState = {
+      ...state,
+      activePlan: {
+        status: "cached",
+        fetchedAt: now().toISOString(),
+        planId: plan.id,
+        planVersion: plan.version,
+      },
+      ...(primaryRecipe
+        ? {
+            activeRecipe: {
+              status: "cached" as const,
+              fetchedAt: now().toISOString(),
+              recipeId: primaryRecipe.id,
+              recipeVersion: primaryRecipe.version,
+            },
+          }
+        : {}),
+    };
+    await saveExtensionSyncState(next);
+    return next;
+  } catch (error) {
+    const failure = errorMessage(error);
+    const state = await loadExtensionSyncState();
+    const next: ExtensionSyncState = {
+      ...state,
+      activePlan: {
+        ...state.activePlan,
+        status: state.activePlan.planId ? "cached" : "unavailable",
+        lastError: failure,
+      },
+    };
+    await saveExtensionSyncState(next);
+    return next;
+  }
+}
+
+interface EnqueueEvaluationOptions extends Pick<SyncOptions, "now"> {
+  runId: string;
+  locale: LocaleCode;
+  listingIds?: string[];
+  force?: boolean;
+}
+
+export async function enqueueDefaultPlanEvaluation(
+  options: EnqueueEvaluationOptions,
+): Promise<EvaluationQueueEntry> {
+  const now = options.now ?? (() => new Date());
+  const [state, plan, crawler] = await Promise.all([
+    loadExtensionSyncState(),
+    loadEvaluationPlan(),
+    loadCrawlerState(),
+  ]);
+  if (state.activePlan.status !== "cached" || !plan ||
+    plan.id !== state.activePlan.planId || plan.version !== state.activePlan.planVersion) {
+    throw new ExtensionApiError("No default evaluation plan is available.", 404, "NO_DEFAULT_PLAN");
+  }
+  const detailedRecords = crawler.records.filter(
+    (record) => record.searchRunId === options.runId && record.status === "detailed",
+  );
+  if (detailedRecords.length === 0) {
+    throw new ExtensionApiError("No detailed listings are available for evaluation.", 400, "NO_DETAILED_LISTINGS");
+  }
+
+  const listingIds = options.listingIds && options.listingIds.length > 0
+    ? [...new Set(options.listingIds)].sort()
+    : undefined;
+  const scope = evaluationScope({
+    runId: options.runId,
+    planId: plan.id,
+    planVersion: plan.version,
+    locale: options.locale,
+    listingIds,
+  });
+  if (!options.force) {
+    const existing = state.evaluationQueue.find((entry) =>
+      !entry.force && evaluationEntryScope(entry) === scope);
+    if (existing) return existing;
+  }
+
+  const generation = options.force
+    ? state.evaluationQueue.filter((entry) => evaluationEntryScope(entry) === scope).length + 1
+    : 1;
+  const idempotencyKey = `extension-${payloadFingerprint({ scope, force: Boolean(options.force), generation })}`;
+  const createdAt = now().toISOString();
+  const entry: EvaluationQueueEntry = {
+    key: idempotencyKey,
+    idempotencyKey,
+    runId: options.runId,
+    planId: plan.id,
+    planVersion: plan.version,
+    locale: options.locale,
+    ...(listingIds ? { listingIds } : {}),
+    ...(options.force ? { force: true } : {}),
+    status: "queued",
+    attempts: 0,
+    nextAttemptAt: 0,
+    createdAt,
+    updatedAt: createdAt,
+  };
+  const evaluationQueue = trimEvaluationHistory([...state.evaluationQueue, entry]);
+  await saveExtensionSyncState({
+    ...state,
+    status: "pending",
+    evaluationQueue,
+  });
+  if (crawler.run.id === options.runId) {
+    await saveCrawlerState({
+      run: {
+        ...crawler.run,
+        intelligenceStatus: "evaluating",
+        intelligenceError: undefined,
+        message: message("run.evaluating", { count: detailedRecords.length }),
+      },
+    });
+  }
+  return entry;
+}
+
+export async function flushEvaluationQueue(options: FlushOptions = {}): Promise<ExtensionSyncState> {
+  const now = options.now ?? (() => new Date());
+  let state = await loadExtensionSyncState();
+  const activeStatuses = new Set<EvaluationQueueEntry["status"]>(["queued", "creating", "polling"]);
+
+  for (const entry of state.evaluationQueue) {
+    if (!activeStatuses.has(entry.status) || entry.nextAttemptAt > now().getTime()) continue;
+    if (state.queue.some((batch) => batch.runId === entry.runId)) continue;
+    state = await processEvaluationEntry(entry, { ...options, now });
+  }
+
+  const hasPendingEvaluation = state.evaluationQueue.some((entry) => activeStatuses.has(entry.status));
+  const next: ExtensionSyncState = {
+    ...state,
+    status: state.queue.length > 0 || hasPendingEvaluation
+      ? "pending"
+      : state.status === "error"
+        ? "error"
+        : "idle",
+  };
+  await saveExtensionSyncState(next);
+  return next;
+}
+
+async function processEvaluationEntry(
+  entry: EvaluationQueueEntry,
+  options: FlushOptions & { now: () => Date },
+): Promise<ExtensionSyncState> {
+  try {
+    let execution: EvaluationExecution;
+    if (!entry.executionId) {
+      await updateEvaluationEntry(entry.key, (current) => ({
+        ...current,
+        status: "creating",
+        updatedAt: options.now().toISOString(),
+      }));
+      execution = await createEvaluationExecution(
+        entry.runId,
+        {
+          planId: entry.planId,
+          planVersion: entry.planVersion,
+          locale: entry.locale,
+          ...(entry.listingIds ? { listingIds: entry.listingIds } : {}),
+          ...(entry.force ? { force: true } : {}),
+        },
+        entry.idempotencyKey,
+        options,
+      );
+    } else {
+      execution = (await fetchEvaluationExecution(entry.executionId, options)).execution;
+    }
+
+    if (execution.status === "queued" || execution.status === "running") {
+      return updateEvaluationEntry(entry.key, (current) => ({
+        ...current,
+        status: "polling",
+        executionId: execution.id,
+        nextAttemptAt: options.now().getTime() + EVALUATION_POLL_INTERVAL_MS,
+        updatedAt: options.now().toISOString(),
+        lastError: undefined,
+      }));
+    }
+    if (execution.status === "completed" || execution.status === "partial" || execution.status === "failed") {
+      const detail = await fetchEvaluationExecutionResults(execution.id, options);
+      if (detail.items.length > 0) {
+        await applyPlanEvaluationResults(entry, detail.execution, detail.items);
+      } else if (execution.status === "failed") {
+        await markPlanEvaluationFailure(entry, execution.error ?? "Evaluation execution failed.");
+      }
+      return updateEvaluationEntry(entry.key, (current) => ({
+        ...current,
+        status: execution.status === "failed" ? "failed" : "completed",
+        executionId: execution.id,
+        nextAttemptAt: 0,
+        updatedAt: options.now().toISOString(),
+        lastError: execution.status === "completed" ? undefined : execution.error,
+      }));
+    }
+
+    await markPlanEvaluationFailure(entry, execution.error ?? `Execution ${execution.status}.`);
+    return updateEvaluationEntry(entry.key, (current) => ({
+      ...current,
+      status: execution.status === "cancelled" ? "cancelled" : "failed",
+      executionId: execution.id,
+      nextAttemptAt: 0,
+      updatedAt: options.now().toISOString(),
+      lastError: execution.error ?? `Execution ${execution.status}.`,
+    }));
+  } catch (error) {
+    const retryable = isRetryableEvaluationError(error);
+    const failure = errorMessage(error);
+    const state = await updateEvaluationEntry(entry.key, (current) => {
+      const attempts = current.attempts + 1;
+      return {
+        ...current,
+        status: retryable ? (current.executionId ? "polling" : "queued") : "failed",
+        attempts,
+        nextAttemptAt: retryable
+          ? options.now().getTime() + evaluationRetryDelayMs(attempts)
+          : 0,
+        updatedAt: options.now().toISOString(),
+        lastError: failure,
+      };
+    });
+    if (!retryable) await markPlanEvaluationFailure(entry, failure);
+    return state;
+  }
+}
+
+async function applyPlanEvaluationResults(
+  entry: EvaluationQueueEntry,
+  execution: EvaluationExecution,
+  items: Awaited<ReturnType<typeof fetchEvaluationExecutionResults>>["items"],
+): Promise<void> {
+  const crawler = await loadCrawlerState();
+  const byListingId = new Map(items.map((item) => [item.listingId, item]));
+  const records = crawler.records.map((record) => {
+    if (record.searchRunId !== entry.runId) return record;
+    const planEvaluation = byListingId.get(record.id);
+    return planEvaluation ? { ...record, planEvaluation } : record;
+  });
+  if (crawler.run.id !== entry.runId) {
+    await saveCrawlerState({ records });
+    return;
+  }
+
+  const evaluated = records.flatMap((record) =>
+    record.searchRunId === entry.runId && record.planEvaluation?.executionId === execution.id
+      ? [record.planEvaluation]
+      : []);
+  const scopedDetailed = records.filter(
+    (record) => record.searchRunId === entry.runId && record.status === "detailed",
+  );
+  const intelligenceStatus = execution.status !== "completed" || evaluated.length < scopedDetailed.length
+    ? "partial" as const
+    : "completed" as const;
+  await saveCrawlerState({
+    records,
+    run: {
+      ...crawler.run,
+      intelligenceStatus,
+      intelligenceError: execution.error
+        ? errorMessageDescriptor("error.intelligenceFailed", execution.error)
+        : undefined,
+      evaluated: evaluated.length,
+      relevant: evaluated.filter((item) => item.decision === "relevant").length,
+      notRelevant: evaluated.filter((item) => item.decision === "not-relevant").length,
+      review: evaluated.filter((item) => item.decision === "review").length,
+      message: intelligenceStatus === "completed"
+        ? message("run.evaluated", { count: evaluated.length })
+        : message("run.intelligencePartial", {
+            evaluated: evaluated.length,
+            pending: Math.max(0, scopedDetailed.length - evaluated.length),
+            total: scopedDetailed.length,
+          }),
+    },
+  });
+}
+
+async function markPlanEvaluationFailure(entry: EvaluationQueueEntry, failure: string): Promise<void> {
+  const crawler = await loadCrawlerState();
+  if (crawler.run.id !== entry.runId) return;
+  await saveCrawlerState({
+    run: {
+      ...crawler.run,
+      intelligenceStatus: "failed",
+      intelligenceError: errorMessageDescriptor("error.intelligenceFailed", failure),
+      message: message("run.intelligenceFailedPreserved"),
+    },
+  });
+}
+
+async function updateEvaluationEntry(
+  key: string,
+  update: (entry: EvaluationQueueEntry) => EvaluationQueueEntry,
+): Promise<ExtensionSyncState> {
+  const state = await loadExtensionSyncState();
+  const next: ExtensionSyncState = {
+    ...state,
+    evaluationQueue: state.evaluationQueue.map((entry) => entry.key === key ? update(entry) : entry),
+  };
+  await saveExtensionSyncState(next);
+  return next;
+}
+
 export async function synchronizeExtension(options: FlushOptions = {}): Promise<ExtensionSyncState> {
   await reconcileStoredCrawlerState(options);
-  await refreshActiveRecipeCache(options);
-  return flushQueuedIngestion(options);
+  await refreshDefaultPlanCache(options);
+  await flushQueuedIngestion(options);
+  return flushEvaluationQueue(options);
 }
 
 export function reconcileCrawlerSnapshot(
@@ -318,10 +668,10 @@ function legacyRun(runId: string, records: ScrapedPropertyRecord[]): RunIngestio
     found: records.length,
     pagesVisited: 0,
     collected: records.length,
-    evaluated: records.filter((record) => record.evaluation).length,
-    relevant: records.filter((record) => record.evaluation?.decision === "relevant").length,
-    notRelevant: records.filter((record) => record.evaluation?.decision === "not-relevant").length,
-    review: records.filter((record) => record.evaluation?.decision === "review").length,
+    evaluated: records.filter((record) => record.planEvaluation ?? record.evaluation).length,
+    relevant: records.filter((record) => (record.planEvaluation ?? record.evaluation)?.decision === "relevant").length,
+    notRelevant: records.filter((record) => (record.planEvaluation ?? record.evaluation)?.decision === "not-relevant").length,
+    review: records.filter((record) => (record.planEvaluation ?? record.evaluation)?.decision === "review").length,
   });
 }
 
@@ -373,7 +723,7 @@ function normalizedFeatures(values: string[]): string[] | undefined {
   return features.length > 0 ? features : undefined;
 }
 
-function payloadFingerprint(payload: IngestionRequest): string {
+function payloadFingerprint(payload: unknown): string {
   const serialized = JSON.stringify(payload);
   let hash = 2_166_136_261;
   for (let index = 0; index < serialized.length; index += 1) {
@@ -381,6 +731,46 @@ function payloadFingerprint(payload: IngestionRequest): string {
     hash = Math.imul(hash, 16_777_619);
   }
   return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function evaluationScope(value: {
+  runId: string;
+  planId: string;
+  planVersion: number;
+  locale: LocaleCode;
+  listingIds?: string[];
+}): string {
+  return JSON.stringify({
+    runId: value.runId,
+    planId: value.planId,
+    planVersion: value.planVersion,
+    locale: value.locale,
+    listingIds: value.listingIds ?? null,
+  });
+}
+
+function evaluationEntryScope(entry: EvaluationQueueEntry): string {
+  return evaluationScope(entry);
+}
+
+function trimEvaluationHistory(entries: EvaluationQueueEntry[]): EvaluationQueueEntry[] {
+  const active = entries.filter((entry) =>
+    entry.status === "queued" || entry.status === "creating" || entry.status === "polling");
+  const terminal = entries.filter((entry) =>
+    entry.status !== "queued" && entry.status !== "creating" && entry.status !== "polling");
+  return [...terminal.slice(-MAX_EVALUATION_HISTORY), ...active];
+}
+
+function evaluationRetryDelayMs(attempts: number): number {
+  return Math.min(MAX_EVALUATION_RETRY_DELAY_MS, EVALUATION_POLL_INTERVAL_MS * 2 ** Math.max(0, attempts - 1));
+}
+
+function isRetryableEvaluationError(error: unknown): boolean {
+  return !(error instanceof ExtensionApiError) ||
+    error.status === undefined ||
+    error.status === 408 ||
+    error.status === 429 ||
+    error.status >= 500;
 }
 
 function chunk<T>(values: T[], size: number): T[][] {

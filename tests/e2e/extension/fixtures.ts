@@ -941,7 +941,10 @@ export async function clearExtensionStorage(
     await chrome.storage.local.clear();
     // Functional crawler E2E runs are intentionally pinned to English. Locale
     // switching has a separate cross-surface scenario.
-    await chrome.storage.local.set({ "denicheur:locale": nextLocale });
+    await chrome.storage.local.set({
+      "denicheur:locale": nextLocale,
+      "denicheur:runtime-api-base-url": "http://127.0.0.1:14310",
+    });
   }, locale);
 }
 

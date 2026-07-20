@@ -34,7 +34,7 @@ For every listing, return exactly one result. For every criterion, return exactl
 
 Do not infer missing facts. Do not calculate a score or final relevance decision. The server does that deterministically.
 
-Every listing contains a server-generated evidence catalog. Every pass or fail must select at least one evidenceId from that listing's catalog. Unknown may use an empty evidenceIds array.
+Every listing contains a server-generated evidence catalog. For criteria whose evidenceRequired field is not false, every pass or fail must select at least one evidenceId from that listing's catalog. When evidenceRequired is false, pass or fail may use an empty evidenceIds array. Unknown may always use an empty evidenceIds array.
 
 Never invent, rewrite, or copy an evidence value into the output. Return only supplied evidenceIds. Never use evidence assigned to another listing. Images appear immediately after a JSON marker naming their listing and evidenceId. Never claim visual facts when no image was supplied.`;
 
@@ -504,9 +504,9 @@ function withoutImageInputs(request: FilterListingsRequest): FilterListingsReque
 }
 
 function readSafeUpstreamErrorMetadata(error: unknown): {
-  readonly code?: string;
-  readonly type?: string;
-  readonly param?: string;
+  readonly code: string | undefined;
+  readonly type: string | undefined;
+  readonly param: string | undefined;
 } {
   return {
     code: safeIdentifier(readOpenAiErrorCode(error)),

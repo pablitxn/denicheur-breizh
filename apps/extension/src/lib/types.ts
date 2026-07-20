@@ -143,6 +143,8 @@ export interface ScrapedPropertyRecord {
   evaluation?: ListingEvaluation;
   /** The last technical evaluation failure. A previous valid evaluation may coexist with it. */
   evaluationFailure?: ListingEvaluationFailure;
+  /** Aggregate result from a durable, versioned evaluation plan. Legacy recipe results stay untouched. */
+  planEvaluation?: PlanEvaluation;
 }
 
 export type CriterionVerdict = "pass" | "fail" | "unknown";
@@ -154,6 +156,8 @@ export interface IntelligenceCriterion {
   description: string;
   weight: number;
   required: boolean;
+  /** Older cached recipes omitted this flag; omission keeps the historical evidence-required behavior. */
+  evidenceRequired?: boolean;
 }
 
 export interface IntelligenceRecipe {
@@ -204,6 +208,74 @@ export interface ListingEvaluationFailure {
 export interface ListingEvaluationOutcome {
   evaluations: ListingEvaluation[];
   failures: ListingEvaluationFailure[];
+}
+
+export type EvaluationPlanOperator = "all" | "any";
+
+export interface EvaluationPlanRecipe {
+  recipeId: string;
+  recipeVersion: number;
+  recipe: IntelligenceRecipe;
+}
+
+export interface EvaluationPlan {
+  id: string;
+  version: number;
+  name: string;
+  operator: EvaluationPlanOperator;
+  recipes: EvaluationPlanRecipe[];
+  isDefault: boolean;
+  combinerVersion: "tri-state-v1";
+  createdAt: string;
+}
+
+export interface EvaluationExecution {
+  id: string;
+  runId: string;
+  planId: string;
+  planVersion: number;
+  locale: LocaleCode;
+  status: "queued" | "running" | "completed" | "partial" | "failed" | "cancelled";
+  createdAt?: string;
+  startedAt?: string;
+  completedAt?: string;
+  error?: string;
+}
+
+export interface PlanEvaluationStep {
+  recipeId: string;
+  recipeVersion: number;
+  status: "succeeded" | "cached" | "failed" | "skipped";
+  evaluation?: PlanRecipeEvaluation;
+  evaluator?: ListingEvaluation["evaluator"];
+  error?: {
+    code: string;
+    message?: string;
+    retryable?: boolean;
+  };
+}
+
+export interface PlanRecipeEvaluation {
+  listingId: string;
+  decision: ListingDecision;
+  score: number | null;
+  summary: string;
+  criteria: CriterionEvaluation[];
+  missingData: string[];
+  evaluatedAt: string;
+}
+
+export interface PlanEvaluation {
+  executionId: string;
+  listingId: string;
+  planId: string;
+  planVersion: number;
+  decision: ListingDecision;
+  score: number | null;
+  summary: string;
+  locale?: LocaleCode;
+  evaluatedAt?: string;
+  steps: PlanEvaluationStep[];
 }
 
 export type ScrapeRunStatus =

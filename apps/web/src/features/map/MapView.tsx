@@ -11,11 +11,25 @@ import type { ListingDecision, PropertyListing } from "../../types";
 import { formatDecimal, formatInteger, formatPrice, formatRooms } from "../../utils/format";
 import {
   propertiesToGeoJson,
+  propertiesWithinAdministrativeArea,
   propertiesWithinBounds,
   summarizeMapCoverage,
   type MapBounds,
 } from "../../utils/mapData";
 import { stringUrlCodec, useUrlState } from "../../utils/useUrlState";
+import {
+  BRETAGNE,
+  BRETAGNE_CAMERA,
+  FINISTERE,
+  INTEREST_PLACES,
+  MAP_CONTEXT_LAYER_IDS,
+  MAP_CONTEXT_PALETTE,
+  MAP_CONTEXT_STYLE,
+  QUIMPER,
+  createOutsideBretagneMask,
+  nearestInterestPlaces,
+  type InterestPlace,
+} from "./mapGeography";
 import styles from "./MapView.module.css";
 
 const emptyListings: PropertyListing[] = [];
@@ -27,12 +41,14 @@ export function MapView() {
   const [activeSource, setActiveSource] = useState("all");
   const [activeType, setActiveType] = useState("all");
   const [selectedKey, setSelectedKey] = useUrlState("pid", "", stringUrlCodec);
+  const [selectedInterestId, setSelectedInterestId] = useState<string | null>(null);
   const [viewportBounds, setViewportBounds] = useState<MapBounds | null>(null);
   const [mapReady, setMapReady] = useState(false);
   const mapEl = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const markerConstructorRef = useRef<typeof import("maplibre-gl").Marker | null>(null);
   const selectedMarkerRef = useRef<MapLibreMarker | null>(null);
+  const interestMarkersRef = useRef<MapLibreMarker[]>([]);
   const listingsRef = useRef<PropertyListing[]>(emptyListings);
 
   const sources = useMemo(
@@ -54,7 +70,11 @@ export function MapView() {
     [activeSource, activeType, listings],
   );
   const coverage = useMemo(() => summarizeMapCoverage(filtered), [filtered]);
-  const mapped = coverage.mapped;
+  const mapped = useMemo(
+    () => propertiesWithinAdministrativeArea(coverage.mapped, BRETAGNE),
+    [coverage.mapped],
+  );
+  const outsideBretagneCount = coverage.mapped.length - mapped.length;
   const visibleMapped = useMemo(
     () => viewportBounds ? propertiesWithinBounds(mapped, viewportBounds) : mapped,
     [mapped, viewportBounds],
@@ -64,6 +84,9 @@ export function MapView() {
     : undefined;
   const detailQuery = useListing(selectedSummary?.source, selectedSummary?.externalId);
   const selected = detailQuery.data ?? selectedSummary;
+  const selectedInterest = selectedInterestId
+    ? INTEREST_PLACES.find((place) => place.id === selectedInterestId)
+    : undefined;
 
   useEffect(() => {
     listingsRef.current = mapped;
@@ -75,6 +98,12 @@ export function MapView() {
 
   const syncViewportBounds = useCallback((map: MapLibreMap) => {
     const bounds = map.getBounds();
+    const center = map.getCenter();
+    if (mapEl.current) {
+      mapEl.current.dataset.mapZoom = map.getZoom().toFixed(3);
+      mapEl.current.dataset.mapCenterLongitude = center.lng.toFixed(6);
+      mapEl.current.dataset.mapCenterLatitude = center.lat.toFixed(6);
+    }
     setViewportBounds({
       west: bounds.getWest(),
       south: bounds.getSouth(),
@@ -84,6 +113,7 @@ export function MapView() {
   }, []);
 
   const selectListing = useCallback((key: string, center = true) => {
+    setSelectedInterestId(null);
     setSelectedKey(key);
     const listing = listingsRef.current.find((item) => item.key === key);
     if (!center || !listing?.coordinates || !mapRef.current) return;
@@ -96,6 +126,11 @@ export function MapView() {
   }, [setSelectedKey]);
 
   const clearSelection = useCallback(() => setSelectedKey(""), [setSelectedKey]);
+  const selectInterest = useCallback((id: string) => {
+    setSelectedKey("");
+    setSelectedInterestId(id);
+  }, [setSelectedKey]);
+  const clearInterest = useCallback(() => setSelectedInterestId(null), []);
 
   useEffect(() => {
     let disposed = false;
@@ -123,8 +158,10 @@ export function MapView() {
           },
           layers: [{ id: "osm", type: "raster", source: "osm" }],
         },
-        center: [-2.45, 48.2],
-        zoom: 7.2,
+        center: BRETAGNE_CAMERA.center,
+        zoom: BRETAGNE_CAMERA.zoom,
+        minZoom: BRETAGNE_CAMERA.minZoom,
+        renderWorldCopies: BRETAGNE_CAMERA.renderWorldCopies,
         attributionControl: { compact: true },
         locale: {
           "NavigationControl.ZoomIn": t("map.control.zoomIn"),
@@ -139,6 +176,74 @@ export function MapView() {
       map.on("moveend", () => syncViewportBounds(map));
       map.on("load", () => {
         if (disposed) return;
+        map.addSource("outside-bretagne", {
+          type: "geojson",
+          data: createOutsideBretagneMask(),
+        });
+        map.addSource("bretagne", {
+          type: "geojson",
+          data: BRETAGNE,
+          attribution: "Limites administratives : data.gouv.fr / Etalab · Licence Ouverte 2.0",
+        });
+        map.addSource("finistere", { type: "geojson", data: FINISTERE });
+        map.addSource("quimper", { type: "geojson", data: QUIMPER });
+        map.addLayer({
+          id: MAP_CONTEXT_LAYER_IDS.outsideMask,
+          type: "fill",
+          source: "outside-bretagne",
+          paint: {
+            "fill-color": MAP_CONTEXT_PALETTE.outside,
+            "fill-opacity": MAP_CONTEXT_STYLE.outsideOpacity,
+          },
+        });
+        map.addLayer({
+          id: MAP_CONTEXT_LAYER_IDS.finistereFill,
+          type: "fill",
+          source: "finistere",
+          paint: {
+            "fill-color": MAP_CONTEXT_PALETTE.finistere,
+            "fill-opacity": MAP_CONTEXT_STYLE.finistereFillOpacity,
+          },
+        });
+        map.addLayer({
+          id: MAP_CONTEXT_LAYER_IDS.finistereOutline,
+          type: "line",
+          source: "finistere",
+          paint: {
+            "line-color": MAP_CONTEXT_PALETTE.finistereOutline,
+            "line-opacity": MAP_CONTEXT_STYLE.finistereOutlineOpacity,
+            "line-width": ["interpolate", ["linear"], ["zoom"], 6, 1, 11, 2],
+          },
+        });
+        map.addLayer({
+          id: MAP_CONTEXT_LAYER_IDS.quimperFill,
+          type: "fill",
+          source: "quimper",
+          paint: {
+            "fill-color": MAP_CONTEXT_PALETTE.quimper,
+            "fill-opacity": MAP_CONTEXT_STYLE.quimperFillOpacity,
+          },
+        });
+        map.addLayer({
+          id: MAP_CONTEXT_LAYER_IDS.quimperOutline,
+          type: "line",
+          source: "quimper",
+          paint: {
+            "line-color": MAP_CONTEXT_PALETTE.quimperOutline,
+            "line-opacity": MAP_CONTEXT_STYLE.quimperOutlineOpacity,
+            "line-width": ["interpolate", ["linear"], ["zoom"], 6, 1.5, 11, 3],
+          },
+        });
+        map.addLayer({
+          id: MAP_CONTEXT_LAYER_IDS.bretagneOutline,
+          type: "line",
+          source: "bretagne",
+          paint: {
+            "line-color": MAP_CONTEXT_PALETTE.bretagneOutline,
+            "line-opacity": MAP_CONTEXT_STYLE.bretagneOutlineOpacity,
+            "line-width": ["interpolate", ["linear"], ["zoom"], 6, 1, 11, 2],
+          },
+        });
         map.addSource("properties", { type: "geojson", data: propertiesToGeoJson(listingsRef.current) });
         map.addLayer({
           id: "properties-point",
@@ -164,6 +269,10 @@ export function MapView() {
         });
         map.on("mouseenter", "properties-point", () => { map.getCanvas().style.cursor = "pointer"; });
         map.on("mouseleave", "properties-point", () => { map.getCanvas().style.cursor = ""; });
+        interestMarkersRef.current = INTEREST_PLACES.map((place) => new maplibregl.Marker({
+          element: createInterestMarkerElement(place, t, selectInterest),
+          anchor: "center",
+        }).setLngLat([...place.coordinates]).addTo(map));
         setMapReady(true);
       });
     }
@@ -173,11 +282,13 @@ export function MapView() {
       disposed = true;
       selectedMarkerRef.current?.remove();
       selectedMarkerRef.current = null;
+      interestMarkersRef.current.forEach((marker) => marker.remove());
+      interestMarkersRef.current = [];
       mapRef.current?.remove();
       mapRef.current = null;
       markerConstructorRef.current = null;
     };
-  }, [selectListing, syncViewportBounds, t]);
+  }, [selectInterest, selectListing, syncViewportBounds, t]);
 
   useEffect(() => {
     const source = mapRef.current?.getSource("properties") as GeoJSONSource | undefined;
@@ -264,6 +375,62 @@ export function MapView() {
               {t("map.unmappedCount", { count: coverage.unmappedCount })}
             </p>
           )}
+          {outsideBretagneCount > 0 && (
+            <p className={styles.unmappedNotice}>
+              {t("map.outsideBretagneCount", { count: outsideBretagneCount })}
+            </p>
+          )}
+        </div>
+
+        <div className={[styles.panelSection, styles.mapKeySection].join(" ")}>
+          <div>
+            <SectionLabel>{t("map.legendTerritory")}</SectionLabel>
+            <p className={styles.scopeNote}>{t("map.bretagneScope")}</p>
+            <div className={[styles.contextLegend, styles.contextLegendThree].join(" ")}>
+              <span className={styles.legendItem}>
+                <i className={[styles.legendSwatch, styles.outsideSwatch].join(" ")} aria-hidden="true" />
+                {t("map.outsideBretagne")}
+              </span>
+              <span className={styles.legendItem}>
+                <i className={[styles.legendSwatch, styles.finistereSwatch].join(" ")} aria-hidden="true" />
+                {t("map.finistere")}
+              </span>
+              <span className={styles.legendItem}>
+                <i className={[styles.legendSwatch, styles.quimperSwatch].join(" ")} aria-hidden="true" />
+                {t("map.quimper")}
+              </span>
+            </div>
+          </div>
+          <div>
+            <SectionLabel>{t("map.interests")}</SectionLabel>
+            <div className={styles.contextLegend}>
+              <span className={styles.legendItem}>
+                <i className={[styles.legendSwatch, styles.naturalSwatch].join(" ")} aria-hidden="true" />
+                {t("map.interest.category.natural")}
+              </span>
+              <span className={styles.legendItem}>
+                <i className={[styles.legendSwatch, styles.heritageSwatch].join(" ")} aria-hidden="true" />
+                {t("map.interest.category.heritage")}
+              </span>
+            </div>
+          </div>
+          <div>
+            <SectionLabel>{t("map.legendDecision")}</SectionLabel>
+            <div className={[styles.contextLegend, styles.contextLegendThree].join(" ")}>
+              <span className={styles.legendItem}>
+                <i className={[styles.legendSwatch, styles.naturalSwatch].join(" ")} aria-hidden="true" />
+                {t("decision.relevant")}
+              </span>
+              <span className={styles.legendItem}>
+                <i className={[styles.legendSwatch, styles.heritageSwatch].join(" ")} aria-hidden="true" />
+                {t("decision.review")}
+              </span>
+              <span className={styles.legendItem}>
+                <i className={[styles.legendSwatch, styles.dangerSwatch].join(" ")} aria-hidden="true" />
+                {t("decision.not-relevant")}
+              </span>
+            </div>
+          </div>
         </div>
 
         <div className={[styles.panelSection, styles.resultsSection].join(" ")}>
@@ -290,6 +457,62 @@ export function MapView() {
               ? t("map.refreshing")
               : t("map.visibleResults", { count: visibleMapped.length })}
         </div>
+        {selectedInterest && (
+          <aside className={styles.interestDetail} aria-label={t("map.interest.detailAria")}>
+            <div className={styles.interestDetailHeader}>
+              <div>
+                <SectionLabel>{t("map.interests")}</SectionLabel>
+                <h2>{selectedInterest.name}</h2>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                iconOnly
+                onClick={clearInterest}
+                aria-label={t("map.interest.close")}
+              >
+                <X size={17} aria-hidden="true" />
+              </Button>
+            </div>
+            <Chip tone={selectedInterest.category === "natural" ? "good" : "sunset"}>
+              {t(`map.interest.category.${selectedInterest.category}`)}
+            </Chip>
+            <p>{t(selectedInterest.descriptionId)}</p>
+            <p className={styles.interestProvenance}>
+              {t("map.interest.representativePoint")} · {selectedInterest.sourceUpdatedAt
+                ? t("map.interest.sourceUpdated", {
+                    date: formatDateOnly(selectedInterest.sourceUpdatedAt, locale),
+                  })
+                : t("map.interest.sourceChecked", {
+                    date: formatDateOnly(selectedInterest.sourceCheckedAt, locale),
+                  })}
+            </p>
+            <div className={styles.interestSources}>
+              <a
+                className={styles.interestSource}
+                href={selectedInterest.sourceUrl}
+                target="_blank"
+                rel="noreferrer"
+              >
+                {t("map.interest.openSource", { source: selectedInterest.sourceLabel })}
+                <ExternalLink size={14} aria-hidden="true" />
+              </a>
+              {selectedInterest.coordinateSource && (
+                <a
+                  className={styles.interestSource}
+                  href={selectedInterest.coordinateSource.url}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {t("map.interest.openCoordinateSource", {
+                    source: selectedInterest.coordinateSource.label,
+                  })}
+                  <ExternalLink size={14} aria-hidden="true" />
+                </a>
+              )}
+            </div>
+          </aside>
+        )}
         {listingsQuery.isLoading && (
           <EmptyState className={styles.statusOverlay} role="status">{t("map.loading")}</EmptyState>
         )}
@@ -301,22 +524,6 @@ export function MapView() {
             </div>
           </EmptyState>
         )}
-        {!listingsQuery.error && !listingsQuery.isLoading && mapped.length === 0 && (
-          <EmptyState className={styles.statusOverlay}>{t("map.noCoordinatesWithProvenance")}</EmptyState>
-        )}
-        <div className={styles.legend}>
-          <SectionLabel>{t("map.legendDecision")}</SectionLabel>
-          <div className={styles.decisionLegend}>
-            <Chip tone="good">{t("decision.relevant")}</Chip>
-            <Chip tone="sunset">{t("decision.review")}</Chip>
-            <Chip tone="danger">{t("decision.not-relevant")}</Chip>
-          </div>
-          <SectionLabel>{t("map.legendPosition")}</SectionLabel>
-          <div className={styles.decisionLegend}>
-            <Chip>{t("map.positionProperty")}</Chip>
-            <Chip tone="sunset">{t("map.positionApproximate")}</Chip>
-          </div>
-        </div>
       </div>
 
       {selected && (
@@ -325,7 +532,11 @@ export function MapView() {
           aria-label={t("map.detailAria")}
           aria-busy={detailQuery.isFetching}
         >
-          <MapListingDetail listing={selected} onClose={clearSelection} />
+          <MapListingDetail
+            listing={selected}
+            onClose={clearSelection}
+            onSelectInterest={selectInterest}
+          />
         </aside>
       )}
     </section>
@@ -389,12 +600,16 @@ function MapResultsList({ listings, selectedKey, locale, onSelect }: MapResultsL
 interface MapListingDetailProps {
   listing: PropertyListing;
   onClose: () => void;
+  onSelectInterest: (id: string) => void;
 }
 
-function MapListingDetail({ listing, onClose }: MapListingDetailProps) {
+function MapListingDetail({ listing, onClose, onSelectInterest }: MapListingDetailProps) {
   const { locale, t } = useAppIntl();
   const coordinates = listing.coordinates;
   const evaluation = listing.evaluation;
+  const nearbyInterests = coordinates
+    ? nearestInterestPlaces([coordinates.longitude, coordinates.latitude])
+    : [];
   const facts = [
     listing.surfaceM2 === undefined
       ? undefined
@@ -422,7 +637,7 @@ function MapListingDetail({ listing, onClose }: MapListingDetailProps) {
   return (
     <article className={styles.detailCard}>
       <div className={styles.detailVisual}>
-        <PropertyVisual property={listing} size="lg" />
+        <PropertyVisual key={listing.key} property={listing} size="lg" navigation />
         <Button
           className={styles.closeDetail}
           variant="ghost"
@@ -470,6 +685,39 @@ function MapListingDetail({ listing, onClose }: MapListingDetailProps) {
                 <span>{t("map.coordinateObservedAt")}: {observedAt}</span>
               </div>
             </div>
+          </section>
+        )}
+
+        {nearbyInterests.length > 0 && (
+          <section className={styles.detailSection}>
+            <SectionLabel>{t("map.nearbyInterests")}</SectionLabel>
+            <p className={styles.nearbyHint}>{t("map.nearbyInterestsHint")}</p>
+            <ul className={styles.nearbyList}>
+              {nearbyInterests.map(({ place, distanceKm }) => (
+                <li key={place.id}>
+                  <button
+                    type="button"
+                    className={styles.nearbyButton}
+                    onClick={() => onSelectInterest(place.id)}
+                    aria-label={t("map.interest.select", { name: place.name })}
+                  >
+                    <span>
+                      <i
+                        className={[
+                          styles.nearbyDot,
+                          place.category === "natural" ? styles.naturalSwatch : styles.heritageSwatch,
+                        ].join(" ")}
+                        aria-hidden="true"
+                      />
+                      {place.name}
+                    </span>
+                    <strong>{t("map.interest.distanceKm", {
+                      distance: formatInteger(Math.max(1, Math.round(distanceKm)), locale),
+                    })}</strong>
+                  </button>
+                </li>
+              ))}
+            </ul>
           </section>
         )}
 
@@ -553,4 +801,39 @@ function formatOptionalDate(value: string | undefined, locale: LocaleCode, unava
   return Number.isNaN(parsed.valueOf())
     ? unavailable
     : new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(parsed);
+}
+
+function formatDateOnly(value: string, locale: LocaleCode): string {
+  const parsed = new Date(`${value}T12:00:00.000Z`);
+  return new Intl.DateTimeFormat(locale, { dateStyle: "medium" }).format(parsed);
+}
+
+function createInterestMarkerElement(
+  place: InterestPlace,
+  translate: ReturnType<typeof useAppIntl>["t"],
+  onSelect: (id: string) => void,
+): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = [
+    styles.interestMarker,
+    place.category === "natural" ? styles.interestMarkerNatural : styles.interestMarkerHeritage,
+  ].join(" ");
+  button.dataset.interestId = place.id;
+  button.setAttribute("aria-label", translate("map.interest.select", { name: place.name }));
+
+  const dot = document.createElement("span");
+  dot.className = styles.interestMarkerDot;
+  dot.setAttribute("aria-hidden", "true");
+  const label = document.createElement("span");
+  label.className = styles.interestMarkerLabel;
+  label.textContent = place.name;
+  label.setAttribute("aria-hidden", "true");
+  button.append(dot, label);
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    onSelect(place.id);
+  });
+
+  return button;
 }

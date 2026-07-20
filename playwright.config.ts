@@ -1,8 +1,12 @@
 import { defineConfig, devices } from "@playwright/test";
 
 const isCi = Boolean(process.env.CI);
+const runsLiveOpenAi = process.env.RUN_LIVE_OPENAI_E2E === "1";
+const apiEnvironment = "DENICHEUR_DB_PATH=:memory: FILTER_API_PORT=14310 FILTER_API_ALLOWED_ORIGINS=http://127.0.0.1:14173,chrome-extension://oekklajlieiinmjcmhdfeodpdhahhjdi";
 const apiServer = {
-  command: "DENICHEUR_DB_PATH=:memory: FILTER_API_PORT=14310 FILTER_API_ALLOWED_ORIGINS=http://127.0.0.1:14173,chrome-extension://oekklajlieiinmjcmhdfeodpdhahhjdi pnpm --filter @denicheur-breizh/api start",
+  command: runsLiveOpenAi
+    ? `${apiEnvironment} node --env-file-if-exists=.env --env-file-if-exists=apps/api/.env apps/api/dist/server.js`
+    : `env -u OPENAI_API_KEY ${apiEnvironment} node apps/api/dist/server.js`,
   url: "http://127.0.0.1:14310/health",
   reuseExistingServer: false,
   timeout: 30_000,
@@ -11,7 +15,7 @@ const apiServer = {
 };
 
 const webServer = {
-  command: "pnpm --filter @denicheur-breizh/web exec vite preview --host 127.0.0.1 --port 14173",
+  command: "node_modules/.bin/vite preview apps/web --host 127.0.0.1 --port 14173",
   url: "http://127.0.0.1:14173",
   reuseExistingServer: !isCi,
   timeout: 30_000,

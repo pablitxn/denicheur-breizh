@@ -2,6 +2,8 @@ import { defineBackground } from "wxt/utils/define-background";
 import {
   readSyncResponse,
   refreshCachedActiveRecipe,
+  refreshCachedDefaultPlan,
+  queueDefaultPlanEvaluation,
   resetExtensionIteration,
   scheduleExtensionSync,
 } from "../src/sync/controller";
@@ -33,9 +35,13 @@ export default defineBackground(() => {
       ? scheduleExtensionSync(true)
       : request.type === "RESET_ITERATION"
         ? resetExtensionIteration(request.deadlineAt)
-        : request.type === "REFRESH_ACTIVE_RECIPE"
+      : request.type === "REFRESH_ACTIVE_RECIPE"
           ? refreshCachedActiveRecipe()
-          : readSyncResponse();
+          : request.type === "REFRESH_DEFAULT_PLAN"
+            ? refreshCachedDefaultPlan()
+            : request.type === "QUEUE_PLAN_EVALUATION"
+              ? queueDefaultPlanEvaluation(request)
+              : readSyncResponse();
     void operation
       .then(sendResponse)
       .catch(async (error) => sendResponse({

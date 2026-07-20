@@ -2,11 +2,16 @@ import { createHash } from "node:crypto";
 
 import type { APIRequestContext, TestInfo } from "@playwright/test";
 import type {
+  EvaluationExecutionRecord,
+  EvaluationExecutionResults,
+  EvaluationPlanDraft,
+  EvaluationPlanVersion,
   IngestionRequest,
   IngestionResponse,
   ListingIngestion,
   RecipeDraft,
   RecipeVersion,
+  ResolvedEvaluationPlanVersion,
 } from "../../../packages/contracts/src/index.js";
 
 export const E2E_API_URL = "http://127.0.0.1:14310";
@@ -87,6 +92,62 @@ export async function getActiveRecipe(request: APIRequestContext): Promise<Recip
   const response = await request.get(`${E2E_API_URL}/v1/recipes/active`);
   await assertApiResponse(response, "read active recipe");
   return response.json() as Promise<RecipeVersion>;
+}
+
+export async function saveEvaluationPlanVersion(
+  request: APIRequestContext,
+  planId: string,
+  draft: EvaluationPlanDraft,
+): Promise<EvaluationPlanVersion> {
+  const response = await request.put(
+    `${E2E_API_URL}/v1/evaluation-plans/${encodeURIComponent(planId)}`,
+    { data: draft },
+  );
+  await assertApiResponse(response, `save evaluation plan ${planId}`);
+  return response.json() as Promise<EvaluationPlanVersion>;
+}
+
+export async function setDefaultEvaluationPlan(
+  request: APIRequestContext,
+  planId: string,
+  version: number,
+): Promise<EvaluationPlanVersion> {
+  const response = await request.post(
+    `${E2E_API_URL}/v1/evaluation-plans/${encodeURIComponent(planId)}/set-default`,
+    { data: { version } },
+  );
+  await assertApiResponse(response, `set default evaluation plan ${planId} v${version}`);
+  return response.json() as Promise<EvaluationPlanVersion>;
+}
+
+export async function getDefaultEvaluationPlan(
+  request: APIRequestContext,
+): Promise<ResolvedEvaluationPlanVersion> {
+  const response = await request.get(`${E2E_API_URL}/v1/evaluation-plans/default`);
+  await assertApiResponse(response, "read default evaluation plan");
+  return response.json() as Promise<ResolvedEvaluationPlanVersion>;
+}
+
+export async function getEvaluationExecution(
+  request: APIRequestContext,
+  executionId: string,
+): Promise<EvaluationExecutionRecord> {
+  const response = await request.get(
+    `${E2E_API_URL}/v1/evaluation-executions/${encodeURIComponent(executionId)}`,
+  );
+  await assertApiResponse(response, `read evaluation execution ${executionId}`);
+  return response.json() as Promise<EvaluationExecutionRecord>;
+}
+
+export async function getEvaluationExecutionResults(
+  request: APIRequestContext,
+  executionId: string,
+): Promise<EvaluationExecutionResults> {
+  const response = await request.get(
+    `${E2E_API_URL}/v1/evaluation-executions/${encodeURIComponent(executionId)}/results`,
+  );
+  await assertApiResponse(response, `read evaluation execution results ${executionId}`);
+  return response.json() as Promise<EvaluationExecutionResults>;
 }
 
 async function assertApiResponse(

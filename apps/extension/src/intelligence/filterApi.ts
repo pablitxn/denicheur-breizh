@@ -6,6 +6,10 @@ import {
   parseListingKey,
 } from "@denicheur-breizh/contracts";
 import { DEFAULT_LOCALE, type LocaleCode } from "@denicheur-breizh/i18n";
+import {
+  resolveRuntimeApiConfig,
+  withOperatorAuthorization,
+} from "../api/runtimeConfig";
 import type {
   IntelligenceRecipe,
   ListingEvaluation,
@@ -14,7 +18,6 @@ import type {
   LocalizedText,
   ScrapedPropertyRecord,
 } from "../lib/types";
-import { configuredApiUrl } from "../sync/api";
 
 type Fetcher = typeof fetch;
 
@@ -111,12 +114,12 @@ export async function evaluateDetailedRecords(
   }
 
   const fetcher = options.fetcher ?? fetch;
-  const baseUrl = (options.baseUrl ?? configuredApiUrl()).replace(/\/$/, "");
   let response: Response;
   try {
-    response = await fetcher(`${baseUrl}/v1/runs/${encodeURIComponent(runId)}/evaluations`, {
+    const config = await resolveRuntimeApiConfig(options.baseUrl);
+    response = await fetcher(`${config.baseUrl}/v1/runs/${encodeURIComponent(runId)}/evaluations`, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: withOperatorAuthorization({ "Content-Type": "application/json" }, config.operatorToken),
       body: JSON.stringify(request.data),
       signal: options.signal,
     });

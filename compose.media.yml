@@ -1,0 +1,82 @@
+name: denicheur-breizh-media
+
+services:
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command:
+      - server
+      - /data
+      - --console-address
+      - ":9001"
+    environment:
+      MINIO_ROOT_USER: ${DENICHEUR_MINIO_ROOT_USER:-denicheur-local-root}
+      MINIO_ROOT_PASSWORD: ${DENICHEUR_MINIO_ROOT_PASSWORD:-denicheur-local-root-password}
+    ports:
+      - "127.0.0.1:${DENICHEUR_MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${DENICHEUR_MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - denicheur-media-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
+  minio-bootstrap:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${DENICHEUR_MINIO_ROOT_USER:-denicheur-local-root}
+      MINIO_ROOT_PASSWORD: ${DENICHEUR_MINIO_ROOT_PASSWORD:-denicheur-local-root-password}
+      MEDIA_S3_ACCESS_KEY_ID: ${MEDIA_S3_ACCESS_KEY_ID:-denicheur-local-media}
+      MEDIA_S3_SECRET_ACCESS_KEY: ${MEDIA_S3_SECRET_ACCESS_KEY:-denicheur-local-media-password}
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        cat >/tmp/denicheur-media-policy.json <<'POLICY'
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+              "Effect": "Allow",
+              "Action": [
+                "s3:GetBucketLocation",
+                "s3:ListBucket"
+              ],
+              "Resource": [
+                "arn:aws:s3:::denicheur-breizh-media"
+              ]
+            },
+            {
+              "Effect": "Allow",
+              "Action": [
+                "s3:GetObject",
+                "s3:PutObject",
+                "s3:DeleteObject"
+              ],
+              "Resource": [
+                "arn:aws:s3:::denicheur-breizh-media/*"
+              ]
+            }
+          ]
+        }
+        POLICY
+
+        until mc alias set local http://minio:9000 "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}"; do
+          sleep 2
+        done
+        mc mb --ignore-existing local/denicheur-breizh-media
+        mc anonymous set private local/denicheur-breizh-media
+        mc admin policy create local denicheur-media /tmp/denicheur-media-policy.json
+        mc admin user add local "$${MEDIA_S3_ACCESS_KEY_ID}" "$${MEDIA_S3_SECRET_ACCESS_KEY}"
+        mc admin user enable local "$${MEDIA_S3_ACCESS_KEY_ID}"
+        mc admin policy attach local denicheur-media --user "$${MEDIA_S3_ACCESS_KEY_ID}"
+    restart: "no"
+
+volumes:
+  denicheur-media-data:

@@ -17,6 +17,63 @@
   object-fit: cover;
 }
 
+.galleryNav {
+  position: absolute;
+  top: 50%;
+  z-index: 3;
+  display: grid;
+  width: var(--h-control);
+  height: var(--h-control);
+  padding: 0;
+  place-items: center;
+  border: 1px solid color-mix(in oklab, var(--control-border) 82%, transparent);
+  border-radius: var(--radius-pill);
+  background: color-mix(in oklab, var(--color-surface) 86%, transparent);
+  box-shadow: var(--shadow-popover);
+  color: var(--color-text);
+  cursor: pointer;
+  transform: translateY(-50%);
+  backdrop-filter: var(--blur-panel);
+}
+
+.galleryNav:hover {
+  border-color: var(--color-border-strong);
+  background: color-mix(in oklab, var(--color-surface) 94%, transparent);
+}
+
+.galleryNav:active {
+  transform: translateY(calc(-50% + 1px));
+}
+
+.galleryNav:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.previous {
+  left: var(--space-3);
+}
+
+.next {
+  right: var(--space-3);
+}
+
+.galleryCounter {
+  position: absolute;
+  right: var(--space-3);
+  bottom: var(--space-3);
+  z-index: 2;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-pill);
+  background: color-mix(in oklab, var(--color-surface) 88%, transparent);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+  backdrop-filter: var(--blur-panel);
+}
+
 .placeholder {
   position: relative;
 }
@@ -55,9 +112,9 @@
 
 .horizon {
   position: absolute;
-  right: -10%;
+  right: 0;
   bottom: 28%;
-  left: -10%;
+  left: 0;
   height: 36%;
   border-radius: 50% 50% 0 0;
   background: color-mix(in oklab, var(--color-bg) 40%, transparent);
@@ -104,4 +161,17 @@
   border-radius: 50%;
   background: color-mix(in oklab, var(--color-sunset) 72%, white);
   box-shadow: 0 0 28px color-mix(in oklab, var(--color-sunset) 60%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .galleryNav {
+    transition: none;
+  }
+}
+
+@media (pointer: coarse) {
+  .galleryNav {
+    width: var(--space-9);
+    height: var(--space-9);
+  }
 }

@@ -1,13 +1,26 @@
 import {
+  evaluationExecutionCreateRequestSchema,
+  evaluationExecutionRecordSchema,
+  evaluationExecutionResultsSchema,
+  evaluationExecutionsPageSchema,
+  evaluationPlanDraftSchema,
+  evaluationPlanVersionSchema,
+  evaluationPlansResponseSchema,
   healthResponseSchema,
   listingDetailSchema,
   listingsPageSchema,
   recipeDraftSchema,
   recipeVersionSchema,
   recipesResponseSchema,
+  resolvedEvaluationPlanVersionSchema,
   runDetailSchema,
   runsPageSchema,
+  type EvaluationExecutionRecord,
+  type EvaluationExecutionResults,
+  type EvaluationExecutionsPage,
+  type EvaluationPlanVersion,
   type HealthResponse,
+  type ListingImageAsset,
   type ListingDetail,
   type ListingEvaluationRecord,
   type ListingRecord,
@@ -17,12 +30,17 @@ import {
   type RunsPage,
 } from "@denicheur-breizh/contracts";
 import type {
+  EvaluationExecution,
+  EvaluationPlan,
+  EvaluationPlanDraft,
   HealthStatus,
   IntelligenceRecipe,
   ListingFilters,
   PaginatedListings,
+  PropertyImageAsset,
   PropertyListing,
   RecipeDraft,
+  StartEvaluationExecutionInput,
 } from "../types";
 
 export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL?.trim() || "http://127.0.0.1:4310").replace(/\/$/, "");
@@ -73,8 +91,9 @@ export const denicheurApi = {
   async health(signal?: AbortSignal): Promise<HealthStatus> {
     const health: HealthResponse = await requestJson("/health", healthResponseSchema, undefined, signal);
     return {
-      status: health.status === "ok" && health.database.status === "ok" ? "ok" : "degraded",
+      status: health.database.status === "ok" ? "ok" : "degraded",
       database: health.database.status === "ok" ? "ok" : "unavailable",
+      media: health.media,
       openAiConfigured: health.openAiConfigured,
     };
   },
@@ -156,6 +175,102 @@ export const denicheurApi = {
     }, signal);
     return normalizeRecipe(activated);
   },
+
+  async listEvaluationPlans(signal?: AbortSignal): Promise<EvaluationPlan[]> {
+    const response = await requestJson("/v1/evaluation-plans", evaluationPlansResponseSchema, undefined, signal);
+    return response.items.map(normalizePlan);
+  },
+
+  async getDefaultEvaluationPlan(signal?: AbortSignal): Promise<EvaluationPlan | null> {
+    try {
+      const plan = await requestJson(
+        "/v1/evaluation-plans/default",
+        resolvedEvaluationPlanVersionSchema,
+        undefined,
+        signal,
+      );
+      return normalizePlan(plan);
+    } catch (error) {
+      if (error instanceof DenicheurApiError && error.status === 404) return null;
+      throw error;
+    }
+  },
+
+  async saveEvaluationPlan(plan: EvaluationPlanDraft, signal?: AbortSignal): Promise<EvaluationPlan> {
+    const body = evaluationPlanDraftSchema.parse({
+      name: plan.name,
+      operator: plan.operator,
+      recipes: plan.recipes,
+    });
+    const saved = await requestJson(`/v1/evaluation-plans/${encodeURIComponent(plan.id)}`, evaluationPlanVersionSchema, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }, signal);
+    return normalizePlan(saved);
+  },
+
+  async setDefaultEvaluationPlan(planId: string, version: number, signal?: AbortSignal): Promise<EvaluationPlan> {
+    const saved = await requestJson(
+      `/v1/evaluation-plans/${encodeURIComponent(planId)}/set-default`,
+      evaluationPlanVersionSchema,
+      { method: "POST", body: JSON.stringify({ version }) },
+      signal,
+    );
+    return normalizePlan(saved);
+  },
+
+  async listEvaluationExecutions(
+    filters: { runId?: string; status?: EvaluationExecution["status"] } = {},
+    signal?: AbortSignal,
+  ): Promise<EvaluationExecutionsPage> {
+    const params = new URLSearchParams({ limit: "100", order: "desc" });
+    if (filters.runId) params.set("runId", filters.runId);
+    if (filters.status) params.set("status", filters.status);
+    return requestJson(`/v1/evaluation-executions?${params}`, evaluationExecutionsPageSchema, undefined, signal);
+  },
+
+  async getEvaluationExecution(executionId: string, signal?: AbortSignal): Promise<EvaluationExecutionRecord> {
+    return requestJson(
+      `/v1/evaluation-executions/${encodeURIComponent(executionId)}`,
+      evaluationExecutionRecordSchema,
+      undefined,
+      signal,
+    );
+  },
+
+  async getEvaluationExecutionResults(executionId: string, signal?: AbortSignal): Promise<EvaluationExecutionResults> {
+    return requestJson(
+      `/v1/evaluation-executions/${encodeURIComponent(executionId)}/results`,
+      evaluationExecutionResultsSchema,
+      undefined,
+      signal,
+    );
+  },
+
+  async startEvaluationExecution(input: StartEvaluationExecutionInput, signal?: AbortSignal): Promise<EvaluationExecutionRecord> {
+    const { idempotencyKey, runId, ...request } = input;
+    const body = evaluationExecutionCreateRequestSchema.parse(request);
+    return requestJson(`/v1/runs/${encodeURIComponent(runId)}/evaluation-executions`, evaluationExecutionRecordSchema, {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify(body),
+    }, signal);
+  },
+
+  async retryEvaluationExecution(executionId: string, idempotencyKey: string, signal?: AbortSignal): Promise<EvaluationExecutionRecord> {
+    return requestJson(`/v1/evaluation-executions/${encodeURIComponent(executionId)}/retry`, evaluationExecutionRecordSchema, {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey },
+      body: JSON.stringify({}),
+    }, signal);
+  },
+
+  async cancelEvaluationExecution(executionId: string, signal?: AbortSignal): Promise<EvaluationExecutionRecord> {
+    return requestJson(`/v1/evaluation-executions/${encodeURIComponent(executionId)}/cancel`, evaluationExecutionRecordSchema, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }, signal);
+  },
 };
 
 function listingSearchParams(filters: ListingFilters): string {
@@ -178,6 +293,7 @@ function listingSearchParams(filters: ListingFilters): string {
 
 function normalizeListing(record: ListingRecord, detail?: ListingDetail): PropertyListing {
   const images = [...(record.imageUrls ?? []), ...(record.imageUrl ? [record.imageUrl] : [])];
+  const imageAssets = (record.imageAssets ?? []).map(normalizeImageAsset);
   return {
     source: record.source,
     externalId: record.externalId,
@@ -200,6 +316,7 @@ function normalizeListing(record: ListingRecord, detail?: ListingDetail): Proper
     energyClass: record.energyClass,
     gesClass: record.gesClass,
     imageUrls: Array.from(new Set(images)),
+    imageAssets,
     features: record.features ?? [],
     status: record.status,
     scrapedAt: record.scrapedAt,
@@ -209,6 +326,20 @@ function normalizeListing(record: ListingRecord, detail?: ListingDetail): Proper
     evaluation: record.latestEvaluation ? normalizeEvaluation(record.latestEvaluation) : undefined,
     evaluations: detail?.evaluations.map(normalizeEvaluation) ?? [],
   };
+}
+
+function normalizeImageAsset(asset: ListingImageAsset): PropertyImageAsset {
+  return {
+    id: asset.id,
+    sourceUrl: asset.sourceUrl,
+    status: asset.status,
+    ...(asset.thumbnailPath ? { thumbnailUrl: resolveApiPath(asset.thumbnailPath) } : {}),
+    ...(asset.galleryPath ? { galleryUrl: resolveApiPath(asset.galleryPath) } : {}),
+  };
+}
+
+export function resolveApiPath(path: string, apiBaseUrl = API_BASE_URL): string {
+  return `${apiBaseUrl.replace(/\/$/, "")}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
 function normalizeEvaluation(evaluation: ListingEvaluationRecord) {
@@ -230,6 +361,19 @@ function normalizeEvaluation(evaluation: ListingEvaluationRecord) {
 
 function normalizeRecipe(recipe: RecipeVersion): IntelligenceRecipe {
   return { ...recipe, criteria: recipe.criteria.map((criterion) => ({ ...criterion })) };
+}
+
+function normalizePlan(plan: EvaluationPlanVersion): EvaluationPlan {
+  return {
+    id: plan.id,
+    version: plan.version,
+    name: plan.name,
+    operator: plan.operator,
+    recipes: plan.recipes.map((recipe) => ({ recipeId: recipe.recipeId, recipeVersion: recipe.recipeVersion })),
+    combinerVersion: plan.combinerVersion,
+    isDefault: plan.isDefault,
+    createdAt: plan.createdAt,
+  };
 }
 
 function readApiError(payload: unknown): { message?: string; code?: string } {

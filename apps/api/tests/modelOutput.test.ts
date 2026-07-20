@@ -37,7 +37,7 @@ describe("buildModelOutputJsonSchema", () => {
     const results = schema.properties.results;
     const firstCriteria = results.properties["listing-1"]!.properties.criteria;
     const secondCriteria = results.properties["listing-2"]!.properties.criteria;
-    const firstCriterion = schema.$defs.criterion0 as CriterionSchema;
+    const firstCriterion = schema.$defs.criterion0_0 as CriterionSchema;
     const firstEvidence = schema.$defs.evidenceId0 as EvidenceIdSchema;
     const secondEvidence = schema.$defs.evidenceId1 as EvidenceIdSchema;
 
@@ -45,8 +45,8 @@ describe("buildModelOutputJsonSchema", () => {
     expect(results.additionalProperties).toBe(false);
     expect(firstCriteria.required).toEqual(["large-enough", "quiet"]);
     expect(firstCriteria.additionalProperties).toBe(false);
-    expect(firstCriteria.properties["large-enough"]!.$ref).toBe("#/$defs/criterion0");
-    expect(secondCriteria.properties["large-enough"]!.$ref).toBe("#/$defs/criterion1");
+    expect(firstCriteria.properties["large-enough"]!.$ref).toBe("#/$defs/criterion0_0");
+    expect(secondCriteria.properties["large-enough"]!.$ref).toBe("#/$defs/criterion1_0");
     expect(firstEvidence.enum).toContain("image:0");
     expect(secondEvidence.enum).not.toContain("image:0");
     expect(firstCriterion.properties.reason).toMatchObject({
@@ -76,10 +76,53 @@ describe("buildModelOutputJsonSchema", () => {
     });
 
     const schema = buildModelOutputJsonSchema(request) as unknown as ModelSchema;
-    const criterion = schema.$defs.criterion0 as CriterionSchema;
+    const criterion = schema.$defs.criterion0_0 as CriterionSchema;
 
     expect(criterion.properties.verdict.enum).toEqual(["unknown"]);
     expect(criterion.properties.evidenceIds.maxItems).toBe(0);
+  });
+
+  it("permits pass and fail without evidence when evidenceRequired is false", () => {
+    const request = createRequest();
+    request.recipe.criteria[0]!.evidenceRequired = false;
+    Object.assign(request.listings[0]!, {
+      title: undefined,
+      priceEuros: undefined,
+      propertyType: undefined,
+      rooms: undefined,
+      bedrooms: undefined,
+      surfaceM2: undefined,
+      landSurfaceM2: undefined,
+      location: undefined,
+      sellerName: undefined,
+      sellerType: undefined,
+      energyClass: undefined,
+      gesClass: undefined,
+      description: undefined,
+      features: [],
+      imageUrls: undefined,
+    });
+
+    const schema = buildModelOutputJsonSchema(request) as unknown as ModelSchema;
+    const optionalEvidence = schema.$defs.criterion0_0 as CriterionSchema;
+    expect(optionalEvidence.properties.verdict.enum).toEqual(["pass", "fail", "unknown"]);
+    expect(optionalEvidence.properties.evidenceIds.minItems).toBe(0);
+
+    const output = createGeneratedModelOutput(request);
+    output.results["listing-1"]!.criteria["large-enough"] = {
+      verdict: "pass",
+      reason: "The criterion can be decided without quoted evidence.",
+      evidenceIds: [],
+    };
+    output.results["listing-1"]!.criteria.quiet = {
+      verdict: "unknown",
+      reason: "No data.",
+      evidenceIds: [],
+    };
+    expect(parseAndValidateModelOutput(JSON.stringify(output), request).results[0]?.criteria[0]).toMatchObject({
+      verdict: "pass",
+      evidence: [],
+    });
   });
 });
 
@@ -301,7 +344,7 @@ interface CriterionSchema {
   properties: {
     verdict: { enum: string[] };
     reason: { minLength: number; maxLength: number };
-    evidenceIds: { maxItems: number; items: { $ref?: string } };
+    evidenceIds: { minItems: number; maxItems: number; items: { $ref?: string } };
   };
 }
 

@@ -68,6 +68,7 @@ export function buildFilterResponse(
     let passedWeight = 0;
     let evaluableWeight = 0;
     let hasRequiredUnknown = false;
+    let hasRequiredFailure = false;
 
     for (const evaluation of modelResult.criteria) {
       const criterion = criteriaById.get(evaluation.criterionId);
@@ -81,6 +82,8 @@ export function buildFilterResponse(
         continue;
       }
 
+      hasRequiredFailure ||= criterion.required && evaluation.verdict === "fail";
+
       if (criterion.weight > 0) {
         evaluableWeight += criterion.weight;
         if (evaluation.verdict === "pass") passedWeight += criterion.weight;
@@ -88,7 +91,7 @@ export function buildFilterResponse(
     }
 
     const score = evaluableWeight > 0 ? roundScore((passedWeight / evaluableWeight) * 100) : null;
-    const decision = decide(score, hasRequiredUnknown, request.recipe.threshold);
+    const decision = decide(score, hasRequiredUnknown, hasRequiredFailure, request.recipe.threshold);
 
     return {
       listingId: modelResult.listingId,
@@ -115,7 +118,13 @@ export function buildFilterResponse(
   };
 }
 
-function decide(score: number | null, hasRequiredUnknown: boolean, threshold: number): ListingDecision {
+function decide(
+  score: number | null,
+  hasRequiredUnknown: boolean,
+  hasRequiredFailure: boolean,
+  threshold: number,
+): ListingDecision {
+  if (hasRequiredFailure) return "not-relevant";
   if (score === null || hasRequiredUnknown) return "review";
   return score >= threshold ? "relevant" : "not-relevant";
 }

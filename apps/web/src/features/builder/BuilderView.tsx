@@ -1,207 +1,545 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, Plus, Save, SlidersHorizontal, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  ArrowDown,
+  ArrowUp,
+  Copy,
+  FilePenLine,
+  History,
+  Plus,
+  Save,
+  Star,
+  Trash2,
+  Workflow,
+} from "lucide-react";
 import { Button, Chip, EmptyState, SectionLabel } from "@denicheur-breizh/design-system";
-import { useActivateRecipe, useActiveRecipe, useRecipes, useSaveRecipe } from "../../api/hooks";
+import {
+  useDefaultEvaluationPlan,
+  useEvaluationPlans,
+  useRecipes,
+  useSaveEvaluationPlan,
+  useSaveRecipe,
+  useSetDefaultEvaluationPlan,
+} from "../../api/hooks";
 import { useAppIntl } from "../../intl/IntlContext";
-import type { IntelligenceCriterion, IntelligenceRecipe, RecipeDraft } from "../../types";
-import { stringUrlCodec, useUrlState } from "../../utils/useUrlState";
+import type {
+  EvaluationPlan,
+  EvaluationPlanDraft,
+  IntelligenceCriterion,
+  IntelligenceRecipe,
+  RecipeDraft,
+} from "../../types";
+import { enumUrlCodec, stringUrlCodec, useUrlState } from "../../utils/useUrlState";
+import {
+  MAX_PLAN_RECIPES,
+  blankCriterion,
+  blankPlanDraft,
+  blankRecipeDraft,
+  duplicatePlanDraft,
+  duplicateRecipeDraft,
+  groupVersions,
+  latestRecipeVersion,
+  moveItem,
+  nextAvailableRecipe,
+  parseRecipeRef,
+  persistWorkingDraft,
+  planDraftStorageKey,
+  planVersionKey,
+  readWorkingDrafts,
+  recipeDraftStorageKey,
+  recipeRefKey,
+  recipeVersionKey,
+  removeWorkingDraft,
+  toPlanDraft,
+  toRecipeDraft,
+  validatePlanDraft,
+  validateRecipeDraft,
+  workingDraftKey,
+  type PlanWorkingDraft,
+  type RecipeWorkingDraft,
+  type VersionFamily,
+} from "./builderModel";
 import styles from "./BuilderView.module.css";
 
-const MAX_CRITERIA = 12;
+type BuilderTab = "recipes" | "plans";
+const builderTabCodec = enumUrlCodec<BuilderTab>(["recipes", "plans"]);
 
 export function BuilderView() {
   const { t } = useAppIntl();
   const recipesQuery = useRecipes();
-  const activeQuery = useActiveRecipe();
+  const plansQuery = useEvaluationPlans();
+  const defaultPlanQuery = useDefaultEvaluationPlan();
   const saveRecipe = useSaveRecipe();
-  const activateRecipe = useActivateRecipe();
+  const savePlan = useSaveEvaluationPlan();
+  const setDefaultPlan = useSetDefaultEvaluationPlan();
   const recipes = recipesQuery.data ?? [];
-  const [requestedVersion, setRequestedVersion] = useUrlState("brid", "", stringUrlCodec);
-  const selectedRecipe = recipes.find((recipe) => recipeKey(recipe) === requestedVersion)
+  const plans = plansQuery.data ?? [];
+  const recipeFamilies = useMemo(() => groupVersions(recipes), [recipes]);
+  const planFamilies = useMemo(() => groupVersions(plans), [plans]);
+  const [tab, setTab] = useUrlState<BuilderTab>("btab", "recipes", builderTabCodec);
+  const [requestedRecipe, setRequestedRecipe] = useUrlState("brid", "", stringUrlCodec);
+  const [requestedPlan, setRequestedPlan] = useUrlState("bpid", "", stringUrlCodec);
+  const selectedRecipe = recipes.find((recipe) => recipeVersionKey(recipe) === requestedRecipe)
     ?? recipes.find((recipe) => recipe.active)
-    ?? recipes[0];
-  const [draft, setDraft] = useState<RecipeDraft>(() => blankRecipe());
-  const [dirty, setDirty] = useState(false);
-  const draftRef = useRef(draft);
-  draftRef.current = draft;
+    ?? recipeFamilies[0]?.latest;
+  const selectedPlan = plans.find((plan) => planVersionKey(plan) === requestedPlan)
+    ?? plans.find((plan) => plan.isDefault)
+    ?? planFamilies[0]?.latest;
+  const [recipeDrafts, setRecipeDrafts] = useState<Record<string, RecipeWorkingDraft>>(
+    () => readWorkingDrafts(recipeDraftStorageKey),
+  );
+  const [planDrafts, setPlanDrafts] = useState<Record<string, PlanWorkingDraft>>(
+    () => readWorkingDrafts(planDraftStorageKey),
+  );
+  const [activeRecipeDraftKey, setActiveRecipeDraftKey] = useState<string>();
+  const [activePlanDraftKey, setActivePlanDraftKey] = useState<string>();
+  const recipeDraft = activeRecipeDraftKey ? recipeDrafts[activeRecipeDraftKey] : undefined;
+  const planDraft = activePlanDraftKey ? planDrafts[activePlanDraftKey] : undefined;
 
   useEffect(() => {
-    if (!selectedRecipe || dirty) return;
-    setDraft(toDraft(selectedRecipe));
-    if (requestedVersion !== recipeKey(selectedRecipe)) setRequestedVersion(recipeKey(selectedRecipe));
-  }, [dirty, requestedVersion, selectedRecipe, setRequestedVersion]);
+    if (tab === "recipes" && !requestedRecipe && selectedRecipe) setRequestedRecipe(recipeVersionKey(selectedRecipe));
+    if (tab === "plans" && !requestedPlan && selectedPlan) setRequestedPlan(planVersionKey(selectedPlan));
+  }, [requestedPlan, requestedRecipe, selectedPlan, selectedRecipe, setRequestedPlan, setRequestedRecipe, tab]);
 
-  const validation = useMemo(() => validateDraft(draft), [draft]);
-  const totalWeight = useMemo(() => draft.criteria.reduce((sum, criterion) => sum + criterion.weight, 0), [draft.criteria]);
-
-  const editDraft = (update: (current: RecipeDraft) => RecipeDraft) => {
-    setDirty(true);
-    setDraft(update);
-  };
+  const loading = recipesQuery.isLoading || plansQuery.isLoading || defaultPlanQuery.isLoading;
+  const error = recipesQuery.error || plansQuery.error || defaultPlanQuery.error;
+  if (loading) return <BuilderState copy={t("builder.loading")} />;
+  if (error) {
+    return <BuilderState
+      copy={t("builder.error")}
+      retry={() => void Promise.all([recipesQuery.refetch(), plansQuery.refetch(), defaultPlanQuery.refetch()])}
+    />;
+  }
 
   const selectRecipe = (recipe: IntelligenceRecipe) => {
-    if (dirty && !window.confirm(t("builder.discardConfirm"))) return;
-    setDirty(false);
-    setDraft(toDraft(recipe));
-    setRequestedVersion(recipeKey(recipe));
+    setActiveRecipeDraftKey(undefined);
+    setRequestedRecipe(recipeVersionKey(recipe));
   };
 
-  const createRecipe = () => {
-    if (dirty && !window.confirm(t("builder.discardConfirm"))) return;
-    setDraft(blankRecipe());
-    setDirty(true);
-    setRequestedVersion("");
+  const selectPlan = (plan: EvaluationPlan) => {
+    setActivePlanDraftKey(undefined);
+    setRequestedPlan(planVersionKey(plan));
   };
 
-  const addCriterion = () => {
-    if (draft.criteria.length >= MAX_CRITERIA) return;
-    const used = new Set(draft.criteria.map((criterion) => criterion.id));
-    let index = draft.criteria.length + 1;
-    while (used.has(`criterion-${index}`)) index += 1;
-    editDraft((current) => ({ ...current, criteria: [...current.criteria, blankCriterion(`criterion-${index}`)] }));
+  const updateRecipeDraft = (key: string, update: (current: RecipeDraft) => RecipeDraft) => {
+    setRecipeDrafts((current) => {
+      const working = current[key];
+      if (!working) return current;
+      const next = { ...working, value: update(working.value) };
+      persistWorkingDraft(recipeDraftStorageKey, key, next);
+      return { ...current, [key]: next };
+    });
   };
 
-  const updateCriterion = (criterionId: string, update: Partial<IntelligenceCriterion>) => {
-    editDraft((current) => ({
-      ...current,
-      criteria: current.criteria.map((criterion) => criterion.id === criterionId ? { ...criterion, ...update } : criterion),
-    }));
+  const updatePlanDraft = (key: string, update: (current: EvaluationPlanDraft) => EvaluationPlanDraft) => {
+    setPlanDrafts((current) => {
+      const working = current[key];
+      if (!working) return current;
+      const next = { ...working, value: update(working.value) };
+      persistWorkingDraft(planDraftStorageKey, key, next);
+      return { ...current, [key]: next };
+    });
   };
 
-  const removeCriterion = (criterionId: string) => {
-    editDraft((current) => ({ ...current, criteria: current.criteria.filter((criterion) => criterion.id !== criterionId) }));
+  const startRecipeDraft = (working: RecipeWorkingDraft, baseVersion?: number) => {
+    const key = workingDraftKey(working.mode, working.value.id, baseVersion);
+    const next = { ...recipeDrafts, [key]: working };
+    setRecipeDrafts(next);
+    persistWorkingDraft(recipeDraftStorageKey, key, working);
+    setActiveRecipeDraftKey(key);
   };
 
-  const save = () => {
-    if (!validation.valid) return;
+  const startPlanDraft = (working: PlanWorkingDraft, baseVersion?: number) => {
+    const key = workingDraftKey(working.mode, working.value.id, baseVersion);
+    const next = { ...planDrafts, [key]: working };
+    setPlanDrafts(next);
+    persistWorkingDraft(planDraftStorageKey, key, working);
+    setActivePlanDraftKey(key);
+  };
+
+  const discardRecipeDraft = (key: string) => {
+    if (!window.confirm(t("builder.discardDraftConfirm"))) return;
+    removeWorkingDraft(recipeDraftStorageKey, key);
+    setRecipeDrafts((current) => Object.fromEntries(Object.entries(current).filter(([candidate]) => candidate !== key)));
+    setActiveRecipeDraftKey(undefined);
+  };
+
+  const discardPlanDraft = (key: string) => {
+    if (!window.confirm(t("builder.discardDraftConfirm"))) return;
+    removeWorkingDraft(planDraftStorageKey, key);
+    setPlanDrafts((current) => Object.fromEntries(Object.entries(current).filter(([candidate]) => candidate !== key)));
+    setActivePlanDraftKey(undefined);
+  };
+
+  const publishRecipe = (key: string, draft: RecipeDraft) => {
     saveRecipe.mutate(draft, {
       onSuccess: (saved) => {
-        setDraft(toDraft(saved));
-        setDirty(false);
-        setRequestedVersion(recipeKey(saved));
+        removeWorkingDraft(recipeDraftStorageKey, key);
+        setRecipeDrafts((current) => Object.fromEntries(Object.entries(current).filter(([candidate]) => candidate !== key)));
+        setActiveRecipeDraftKey(undefined);
+        setRequestedRecipe(recipeVersionKey(saved));
       },
     });
   };
 
-  const activate = () => {
-    if (!selectedRecipe || dirty) return;
-    activateRecipe.mutate({ id: selectedRecipe.id, version: selectedRecipe.version });
+  const publishPlan = (key: string, draft: EvaluationPlanDraft) => {
+    savePlan.mutate(draft, {
+      onSuccess: (saved) => {
+        removeWorkingDraft(planDraftStorageKey, key);
+        setPlanDrafts((current) => Object.fromEntries(Object.entries(current).filter(([candidate]) => candidate !== key)));
+        setActivePlanDraftKey(undefined);
+        setRequestedPlan(planVersionKey(saved));
+      },
+    });
   };
-
-  if (recipesQuery.isLoading || activeQuery.isLoading) return <BuilderState title={t("builder.title")} copy={t("builder.loading")} />;
-  if (recipesQuery.error || activeQuery.error) return <BuilderState title={t("builder.title")} copy={t("builder.error")} retry={() => void Promise.all([recipesQuery.refetch(), activeQuery.refetch()])} />;
 
   return (
     <section className={styles.view} aria-labelledby="builder-view-title">
-      <aside className={styles.palette}>
-        <div className={styles.paletteIntro}>
-          <SectionLabel>{t("builder.recipeVersions")}</SectionLabel>
-          <strong>{t("builder.versionCount", { count: recipes.length })}</strong>
-          <Button size="sm" onClick={createRecipe}><Plus size={14} aria-hidden="true" />{t("builder.newRecipe")}</Button>
+      <aside className={styles.library}>
+        <div className={styles.libraryHeader}>
+          <SectionLabel>{t("builder.library")}</SectionLabel>
+          <h1 id="builder-view-title">{t("builder.title")}</h1>
+          <div className={styles.workspaceTabs} role="tablist" aria-label={t("builder.workspaceTabs")}>
+            <button type="button" role="tab" aria-selected={tab === "recipes"} className={tab === "recipes" ? styles.tabActive : ""} onClick={() => setTab("recipes")}>{t("builder.tab.recipes")}</button>
+            <button type="button" role="tab" aria-selected={tab === "plans"} className={tab === "plans" ? styles.tabActive : ""} onClick={() => setTab("plans")}>{t("builder.tab.plans")}</button>
+          </div>
+          {tab === "recipes" ? (
+            <Button size="sm" onClick={() => startRecipeDraft({ mode: "new", value: blankRecipeDraft() })}>
+              <Plus size={14} aria-hidden="true" />{t("builder.newRecipe")}
+            </Button>
+          ) : (
+            <Button size="sm" onClick={() => startPlanDraft({ mode: "new", value: blankPlanDraft(recipes) })} disabled={recipes.length === 0}>
+              <Plus size={14} aria-hidden="true" />{t("builder.newPlan")}
+            </Button>
+          )}
         </div>
-        <div className={styles.presets}>
-          {recipes.map((recipe) => (
-            <button key={recipeKey(recipe)} className={recipeKey(recipe) === recipeKey(selectedRecipe) ? styles.presetActive : ""} type="button" onClick={() => selectRecipe(recipe)} aria-pressed={recipeKey(recipe) === recipeKey(selectedRecipe)} title={`${recipe.name} · v${recipe.version}`}>
-              <SlidersHorizontal size={14} aria-hidden="true" />
-              <span>{recipe.name} · v{recipe.version}</span>
-              {recipe.active && <Check size={14} aria-label={t("builder.active")} />}
-            </button>
-          ))}
-        </div>
+
+        {tab === "recipes" ? (
+          <VersionLibrary
+            families={recipeFamilies}
+            selectedKey={recipeVersionKey(selectedRecipe)}
+            drafts={recipeDrafts}
+            activeDraftKey={activeRecipeDraftKey}
+            versionKey={recipeVersionKey}
+            onSelect={selectRecipe}
+            onSelectDraft={setActiveRecipeDraftKey}
+          />
+        ) : (
+          <VersionLibrary
+            families={planFamilies}
+            selectedKey={planVersionKey(selectedPlan)}
+            drafts={planDrafts}
+            activeDraftKey={activePlanDraftKey}
+            versionKey={planVersionKey}
+            onSelect={selectPlan}
+            onSelectDraft={setActivePlanDraftKey}
+          />
+        )}
       </aside>
 
-      <section className={styles.editor}>
-        <header className={styles.editorHeader}>
-          <div className={styles.titleBlock}>
-            <h1 id="builder-view-title" className={styles.viewTitle}>{t("builder.title")}</h1>
-            <div className={styles.statusRow} aria-live="polite">
-              {selectedRecipe && <Chip>v{selectedRecipe.version}</Chip>}
-              {selectedRecipe?.active && <Chip active tone="good">{t("builder.active")}</Chip>}
-              {dirty && <Chip tone="sunset">{t("builder.unsaved")}</Chip>}
-            </div>
-          </div>
-          <div className={styles.headerActions}>
-            <Button onClick={activate} disabled={!selectedRecipe || dirty || selectedRecipe.active || activateRecipe.isPending}>
-              <Check size={14} aria-hidden="true" />{activateRecipe.isPending ? t("builder.activating") : t("builder.activate")}
-            </Button>
-            <Button variant="primary" onClick={save} disabled={!validation.valid || saveRecipe.isPending}>
-              <Save size={14} aria-hidden="true" />{saveRecipe.isPending ? t("builder.saving") : t("builder.saveVersion")}
-            </Button>
-          </div>
-        </header>
+      <main className={styles.editor}>
+        {tab === "recipes" ? (
+          recipeDraft && activeRecipeDraftKey ? (
+            <RecipeDraftEditor
+              working={recipeDraft}
+              error={validateRecipeDraft(recipeDraft.value)}
+              saving={saveRecipe.isPending}
+              saveError={saveRecipe.isError}
+              onChange={(update) => updateRecipeDraft(activeRecipeDraftKey, update)}
+              onDiscard={() => discardRecipeDraft(activeRecipeDraftKey)}
+              onPublish={() => publishRecipe(activeRecipeDraftKey, recipeDraft.value)}
+            />
+          ) : selectedRecipe ? (
+            <PublishedRecipe
+              recipe={selectedRecipe}
+              onNewVersion={() => startRecipeDraft({ mode: "version", sourceKey: recipeVersionKey(selectedRecipe), value: toRecipeDraft(selectedRecipe) }, selectedRecipe.version)}
+              onDuplicate={() => startRecipeDraft({ mode: "duplicate", sourceKey: recipeVersionKey(selectedRecipe), value: duplicateRecipeDraft(selectedRecipe) })}
+            />
+          ) : <EmptyState>{t("builder.empty")}</EmptyState>
+        ) : (
+          planDraft && activePlanDraftKey ? (
+            <PlanDraftEditor
+              working={planDraft}
+              recipes={recipes}
+              error={validatePlanDraft(planDraft.value, recipes)}
+              saving={savePlan.isPending}
+              saveError={savePlan.isError}
+              onChange={(update) => updatePlanDraft(activePlanDraftKey, update)}
+              onDiscard={() => discardPlanDraft(activePlanDraftKey)}
+              onPublish={() => publishPlan(activePlanDraftKey, planDraft.value)}
+            />
+          ) : selectedPlan ? (
+            <PublishedPlan
+              plan={selectedPlan}
+              recipes={recipes}
+              settingDefault={setDefaultPlan.isPending}
+              onNewVersion={() => startPlanDraft({ mode: "version", sourceKey: planVersionKey(selectedPlan), value: toPlanDraft(selectedPlan) }, selectedPlan.version)}
+              onDuplicate={() => startPlanDraft({ mode: "duplicate", sourceKey: planVersionKey(selectedPlan), value: duplicatePlanDraft(selectedPlan) })}
+              onSetDefault={() => setDefaultPlan.mutate({ id: selectedPlan.id, version: selectedPlan.version })}
+            />
+          ) : <EmptyState>{recipes.length === 0 ? t("builder.noRecipesForPlan") : t("builder.noPlans")}</EmptyState>
+        )}
+      </main>
 
-        <div className={styles.content}>
-          {(saveRecipe.isError || activateRecipe.isError) && <p className={styles.saveError} role="alert">{t("builder.saveError")}</p>}
-          {!validation.valid && dirty && <p className={styles.saveError} role="alert">{t("builder.invalidRecipe")}: {validation.message}</p>}
-
-          <section className={styles.weights}>
-            <div className={styles.recipeFields}>
-              <label><SectionLabel>{t("builder.recipeId")}</SectionLabel><input className={styles.titleInput} value={draft.id} onChange={(event) => editDraft((current) => ({ ...current, id: event.target.value }))} autoComplete="off" /></label>
-              <label><SectionLabel>{t("builder.recipeName")}</SectionLabel><input className={styles.titleInput} value={draft.name} onChange={(event) => editDraft((current) => ({ ...current, name: event.target.value }))} autoComplete="off" /></label>
-              <label><SectionLabel>{t("builder.threshold")}</SectionLabel><input className={styles.thresholdInput} type="number" min={0} max={100} value={draft.threshold} onChange={(event) => editDraft((current) => ({ ...current, threshold: Number(event.target.value) }))} /></label>
-            </div>
-
-            <div className={styles.sectionTop}>
-              <div><h2 className={styles.sectionHeading}>{t("builder.criteriaEditor")}</h2><span className={styles.muted}>{t("builder.weightTotal", { value: totalWeight })}</span></div>
-              <Button size="sm" onClick={addCriterion} disabled={draft.criteria.length >= MAX_CRITERIA}><Plus size={14} aria-hidden="true" />{t("builder.addCriterion")}</Button>
-            </div>
-
-            <div className={styles.weightStack}>
-              {draft.criteria.map((criterion, index) => (
-                <article key={`${criterion.id}-${index}`} className={styles.weightCard}>
-                  <div className={styles.criterionGrid}>
-                    <label><SectionLabel>{t("builder.criterionId")}</SectionLabel><input value={criterion.id} onChange={(event) => updateCriterion(criterion.id, { id: event.target.value })} /></label>
-                    <label><SectionLabel>{t("builder.criterionName")}</SectionLabel><input value={criterion.name} onChange={(event) => updateCriterion(criterion.id, { name: event.target.value })} /></label>
-                    <label><SectionLabel>{t("builder.criterionWeight")}</SectionLabel><input type="number" min={0} max={1000} value={criterion.weight} onChange={(event) => updateCriterion(criterion.id, { weight: Number(event.target.value) })} /></label>
-                  </div>
-                  <label><SectionLabel>{t("builder.criterionDescription")}</SectionLabel><textarea className={styles.descriptionInput} rows={3} value={criterion.description} onChange={(event) => updateCriterion(criterion.id, { description: event.target.value })} /></label>
-                  <div className={styles.criterionActions}>
-                    <label><input type="checkbox" checked={criterion.required} onChange={(event) => updateCriterion(criterion.id, { required: event.target.checked })} />{t("builder.required")}</label>
-                    <label><input type="checkbox" checked={criterion.evidenceRequired ?? false} onChange={(event) => updateCriterion(criterion.id, { evidenceRequired: event.target.checked })} />{t("builder.evidenceRequired")}</label>
-                    <Button size="sm" variant="ghost" iconOnly aria-label={t("builder.deleteCriterion", { name: criterion.name || criterion.id })} onClick={() => removeCriterion(criterion.id)} disabled={draft.criteria.length <= 1}><Trash2 size={14} aria-hidden="true" /></Button>
-                  </div>
-                </article>
-              ))}
-            </div>
-          </section>
-        </div>
-      </section>
-
-      <aside className={styles.preview}>
-        <div className={styles.previewHeader}><SectionLabel>{t("builder.publishedRecipe")}</SectionLabel></div>
-        {activeQuery.data ? (
-          <div className={styles.previewBody}>
-            <h2>{activeQuery.data.name}</h2>
-            <Chip active tone="good">v{activeQuery.data.version}</Chip>
-            <dl className={styles.previewFacts}>
-              <div><dt>{t("builder.threshold")}</dt><dd>{activeQuery.data.threshold} / 100</dd></div>
-              <div><dt>{t("builder.criteriaEditor")}</dt><dd>{activeQuery.data.criteria.length}</dd></div>
-              <div><dt>{t("builder.createdAt")}</dt><dd>{new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(activeQuery.data.createdAt ?? ""))}</dd></div>
-            </dl>
-            <p>{t("builder.extensionConsumesActive")}</p>
-          </div>
-        ) : <EmptyState>{t("builder.noActiveRecipe")}</EmptyState>}
+      <aside className={styles.inspector}>
+        {tab === "recipes" ? (
+          <RecipeInspector family={selectedRecipe ? recipeFamilies.find((family) => family.id === selectedRecipe.id) : undefined} selected={selectedRecipe} />
+        ) : (
+          <PlanInspector family={selectedPlan ? planFamilies.find((family) => family.id === selectedPlan.id) : undefined} selected={selectedPlan} defaultPlan={defaultPlanQuery.data} />
+        )}
       </aside>
     </section>
   );
 }
 
-function BuilderState({ title, copy, retry }: { title: string; copy: string; retry?: () => void }) {
-  const { t } = useAppIntl();
-  return <EmptyState role={retry ? "alert" : "status"}><div className={styles.stateContent}><h1>{title}</h1><p>{copy}</p>{retry && <Button onClick={retry}>{t("common.retry")}</Button>}</div></EmptyState>;
+interface VersionLibraryProps<T extends { id: string; version: number; name: string }, D extends { value: { name: string; id: string } }> {
+  families: VersionFamily<T>[];
+  selectedKey: string;
+  drafts: Record<string, D>;
+  activeDraftKey?: string;
+  versionKey: (version: T) => string;
+  onSelect: (version: T) => void;
+  onSelectDraft: (key: string) => void;
 }
 
-function recipeKey(recipe?: IntelligenceRecipe): string { return recipe ? `${recipe.id}:${recipe.version}` : ""; }
-function toDraft(recipe: IntelligenceRecipe): RecipeDraft { return { id: recipe.id, name: recipe.name, threshold: recipe.threshold, criteria: recipe.criteria.map((criterion) => ({ ...criterion })) }; }
-function blankCriterion(id: string): IntelligenceCriterion { return { id, name: "", description: "", weight: 1, required: false, evidenceRequired: true }; }
-function blankRecipe(): RecipeDraft { return { id: `recipe-${Date.now()}`, name: "", threshold: 70, criteria: [blankCriterion("criterion-1")] }; }
+function VersionLibrary<T extends { id: string; version: number; name: string }, D extends { value: { name: string; id: string } }>({
+  families,
+  selectedKey,
+  drafts,
+  activeDraftKey,
+  versionKey,
+  onSelect,
+  onSelectDraft,
+}: VersionLibraryProps<T, D>) {
+  const { t } = useAppIntl();
+  return <div className={styles.libraryBody}>
+    {Object.keys(drafts).length > 0 && <section className={styles.draftShelf}>
+      <SectionLabel>{t("builder.drafts")}</SectionLabel>
+      {Object.entries(drafts).map(([key, draft]) => (
+        <button type="button" key={key} className={activeDraftKey === key ? styles.selectedItem : ""} onClick={() => onSelectDraft(key)}>
+          <FilePenLine size={14} aria-hidden="true" /><span><strong>{draft.value.name || draft.value.id}</strong><small>{t("common.draft")}</small></span>
+        </button>
+      ))}
+    </section>}
+    {families.map((family) => <section key={family.id} className={styles.family}>
+      <div className={styles.familyHeader}><span><strong>{family.latest.name}</strong><small>{family.id}</small></span><Chip>{family.versions.length}</Chip></div>
+      <div className={styles.versionList}>
+        {family.versions.map((version) => (
+          <button type="button" key={versionKey(version)} className={!activeDraftKey && selectedKey === versionKey(version) ? styles.selectedItem : ""} onClick={() => onSelect(version)}>
+            <History size={13} aria-hidden="true" /><span>v{version.version}</span>{version.version === family.latest.version && <small>{t("builder.latest")}</small>}
+          </button>
+        ))}
+      </div>
+    </section>)}
+  </div>;
+}
 
-function validateDraft(draft: RecipeDraft): { valid: boolean; message: string } {
-  if (!draft.id.trim() || !draft.name.trim()) return { valid: false, message: "id/name" };
-  if (!Number.isFinite(draft.threshold) || draft.threshold < 0 || draft.threshold > 100) return { valid: false, message: "threshold" };
-  if (draft.criteria.length < 1 || draft.criteria.length > MAX_CRITERIA) return { valid: false, message: "criteria" };
-  const ids = draft.criteria.map((criterion) => criterion.id.trim());
-  if (ids.some((id) => !id) || new Set(ids).size !== ids.length) return { valid: false, message: "criterion ids" };
-  if (draft.criteria.some((criterion) => !criterion.name.trim() || !criterion.description.trim() || !Number.isFinite(criterion.weight) || criterion.weight < 0)) return { valid: false, message: "criterion fields" };
-  return { valid: true, message: "" };
+function PublishedRecipe({ recipe, onNewVersion, onDuplicate }: { recipe: IntelligenceRecipe; onNewVersion: () => void; onDuplicate: () => void }) {
+  const { locale, t } = useAppIntl();
+  return <div className={styles.editorScroll}>
+    <EditorHeader title={recipe.name} version={recipe.version} readOnly actions={<>
+      <Button onClick={onDuplicate}><Copy size={14} aria-hidden="true" />{t("builder.duplicate")}</Button>
+      <Button variant="primary" onClick={onNewVersion}><FilePenLine size={14} aria-hidden="true" />{t("builder.newVersion")}</Button>
+    </>} />
+    <section className={styles.editorContent}>
+      <div className={styles.factGrid}>
+        <Fact label={t("builder.recipeId")} value={recipe.id} />
+        <Fact label={t("builder.threshold")} value={`${recipe.threshold} / 100`} />
+        <Fact label={t("builder.createdAt")} value={formatDate(recipe.createdAt, locale)} />
+      </div>
+      <SectionHeading title={t("builder.criteriaEditor")} meta={t("builder.criteria", { count: recipe.criteria.length })} />
+      <CriteriaReadOnly criteria={recipe.criteria} />
+    </section>
+  </div>;
+}
+
+interface RecipeDraftEditorProps {
+  working: RecipeWorkingDraft;
+  error?: string;
+  saving: boolean;
+  saveError: boolean;
+  onChange: (update: (current: RecipeDraft) => RecipeDraft) => void;
+  onDiscard: () => void;
+  onPublish: () => void;
+}
+
+function RecipeDraftEditor({ working, error, saving, saveError, onChange, onDiscard, onPublish }: RecipeDraftEditorProps) {
+  const { t } = useAppIntl();
+  const draft = working.value;
+  const totalWeight = draft.criteria.reduce((total, criterion) => total + criterion.weight, 0);
+  const updateCriterion = (index: number, update: Partial<IntelligenceCriterion>) => onChange((current) => ({
+    ...current,
+    criteria: current.criteria.map((criterion, candidate) => candidate === index ? { ...criterion, ...update } : criterion),
+  }));
+  return <div className={styles.editorScroll}>
+    <EditorHeader title={draft.name || t("builder.untitledRecipe")} draft actions={<>
+      <Button onClick={onDiscard}><Trash2 size={14} aria-hidden="true" />{t("builder.discardDraft")}</Button>
+      <Button variant="primary" onClick={onPublish} disabled={Boolean(error) || saving}><Save size={14} aria-hidden="true" />{saving ? t("builder.saving") : t("builder.publishVersion")}</Button>
+    </>} />
+    <section className={styles.editorContent}>
+      {(error || saveError) && <p className={styles.error} role="alert">{saveError ? t("builder.saveError") : `${t("builder.invalidRecipe")}: ${error}`}</p>}
+      <div className={styles.formGrid}>
+        <label><SectionLabel>{t("builder.recipeId")}</SectionLabel><input value={draft.id} readOnly={working.mode === "version"} onChange={(event) => onChange((current) => ({ ...current, id: event.target.value }))} /></label>
+        <label><SectionLabel>{t("builder.recipeName")}</SectionLabel><input value={draft.name} onChange={(event) => onChange((current) => ({ ...current, name: event.target.value }))} /></label>
+        <label><SectionLabel>{t("builder.threshold")}</SectionLabel><input type="number" min={0} max={100} value={draft.threshold} onChange={(event) => onChange((current) => ({ ...current, threshold: Number(event.target.value) }))} /></label>
+      </div>
+      <SectionHeading title={t("builder.criteriaEditor")} meta={t("builder.weightTotal", { value: totalWeight })} action={<Button size="sm" onClick={() => onChange((current) => ({ ...current, criteria: [...current.criteria, blankCriterion(nextCriterionId(current.criteria))] }))} disabled={draft.criteria.length >= 12}><Plus size={14} aria-hidden="true" />{t("builder.addCriterion")}</Button>} />
+      <div className={styles.cardStack}>
+        {draft.criteria.map((criterion, index) => <article key={`${index}-${criterion.id}`} className={styles.card}>
+          <div className={styles.formGrid}>
+            <label><SectionLabel>{t("builder.criterionId")}</SectionLabel><input value={criterion.id} onChange={(event) => updateCriterion(index, { id: event.target.value })} /></label>
+            <label><SectionLabel>{t("builder.criterionName")}</SectionLabel><input value={criterion.name} onChange={(event) => updateCriterion(index, { name: event.target.value })} /></label>
+            <label><SectionLabel>{t("builder.criterionWeight")}</SectionLabel><input type="number" min={0} max={1000} value={criterion.weight} onChange={(event) => updateCriterion(index, { weight: Number(event.target.value) })} /></label>
+          </div>
+          <label><SectionLabel>{t("builder.criterionDescription")}</SectionLabel><textarea rows={3} value={criterion.description} onChange={(event) => updateCriterion(index, { description: event.target.value })} /></label>
+          <div className={styles.cardActions}>
+            <label><input type="checkbox" checked={criterion.required} onChange={(event) => updateCriterion(index, { required: event.target.checked })} />{t("builder.required")}</label>
+            <label><input type="checkbox" checked={criterion.evidenceRequired !== false} onChange={(event) => updateCriterion(index, { evidenceRequired: event.target.checked })} />{t("builder.evidenceRequired")}</label>
+            <Button variant="ghost" iconOnly aria-label={t("builder.deleteCriterion", { name: criterion.name || criterion.id })} onClick={() => onChange((current) => ({ ...current, criteria: current.criteria.filter((_, candidate) => candidate !== index) }))} disabled={draft.criteria.length === 1}><Trash2 size={14} aria-hidden="true" /></Button>
+          </div>
+        </article>)}
+      </div>
+    </section>
+  </div>;
+}
+
+function PublishedPlan({ plan, recipes, settingDefault, onNewVersion, onDuplicate, onSetDefault }: { plan: EvaluationPlan; recipes: IntelligenceRecipe[]; settingDefault: boolean; onNewVersion: () => void; onDuplicate: () => void; onSetDefault: () => void }) {
+  const { locale, t } = useAppIntl();
+  return <div className={styles.editorScroll}>
+    <EditorHeader title={plan.name} version={plan.version} readOnly actions={<>
+      {!plan.isDefault && <Button onClick={onSetDefault} disabled={settingDefault}><Star size={14} aria-hidden="true" />{settingDefault ? t("builder.settingDefault") : t("builder.setDefault")}</Button>}
+      <Button onClick={onDuplicate}><Copy size={14} aria-hidden="true" />{t("builder.duplicate")}</Button>
+      <Button variant="primary" onClick={onNewVersion}><FilePenLine size={14} aria-hidden="true" />{t("builder.newVersion")}</Button>
+    </>} />
+    <section className={styles.editorContent}>
+      <div className={styles.factGrid}>
+        <Fact label={t("builder.planId")} value={plan.id} />
+        <Fact label={t("builder.operator")} value={t(`builder.operator.${plan.operator}`)} />
+        <Fact label={t("builder.createdAt")} value={formatDate(plan.createdAt, locale)} />
+      </div>
+      <SectionHeading title={t("builder.planRecipes")} meta={t("builder.recipeCount", { count: plan.recipes.length })} />
+      <PlanRecipesReadOnly plan={plan} recipes={recipes} />
+    </section>
+  </div>;
+}
+
+interface PlanDraftEditorProps {
+  working: PlanWorkingDraft;
+  recipes: IntelligenceRecipe[];
+  error?: string;
+  saving: boolean;
+  saveError: boolean;
+  onChange: (update: (current: EvaluationPlanDraft) => EvaluationPlanDraft) => void;
+  onDiscard: () => void;
+  onPublish: () => void;
+}
+
+function PlanDraftEditor({ working, recipes, error, saving, saveError, onChange, onDiscard, onPublish }: PlanDraftEditorProps) {
+  const { t } = useAppIntl();
+  const draft = working.value;
+  const families = groupVersions(recipes);
+  const addRecipe = () => {
+    const next = nextAvailableRecipe(recipes, draft.recipes);
+    if (next) onChange((current) => ({ ...current, recipes: [...current.recipes, next] }));
+  };
+  return <div className={styles.editorScroll}>
+    <EditorHeader title={draft.name || t("builder.untitledPlan")} draft actions={<>
+      <Button onClick={onDiscard}><Trash2 size={14} aria-hidden="true" />{t("builder.discardDraft")}</Button>
+      <Button variant="primary" onClick={onPublish} disabled={Boolean(error) || saving}><Save size={14} aria-hidden="true" />{saving ? t("builder.saving") : t("builder.publishVersion")}</Button>
+    </>} />
+    <section className={styles.editorContent}>
+      {(error || saveError) && <p className={styles.error} role="alert">{saveError ? t("builder.saveError") : `${t("builder.planInvalid")}: ${error}`}</p>}
+      <div className={styles.formGrid}>
+        <label><SectionLabel>{t("builder.planId")}</SectionLabel><input value={draft.id} readOnly={working.mode === "version"} onChange={(event) => onChange((current) => ({ ...current, id: event.target.value }))} /></label>
+        <label><SectionLabel>{t("builder.planName")}</SectionLabel><input value={draft.name} onChange={(event) => onChange((current) => ({ ...current, name: event.target.value }))} /></label>
+        <label><SectionLabel>{t("builder.operator")}</SectionLabel><select value={draft.operator} onChange={(event) => onChange((current) => ({ ...current, operator: event.target.value as EvaluationPlanDraft["operator"] }))}><option value="all">{t("builder.operator.all")}</option><option value="any">{t("builder.operator.any")}</option></select></label>
+      </div>
+      <div className={styles.operatorHelp}><Workflow size={20} aria-hidden="true" /><p>{t(`builder.operator.${draft.operator}.help`)}</p></div>
+      <SectionHeading title={t("builder.planRecipes")} meta={t("builder.recipeCount", { count: draft.recipes.length })} action={<Button size="sm" onClick={addRecipe} disabled={draft.recipes.length >= MAX_PLAN_RECIPES || families.length <= draft.recipes.length}><Plus size={14} aria-hidden="true" />{t("builder.addRecipe")}</Button>} />
+      {families.length === 0 ? <EmptyState>{t("builder.noRecipesForPlan")}</EmptyState> : <div className={styles.cardStack}>
+        {draft.recipes.map((reference, index) => {
+          const latest = latestRecipeVersion(recipes, reference.recipeId);
+          const selectedFamilies = new Set(draft.recipes.filter((_, candidate) => candidate !== index).map((item) => item.recipeId));
+          return <article key={`${index}-${recipeRefKey(reference)}`} className={styles.planStep}>
+            <span className={styles.stepNumber}>{index + 1}</span>
+            <label><SectionLabel>{t("builder.recipeVersion")}</SectionLabel><select aria-label={t("builder.recipePosition", { index: index + 1 })} value={recipeRefKey(reference)} onChange={(event) => {
+              const parsed = parseRecipeRef(event.target.value);
+              if (parsed) onChange((current) => ({ ...current, recipes: current.recipes.map((item, candidate) => candidate === index ? parsed : item) }));
+            }}>{families.map((family) => <optgroup key={family.id} label={family.latest.name}>{family.versions.map((recipe) => <option key={recipeVersionKey(recipe)} value={recipeVersionKey(recipe)} disabled={selectedFamilies.has(recipe.id)}>{recipe.name} · v{recipe.version}</option>)}</optgroup>)}</select></label>
+            <div className={styles.stepMeta}>{latest && latest > reference.recipeVersion && <Chip tone="sunset">{t("builder.newerVersion", { version: latest })}</Chip>}</div>
+            <div className={styles.stepActions}>
+              <Button variant="ghost" iconOnly aria-label={t("builder.moveUp")} onClick={() => onChange((current) => ({ ...current, recipes: moveItem(current.recipes, index, -1) }))} disabled={index === 0}><ArrowUp size={14} aria-hidden="true" /></Button>
+              <Button variant="ghost" iconOnly aria-label={t("builder.moveDown")} onClick={() => onChange((current) => ({ ...current, recipes: moveItem(current.recipes, index, 1) }))} disabled={index === draft.recipes.length - 1}><ArrowDown size={14} aria-hidden="true" /></Button>
+              <Button variant="ghost" iconOnly aria-label={t("builder.removeRecipe")} onClick={() => onChange((current) => ({ ...current, recipes: current.recipes.filter((_, candidate) => candidate !== index) }))} disabled={draft.recipes.length === 1}><Trash2 size={14} aria-hidden="true" /></Button>
+            </div>
+          </article>;
+        })}
+      </div>}
+    </section>
+  </div>;
+}
+
+function CriteriaReadOnly({ criteria }: { criteria: IntelligenceCriterion[] }) {
+  const { t } = useAppIntl();
+  return <div className={styles.cardStack}>{criteria.map((criterion) => <article key={criterion.id} className={styles.card}>
+    <div className={styles.cardTitle}><span><strong>{criterion.name}</strong><small>{criterion.id}</small></span><Chip>{criterion.weight}</Chip></div>
+    <p>{criterion.description}</p>
+    <div className={styles.tagRow}>{criterion.required && <Chip>{t("builder.required")}</Chip>}{criterion.evidenceRequired !== false && <Chip>{t("builder.evidenceRequired")}</Chip>}</div>
+  </article>)}</div>;
+}
+
+function PlanRecipesReadOnly({ plan, recipes }: { plan: EvaluationPlan; recipes: IntelligenceRecipe[] }) {
+  const { t } = useAppIntl();
+  return <div className={styles.cardStack}>{plan.recipes.map((reference, index) => {
+    const recipe = recipes.find((candidate) => candidate.id === reference.recipeId && candidate.version === reference.recipeVersion);
+    const latest = latestRecipeVersion(recipes, reference.recipeId);
+    return <article key={recipeRefKey(reference)} className={styles.readOnlyStep}>
+      <span className={styles.stepNumber}>{index + 1}</span>
+      <span><strong>{recipe?.name ?? reference.recipeId}</strong><small>{reference.recipeId} · v{reference.recipeVersion}</small></span>
+      {latest && latest > reference.recipeVersion && <Chip tone="sunset">{t("builder.newerVersion", { version: latest })}</Chip>}
+    </article>;
+  })}</div>;
+}
+
+function RecipeInspector({ family, selected }: { family?: VersionFamily<IntelligenceRecipe>; selected?: IntelligenceRecipe }) {
+  const { t } = useAppIntl();
+  return <><div className={styles.inspectorHeader}><SectionLabel>{t("builder.history")}</SectionLabel><strong>{selected?.name ?? t("builder.empty")}</strong></div>{family ? <dl className={styles.inspectorFacts}><FactRow label={t("builder.family")} value={family.id} /><FactRow label={t("builder.versionCountLabel")} value={String(family.versions.length)} /><FactRow label={t("builder.latestVersion")} value={`v${family.latest.version}`} /></dl> : <EmptyState>{t("builder.empty")}</EmptyState>}</>;
+}
+
+function PlanInspector({ family, selected, defaultPlan }: { family?: VersionFamily<EvaluationPlan>; selected?: EvaluationPlan; defaultPlan?: EvaluationPlan | null }) {
+  const { t } = useAppIntl();
+  return <><div className={styles.inspectorHeader}><SectionLabel>{t("builder.publishedPlan")}</SectionLabel><strong>{selected?.name ?? t("builder.noPlans")}</strong></div>{selected ? <dl className={styles.inspectorFacts}><FactRow label={t("builder.family")} value={selected.id} /><FactRow label={t("builder.versionCountLabel")} value={String(family?.versions.length ?? 1)} /><FactRow label={t("builder.defaultPlan")} value={selected.isDefault ? t("builder.yes") : t("builder.no")} /><FactRow label={t("builder.currentDefault")} value={defaultPlan ? `${defaultPlan.name} · v${defaultPlan.version}` : t("builder.none")} /></dl> : <EmptyState>{t("builder.noPlans")}</EmptyState>}</>;
+}
+
+function EditorHeader({ title, version, readOnly, draft, actions }: { title: string; version?: number; readOnly?: boolean; draft?: boolean; actions: React.ReactNode }) {
+  const { t } = useAppIntl();
+  return <header className={styles.editorHeader}><div><SectionLabel>{t("builder.title")}</SectionLabel><h2>{title}</h2><div className={styles.tagRow}>{version && <Chip>v{version}</Chip>}{readOnly && <Chip>{t("builder.readOnly")}</Chip>}{draft && <Chip tone="sunset">{t("common.draft")}</Chip>}</div></div><div className={styles.headerActions}>{actions}</div></header>;
+}
+
+function SectionHeading({ title, meta, action }: { title: string; meta?: string; action?: React.ReactNode }) {
+  return <div className={styles.sectionHeading}><span><h3>{title}</h3>{meta && <small>{meta}</small>}</span>{action}</div>;
+}
+
+function Fact({ label, value }: { label: string; value: string }) {
+  return <div className={styles.fact}><SectionLabel>{label}</SectionLabel><strong>{value}</strong></div>;
+}
+
+function FactRow({ label, value }: { label: string; value: string }) {
+  return <div><dt>{label}</dt><dd>{value}</dd></div>;
+}
+
+function BuilderState({ copy, retry }: { copy: string; retry?: () => void }) {
+  const { t } = useAppIntl();
+  return <EmptyState role={retry ? "alert" : "status"}><div className={styles.state}><h1>{t("builder.title")}</h1><p>{copy}</p>{retry && <Button onClick={retry}>{t("common.retry")}</Button>}</div></EmptyState>;
+}
+
+function nextCriterionId(criteria: IntelligenceCriterion[]): string {
+  const used = new Set(criteria.map((criterion) => criterion.id));
+  let index = criteria.length + 1;
+  while (used.has(`criterion-${index}`)) index += 1;
+  return `criterion-${index}`;
+}
+
+function formatDate(value: string | undefined, locale: string): string {
+  if (!value) return "—";
+  return new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
 }

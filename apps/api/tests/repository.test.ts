@@ -48,7 +48,7 @@ describe("DenicheurRepository", () => {
       const attemptColumns = inspection.prepare("PRAGMA table_info(evaluation_attempts)")
         .all().map((row) => row.name);
 
-      expect(versions).toEqual([1, 2]);
+      expect(versions).toEqual(DATABASE_MIGRATIONS.map((migration) => migration.version));
       expect(evaluationColumns).toContain("input_fingerprint");
       expect(attemptColumns).toContain("result_json");
       expect(attemptColumns).not.toContain("prompt");
@@ -56,6 +56,61 @@ describe("DenicheurRepository", () => {
     } finally {
       inspection.close();
     }
+  });
+
+  it("seeds one idempotent default plan from the active recipe after migration", () => {
+    const directory = mkdtempSync(join(tmpdir(), "denicheur-api-default-plan-"));
+    temporaryDirectories.push(directory);
+    const path = join(directory, "denicheur.sqlite");
+    const first = new DenicheurRepository({ path, now: () => NOW });
+    const recipe = first.saveRecipe("active-recipe", {
+      name: "Active recipe",
+      threshold: 70,
+      criteria: [{
+        id: "garden",
+        name: "Garden",
+        description: "A garden is expected.",
+        weight: 1,
+        required: false,
+      }],
+    });
+    first.activateRecipe(recipe.id, recipe.version);
+    first.close();
+
+    const migrated = new DenicheurRepository({ path, now: () => NOW });
+    expect(migrated.getDefaultEvaluationPlan()).toMatchObject({
+      id: "default-evaluation",
+      version: 1,
+      isDefault: true,
+      combinerVersion: "tri-state-v1",
+      recipes: [{
+        recipeId: recipe.id,
+        recipeVersion: recipe.version,
+        recipe: { id: recipe.id, version: recipe.version, active: true },
+      }],
+    });
+    migrated.close();
+    const reopened = new DenicheurRepository({ path, now: () => NOW });
+    expect(reopened.listEvaluationPlans()).toHaveLength(1);
+    reopened.close();
+  });
+
+  it("rejects zero-weight recipe publications at the repository boundary", () => {
+    const repository = createMemoryRepository();
+
+    expect(() => repository.saveRecipe("zero-weight", {
+      name: "Zero weight",
+      threshold: 50,
+      criteria: [{
+        id: "zero",
+        name: "Zero",
+        description: "This criterion cannot influence the score.",
+        weight: 0,
+        required: false,
+      }],
+    })).toThrow("positive weight");
+    expect(repository.listRecipes()).toEqual([]);
+    repository.close();
   });
 
   it("keeps successful attempt results and removes attempt history during collected-data cleanup", () => {

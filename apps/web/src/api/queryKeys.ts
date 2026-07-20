@@ -1,4 +1,4 @@
-import type { ListingFilters } from "../types";
+import type { EvaluationExecution, ListingFilters } from "../types";
 
 export const queryKeys = {
   health: {
@@ -21,5 +21,20 @@ export const queryKeys = {
     all: ["recipes"] as const,
     lists: () => [...queryKeys.recipes.all, "list"] as const,
     active: () => [...queryKeys.recipes.all, "active"] as const,
+  },
+  evaluationPlans: {
+    all: ["evaluation-plans"] as const,
+    lists: () => [...queryKeys.evaluationPlans.all, "list"] as const,
+    default: () => [...queryKeys.evaluationPlans.all, "default"] as const,
+    detail: (id: string, version: number) => [...queryKeys.evaluationPlans.all, "detail", id, version] as const,
+  },
+  evaluationExecutions: {
+    all: ["evaluation-executions"] as const,
+    lists: () => [...queryKeys.evaluationExecutions.all, "list"] as const,
+    list: (filters?: { runId?: string; status?: EvaluationExecution["status"] }) =>
+      [...queryKeys.evaluationExecutions.lists(), filters ?? {}] as const,
+    details: () => [...queryKeys.evaluationExecutions.all, "detail"] as const,
+    detail: (id: string) => [...queryKeys.evaluationExecutions.details(), id] as const,
+    results: (id: string) => [...queryKeys.evaluationExecutions.detail(id), "results"] as const,
   },
 } as const;

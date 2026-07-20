@@ -1,506 +1,477 @@
 .view {
   display: grid;
-  grid-template-columns: 250px 390px minmax(0, 1fr);
+  grid-template-columns: 300px 330px minmax(0, 1fr);
   height: 100%;
   min-height: 0;
 }
 
-.groups,
-.index,
-.docs {
+.controlPanel,
+.resultIndex,
+.resultDetail {
   min-height: 0;
   overflow: auto;
-}
-
-.groups {
-  border-right: 1px solid var(--color-border);
   background: var(--color-surface);
 }
 
-.index {
+.controlPanel,
+.resultIndex {
   border-right: 1px solid var(--color-border);
 }
 
-.panelIntro {
+.panelHeader,
+.controlSection,
+.executionShelf,
+.executionHeader,
+.progress {
   display: flex;
   flex-direction: column;
-  gap: 5px;
-  padding: 18px;
+  gap: var(--space-3);
+  padding: var(--space-4);
   border-bottom: 1px solid var(--color-border-soft);
 }
 
-.panelIntro h1 {
+.panelHeader h1,
+.detailHeader h2,
+.sectionHeading h3,
+.state h1 {
   margin: 0;
-  font-size: 22px;
   font-family: var(--font-display);
-  line-height: 1.15;
-  text-wrap: balance;
 }
 
-.panelIntro > span:last-child {
+.panelHeader h1 {
+  font-size: 25px;
+}
+
+.panelHeader > span,
+.executionShelf > p,
+.muted {
+  margin: 0;
   color: var(--color-text-muted);
-  font-size: var(--fs-body-sm);
-}
-
-.groupList {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 12px;
-}
-
-.groupList button {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  height: 32px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--color-text);
-  cursor: pointer;
-  padding: 0 10px;
-  text-align: left;
-}
-
-.groupList button:hover {
-  background: var(--color-surface-2);
-}
-
-.groupList b {
-  color: var(--color-text-muted);
-  font-family: var(--font-mono);
-  font-size: 11px;
-}
-
-.groupActive {
-  background: var(--cta-soft) !important;
-  color: var(--cta) !important;
-}
-
-.indexHeader {
-  position: sticky;
-  top: 0;
-  z-index: 3;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  height: 52px;
-  padding: 0 16px;
-  border-bottom: 1px solid var(--color-border);
-  background: var(--color-bg);
-}
-
-.indexHeader span {
-  color: var(--color-text-muted);
-  font-family: var(--font-mono);
   font-size: 12px;
 }
 
-.metricList {
+.controlSection label:not(.forceToggle) {
   display: flex;
   flex-direction: column;
+  gap: var(--space-2);
 }
 
-.metricItem {
-  display: grid;
-  grid-template-columns: 36px minmax(0, 1fr);
-  gap: 12px;
-  align-items: center;
+.controlSection select {
   width: 100%;
-  min-height: 76px;
-  padding: 13px 14px;
-  border: 0;
-  border-bottom: 1px solid var(--color-border-soft);
-  border-left: 2px solid transparent;
-  background: transparent;
-  color: var(--color-text);
-  cursor: pointer;
-  text-align: left;
-}
-
-.metricItem:hover {
-  background: var(--color-surface);
-}
-
-.metricItemActive {
-  border-left-color: var(--cta);
-  background: var(--color-surface);
-}
-
-.metricIcon {
-  display: grid;
-  width: 36px;
-  height: 36px;
-  place-items: center;
+  min-height: var(--h-control);
   border: 1px solid var(--color-border);
-  border-radius: 8px;
+  border-radius: var(--radius-1);
   background: var(--color-surface-2);
-  color: var(--cta);
+  color: var(--color-text);
+  padding: 0 var(--space-2);
 }
 
-.metricCopy {
+.planSummary {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2);
+  background: var(--cta-soft);
+  padding: var(--space-3);
+}
+
+.planSummary > span,
+.executionShelf button > span,
+.resultList button > span,
+.stepCard > header > span {
   display: flex;
   min-width: 0;
+  flex: 1;
   flex-direction: column;
-  gap: 3px;
+  gap: var(--space-1);
 }
 
-.metricCopy strong,
-.metricCopy small {
+.planSummary small,
+.executionShelf small,
+.resultList small,
+.stepCard header small {
   overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.metricCopy small {
-  color: var(--color-text-muted);
-  font-size: 12px;
-}
-
-.docBody {
-  width: min(780px, 100%);
-  margin: 0 auto;
-  padding: 34px 40px 60px;
-}
-
-.docHeader {
+.forceToggle {
   display: flex;
-  gap: 16px;
   align-items: center;
+  gap: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: 13px;
 }
 
-.docIcon {
-  display: grid;
-  width: 58px;
-  height: 58px;
+.executionShelf {
+  gap: var(--space-2);
+}
+
+.executionShelf button,
+.resultList button {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  border: 1px solid transparent;
+  border-radius: var(--radius-2);
+  background: transparent;
+  color: var(--color-text);
+  cursor: pointer;
+  padding: var(--space-3);
+  text-align: left;
+}
+
+.executionShelf button:hover,
+.executionShelf .executionActive,
+.resultList button:hover,
+.resultList .resultActive {
+  border-color: var(--color-border);
+  background: var(--cta-soft);
+}
+
+.executionShelf svg,
+.resultList svg {
   flex: 0 0 auto;
-  place-items: center;
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  background: linear-gradient(135deg, var(--cta-soft), var(--color-sunset-soft));
   color: var(--cta);
 }
 
-.tagRow {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.docHeader h2 {
-  margin: 10px 0 0;
-  font-family: var(--font-display);
-  font-size: 36px;
-  line-height: 1.05;
-  overflow-wrap: anywhere;
-  text-wrap: balance;
-}
-
-.lede {
-  margin: 24px 0;
-  color: var(--color-text);
-  font-size: 17px;
-  line-height: 1.55;
-}
-
-.rangeBox,
-.docSection pre,
-.examples > div {
-  border: 1px solid var(--color-border);
-  border-radius: 8px;
-  background: var(--color-surface);
-}
-
-.rangeBox {
-  padding: 18px;
-}
-
-.boxHeader {
-  display: flex;
-  align-items: center;
+.executionHeader {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  flex-direction: row;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 10px;
-  color: var(--color-text-muted);
-  font-family: var(--font-mono);
-  font-size: 12px;
+  background: color-mix(in oklab, var(--color-surface) 94%, transparent);
+  backdrop-filter: blur(12px);
 }
 
-.rangeBar {
-  height: 10px;
-  margin-top: 12px;
-  border-radius: 999px;
-  background: linear-gradient(90deg, var(--color-danger), var(--color-sunset), var(--color-good));
-}
-
-.rangeLabels {
-  display: flex;
-  justify-content: space-between;
-  margin-top: 8px;
-  color: var(--color-text-muted);
-  font-size: 12px;
-}
-
-.docSection {
-  margin-top: 24px;
-}
-
-.docSection h3 {
-  margin: 0 0 9px;
-  font-size: 15px;
-}
-
-.docSection pre {
-  overflow: auto;
-  margin: 0;
-  padding: 14px;
-  color: var(--color-text);
-  font-family: var(--font-mono);
-  font-size: 13px;
-}
-
-.docSection ul {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.docSection li {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding-bottom: 8px;
-  border-bottom: 1px dashed var(--color-border);
-}
-
-.docSection li span {
-  width: 7px;
-  height: 7px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: var(--cta);
-}
-
-.examples {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-  margin-top: 24px;
-}
-
-.examples > div {
-  padding: 14px;
-}
-
-.examples p {
-  margin: 10px 0 0;
-  font-size: 13px;
-}
-
-.docFooter {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 24px;
-  margin-top: 28px;
-  padding-top: 18px;
-  border-top: 1px solid var(--color-border);
-}
-
-.docFooter > div {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  color: var(--color-text-muted);
-  font-size: 12px;
-}
-
-.stateContent {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-4);
-}
-
-.coveragePanel {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin: var(--space-4);
-  padding: var(--space-4);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-3);
-  background: var(--color-surface-2);
-}
-
-.summaryGrid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--space-3);
-}
-
-.summaryCard {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-4);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-3);
-  background: var(--color-surface);
-}
-
-.summaryCard strong {
-  font-family: var(--font-mono);
-  font-size: var(--fs-h2);
-}
-
-.coverageSection,
-.evaluationDocs {
-  margin-top: var(--space-6);
-  padding-top: var(--space-5);
-  border-top: 1px solid var(--color-border);
-}
-
-.criterionCoverage {
-  display: grid;
-  grid-template-columns: minmax(180px, 0.7fr) minmax(100px, 1fr);
-  align-items: center;
-  gap: var(--space-4);
-  padding: var(--space-3) 0;
-}
-
-.criterionCoverage > div {
+.executionHeader > div:first-child {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: var(--space-1);
 }
 
-.criterionCoverage span,
-.muted {
-  color: var(--color-text-muted);
-  font-size: var(--fs-body-sm);
-}
-
-.scoreSummary {
-  display: grid;
-  grid-template-columns: auto minmax(120px, 1fr);
-  align-items: center;
-  gap: var(--space-4);
-  margin-top: var(--space-5);
-}
-
-.scoreSummary strong {
+.executionHeader strong {
+  overflow: hidden;
   font-family: var(--font-mono);
-  font-size: var(--fs-h3);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.criteriaResults {
-  display: grid;
+.executionActions,
+.tagRow,
+.stepDecision {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.progress > div:first-child {
+  display: flex;
+  justify-content: space-between;
   gap: var(--space-3);
-  margin-top: var(--space-5);
+  color: var(--color-text-muted);
+  font-size: 12px;
 }
 
-.criteriaResults article {
-  padding: var(--space-4);
-  border: 1px solid var(--color-border);
+.counterGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+}
+
+.counterGrid > div {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-2);
+  border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-1);
+  background: var(--color-surface-2);
+  padding: var(--space-2);
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+.counterGrid strong {
+  color: var(--color-text);
+}
+
+.decisionFilters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-1);
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--color-border-soft);
+}
+
+.decisionFilters button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: 34px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-1);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 0 var(--space-2);
+}
+
+.decisionFilters button:hover,
+.decisionFilters .filterActive {
+  border-color: var(--color-border);
+  background: var(--color-surface-2);
+  color: var(--color-text);
+}
+
+.decisionFilters b {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.resultList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-3);
+}
+
+.detailScroll {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+  max-width: 980px;
+  margin: 0 auto;
+  padding: var(--space-5);
+}
+
+.detailHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.detailHeader > div:last-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.detailHeader h2 {
+  overflow: hidden;
+  font-size: 27px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detailIcon {
+  display: grid;
+  width: 52px;
+  height: 52px;
+  flex: 0 0 auto;
+  place-items: center;
   border-radius: var(--radius-3);
+  background: linear-gradient(135deg, var(--cta-soft), var(--color-sunset-soft));
+  color: var(--cta);
+}
+
+.aggregate,
+.stepCard,
+.criteria > article {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-2);
   background: var(--color-surface);
 }
 
-.criteriaResults p,
-.criteriaResults ul {
-  margin: var(--space-3) 0 0;
-  line-height: 1.5;
+.aggregate {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
 }
 
-@media (max-width: 760px) {
-  .summaryGrid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .criterionCoverage {
-    grid-template-columns: minmax(0, 1fr);
-  }
+.aggregate > strong {
+  font-family: var(--font-display);
+  font-size: 31px;
 }
 
-@media (max-width: 1060px) {
+.aggregate p,
+.stepCard > p,
+.criteria p {
+  margin: 0;
+  color: var(--color-text-muted);
+  line-height: 1.55;
+}
+
+.steps {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.sectionHeading h3 {
+  margin-top: var(--space-1);
+  font-size: 18px;
+}
+
+.stepCard {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+}
+
+.stepCard > header,
+.criteria header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.stepDecision {
+  justify-content: space-between;
+  border-top: 1px solid var(--color-border-soft);
+  border-bottom: 1px solid var(--color-border-soft);
+  padding: var(--space-3) 0;
+}
+
+.criteria {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.criteria > article {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--color-surface-2);
+}
+
+.criteria code {
+  overflow-wrap: anywhere;
+  color: var(--cta);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.criteria ul {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding-left: var(--space-4);
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.missing {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  border-top: 1px solid var(--color-border-soft);
+  padding-top: var(--space-3);
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.stepError,
+.error {
+  margin: 0;
+  border: 1px solid color-mix(in oklab, var(--color-danger) 45%, var(--color-border));
+  border-radius: var(--radius-2);
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+  padding: var(--space-3);
+}
+
+.error {
+  margin: var(--space-3);
+}
+
+.detailFooter {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-4);
+}
+
+.detailFooter > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.detailFooter span {
+  overflow-wrap: anywhere;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.state {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  gap: var(--space-3);
+  max-width: 440px;
+  text-align: center;
+}
+
+.state p {
+  margin: 0;
+  color: var(--color-text-muted);
+}
+
+@media (max-width: 1180px) {
   .view {
-    grid-template-columns: 220px minmax(300px, 1fr);
-    grid-template-rows: minmax(430px, 1fr) auto;
-    overflow: auto;
+    grid-template-columns: 280px minmax(0, 1fr);
   }
 
-  .docs {
+  .resultIndex {
+    border-right: 0;
+  }
+
+  .resultDetail {
     grid-column: 1 / -1;
-    overflow: visible;
+    min-height: 520px;
     border-top: 1px solid var(--color-border);
   }
 }
 
 @media (max-width: 760px) {
   .view {
-    grid-template-columns: 1fr;
-    grid-template-rows: repeat(3, max-content);
-    align-content: start;
+    display: block;
     overflow: auto;
   }
 
-  .groups,
-  .index,
-  .docs {
+  .controlPanel,
+  .resultIndex,
+  .resultDetail {
     overflow: visible;
-  }
-
-  .groups {
     border-right: 0;
+    border-bottom: 1px solid var(--color-border);
   }
 
-  .index {
-    min-height: 420px;
-    border-right: 0;
+  .executionHeader {
+    position: static;
+    flex-direction: column;
   }
 
-  .docs {
-    grid-column: 1;
-  }
-
-  .docBody {
-    padding: var(--space-6) var(--space-5) var(--space-8);
-  }
-
-  .docHeader {
-    align-items: flex-start;
-  }
-
-  .docHeader h2 {
-    font-size: var(--fs-h2);
-  }
-
-  .examples,
-  .docFooter {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .docSection pre {
-    max-width: 100%;
-    white-space: pre-wrap;
-    overflow-wrap: anywhere;
-  }
-}
-
-@media (pointer: coarse) {
-  .groupList button {
-    min-height: 44px;
-    height: auto;
-  }
-
-  .metricItem {
-    min-height: 76px;
+  .detailFooter {
+    grid-template-columns: 1fr;
   }
 }

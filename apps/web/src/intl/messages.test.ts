@@ -12,5 +12,10 @@ describe("intl messages", () => {
     expect(translate(messages, "fr", "properties.count", { count: 1 })).toBe("1 bien");
     expect(translate(messages, "es", "properties.count", { count: 2 })).toBe("2 propiedades");
     expect(translate(messages, "en", "properties.count", { count: 1 })).toBe("1 property");
+    expect(translate(messages, "fr", "property.imageAlt", {
+      index: 2,
+      title: "Maison du port",
+      total: 5,
+    })).toBe("Photo 2 sur 5 : Maison du port");
   });
 });

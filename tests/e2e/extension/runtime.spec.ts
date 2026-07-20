@@ -31,12 +31,14 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     context,
     page,
     extensionId,
+    runtimeErrors,
   }: {
     context: BrowserContext;
     page: Page;
     extensionId: string;
+    runtimeErrors: string[];
   }, testInfo: TestInfo): Promise<void> {
-    test.setTimeout(90_000);
+    test.setTimeout(120_000);
     const externalId = String(3_007_199_900 + testInfo.retry);
     const listingId = `leboncoin:${externalId}`;
     const detailUrl = `https://www.leboncoin.fr/ad/ventes_immobilieres/${externalId}`;
@@ -44,28 +46,8 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     const detailPageHtml = DETAIL_PAGE_HTML.replaceAll("Maison familiale à Brest", title);
     const recipeId = `mv3-functional-e2e-r${testInfo.retry}`;
     const recipeName = "Recette MV3 fonctionnelle";
-    const bootstrapRecipeId = `${recipeId}-bootstrap`;
-    const bootstrapDraft = {
-      name: "Recette bootstrap E2E",
-      threshold: 50,
-      criteria: [{
-        id: "bootstrap",
-        name: "Bootstrap",
-        description: "Évite un état 404 avant la publication depuis Atelier.",
-        weight: 1,
-        required: false,
-      }],
-    };
-    const bootstrapSave = await context.request.put(
-      `${API_BASE_URL}/v1/recipes/${bootstrapRecipeId}`,
-      { data: bootstrapDraft },
-    );
-    expect(bootstrapSave.status()).toBe(201);
-    const bootstrapActivate = await context.request.post(
-      `${API_BASE_URL}/v1/recipes/${bootstrapRecipeId}/activate`,
-      { data: { version: 1 } },
-    );
-    expect(bootstrapActivate.status()).toBe(200);
+    const planId = `mv3-functional-plan-r${testInfo.retry}`;
+    const planName = "Plan MV3 fonctionnel";
     const web = await context.newPage();
 
     await web.goto(`${WEB_BASE_URL}/?view=builder`);
@@ -86,18 +68,28 @@ test.describe("Denicheur MV3 native-search runtime", () => {
       response.request().method() === "PUT" &&
       response.url() === `${API_BASE_URL}/v1/recipes/${recipeId}`,
     );
-    await web.getByRole("button", { name: "Enregistrer une version" }).click();
+    await web.getByRole("button", { name: "Publier la version" }).click();
     expect((await saveResponse).status()).toBe(201);
-
-    const activateButton = web.getByRole("button", { name: "Activer", exact: true });
-    await expect(activateButton).toBeEnabled();
-    const activationResponse = web.waitForResponse((response) =>
-      response.request().method() === "POST" &&
-      response.url() === `${API_BASE_URL}/v1/recipes/${recipeId}/activate`,
-    );
-    await activateButton.click();
-    expect((await activationResponse).status()).toBe(200);
     await expect(web.getByRole("heading", { name: recipeName, exact: true })).toBeVisible();
+
+    await web.getByRole("tab", { name: "Plans", exact: true }).click();
+    await web.getByRole("button", { name: "Nouveau plan", exact: true }).click();
+    await web.getByLabel("Identifiant du plan", { exact: true }).fill(planId);
+    await web.getByLabel("Nom du plan", { exact: true }).fill(planName);
+    await web.getByLabel("Recette en position 1", { exact: true }).selectOption(`${recipeId}:1`);
+    const planSaveResponse = web.waitForResponse((response) =>
+      response.request().method() === "PUT" &&
+      response.url() === `${API_BASE_URL}/v1/evaluation-plans/${planId}`,
+    );
+    await web.getByRole("button", { name: "Publier la version" }).click();
+    expect((await planSaveResponse).status()).toBe(201);
+    await expect(web.getByRole("heading", { name: planName, exact: true })).toBeVisible();
+    const setDefaultResponse = web.waitForResponse((response) =>
+      response.request().method() === "POST" &&
+      response.url() === `${API_BASE_URL}/v1/evaluation-plans/${planId}/set-default`,
+    );
+    await web.getByRole("button", { name: "Définir par défaut", exact: true }).click();
+    expect((await setDefaultResponse).status()).toBe(200);
 
     const uniqueListingBeforeCapture = await context.request.get(
       `${API_BASE_URL}/v1/listings/leboncoin/${externalId}`,
@@ -109,23 +101,35 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     if (await intelligencePanel.getAttribute("open") === null) {
       await intelligencePanel.locator("summary").click();
     }
-    const refreshRecipe = page.getByRole("button", { name: "Refresh active recipe" });
-    await expect(refreshRecipe).toBeVisible();
-    await refreshRecipe.click();
-    await expect(page.getByText("Active recipe refreshed from the API.", { exact: true })).toBeVisible();
+    const refreshPlan = page.getByRole("button", { name: "Refresh default plan" });
+    await expect(refreshPlan).toBeVisible();
+    await refreshPlan.click();
+    await expect(page.getByText("Default plan refreshed from the API.", { exact: true })).toBeVisible();
     await expect.poll(async () => {
       const storage = await readExtensionStorage(page);
       const syncState = storage["denicheur:sync:state"] as {
+        activePlan?: { status?: string; planId?: string; planVersion?: number };
         activeRecipe?: { status?: string; recipeId?: string; recipeVersion?: number };
+      } | undefined;
+      const plan = storage["denicheur:intelligence:plan"] as {
+        id?: string;
+        version?: number;
+        recipes?: Array<{ recipeId?: string; recipeVersion?: number }>;
       } | undefined;
       const recipe = storage["denicheur:intelligence:recipe"] as {
         id?: string;
         version?: number;
         enabled?: boolean;
       } | undefined;
-      return { activeRecipe: syncState?.activeRecipe, recipe };
+      return { activePlan: syncState?.activePlan, activeRecipe: syncState?.activeRecipe, plan, recipe };
     }).toMatchObject({
+      activePlan: { status: "cached", planId, planVersion: 1 },
       activeRecipe: { status: "cached", recipeId, recipeVersion: 1 },
+      plan: {
+        id: planId,
+        version: 1,
+        recipes: [{ recipeId, recipeVersion: 1 }],
+      },
       recipe: { id: recipeId, version: 1, enabled: true },
     });
 
@@ -190,12 +194,45 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     await popup.goto(extensionUrl(extensionId, "popup.html"));
     await expect(popup.getByText("1 record", { exact: true })).toBeVisible();
     await popup.getByRole("button", { name: "Sync now" }).click();
+    await expect.poll(async () => {
+      const storage = await readExtensionStorage(popup);
+      const syncState = storage["denicheur:sync:state"] as {
+        queue?: unknown[];
+        evaluationQueue?: Array<{ status?: string; planId?: string; executionId?: string }>;
+      } | undefined;
+      return {
+        ingestion: syncState?.queue?.length,
+        execution: syncState?.evaluationQueue?.find((entry) => entry.planId === planId),
+      };
+    }, { timeout: 20_000 }).toMatchObject({
+      ingestion: 0,
+      execution: {
+        status: "failed",
+        planId,
+        executionId: expect.any(String),
+      },
+    });
     await expect(popup.getByText("Synced with the local API", { exact: true })).toBeVisible();
     await expect.poll(async () => {
       const storage = await readExtensionStorage(popup);
-      const syncState = storage["denicheur:sync:state"] as { queue?: unknown[] } | undefined;
-      return syncState?.queue?.length;
-    }).toBe(0);
+      const records = storage["denicheur:crawler:records"] as Array<{
+        id?: string;
+        evaluation?: unknown;
+        planEvaluation?: {
+          planId?: string;
+          decision?: string;
+          steps?: Array<{ status?: string }>;
+        };
+      }> | undefined;
+      return records?.find((record) => record.id === externalId);
+    }).toMatchObject({
+      id: externalId,
+      planEvaluation: {
+        planId,
+        decision: "review",
+        steps: [{ status: "failed" }],
+      },
+    });
 
     const firstApiDetail = await context.request.get(
       `${API_BASE_URL}/v1/listings/leboncoin/${externalId}`,
@@ -231,6 +268,20 @@ test.describe("Denicheur MV3 native-search runtime", () => {
         lastRunId: capturedRunId,
       }),
     ]);
+
+    const executionsResponse = await context.request.get(
+      `${API_BASE_URL}/v1/evaluation-executions?runId=${encodeURIComponent(capturedRunId)}&limit=20`,
+    );
+    expect(executionsResponse.ok()).toBe(true);
+    expect(await executionsResponse.json()).toMatchObject({
+      total: 1,
+      items: [expect.objectContaining({
+        runId: capturedRunId,
+        planId,
+        planVersion: 1,
+        status: "failed",
+      })],
+    });
 
     await popup.evaluate(() => {
       const root = document.documentElement;
@@ -272,6 +323,14 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     await expect(
       web.getByText("Run de collecte", { exact: true }).locator("..").getByText(capturedRunId, { exact: true }),
     ).toBeVisible();
+
+    // The first dashboard hydration intentionally observes the API's no-default
+    // 404 before this test publishes its plan. Chromium reports that expected
+    // response as a console resource error, so account for it explicitly.
+    expect(runtimeErrors).toEqual([
+      expect.stringContaining("server responded with a status of 404"),
+    ]);
+    runtimeErrors.splice(0, runtimeErrors.length);
   }
 
   test("cleans coordinated iteration data from the npm hook while preserving extension configuration", async ({
@@ -383,7 +442,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
         "denicheur:crawler:filters": filters,
         "denicheur:intelligence:recipe": recipe,
         "denicheur:sync:state": {
-          version: 1,
+          version: 2,
           status: "pending",
           queue: [{
             key: "previous-run:batch:1",
@@ -419,6 +478,8 @@ test.describe("Denicheur MV3 native-search runtime", () => {
             lastError: "Previous API attempt failed",
           }],
           syncedFingerprints: { "previous-run:batch:1": "stale-fingerprint" },
+          activePlan: { status: "none" },
+          evaluationQueue: [],
           activeRecipe: {
             status: "cached",
             recipeId: recipe.id,
@@ -548,10 +609,11 @@ test.describe("Denicheur MV3 native-search runtime", () => {
       collected: 0,
     }));
     expect(storage["denicheur:sync:state"]).toEqual(expect.objectContaining({
-      version: 1,
+      version: 2,
       status: "idle",
       queue: [],
       syncedFingerprints: {},
+      evaluationQueue: [],
       activeRecipe: expect.objectContaining({
         status: "cached",
         recipeId: storedRecipe.id,
@@ -826,7 +888,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     await expect(page.getByLabel("Delay max sec")).toHaveValue("55");
     await page.locator("details.intelligence-panel > summary").click();
     await expect(page.getByText("disabled", { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Refresh active recipe" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Refresh default plan" })).toBeVisible();
 
     const dashboardTab = await page.evaluate(async () => chrome.tabs.getCurrent());
     expect(dashboardTab?.windowId).toBeDefined();
@@ -899,6 +961,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
       status: "detailed",
     });
     expect(records[0].evaluation).toBeUndefined();
+    expect(records[0].planEvaluation).toBeUndefined();
 
     const fixtureJournal = parseFixtureCookies(await ownedSearchPages[0].evaluate(() => document.cookie));
     expect(fixtureJournal).toMatchObject({
@@ -1326,7 +1389,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
   });
 
   test(
-    "publishes a recipe and keeps one native MV3 capture until API and web converge",
+    "publishes a recipe and default plan, then keeps one MV3 capture until API and web converge",
     runFunctionalProductFlow,
   );
 });

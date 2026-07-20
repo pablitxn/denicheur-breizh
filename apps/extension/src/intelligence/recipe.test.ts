@@ -66,6 +66,26 @@ describe("intelligence recipe", () => {
     expect(normalized.name).toBe("Denicheur Breizh");
   });
 
+  it("keeps contract weights up to one thousand and defaults legacy evidence policy to required", () => {
+    const normalized = normalizeIntelligenceRecipe({
+      ...createDefaultIntelligenceRecipe(),
+      enabled: true,
+      criteria: [{
+        id: "sea-view",
+        name: "Sea view",
+        description: "The listing explicitly describes a sea view.",
+        weight: 800,
+        required: false,
+      }],
+    });
+
+    expect(normalized.criteria[0]).toMatchObject({
+      weight: 800,
+      evidenceRequired: true,
+    });
+    expect(validateIntelligenceRecipe(normalized)).toEqual([]);
+  });
+
   it("returns field-addressable issues for inline validation and focus", () => {
     const recipe = {
       ...createDefaultIntelligenceRecipe(),

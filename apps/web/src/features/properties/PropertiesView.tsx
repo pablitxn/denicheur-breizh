@@ -118,15 +118,12 @@ export function PropertiesView() {
           {!listingsQuery.error && sortedListings.length > 0 && viewMode === "cards" && (
             <div className={styles.cardGrid}>
               {sortedListings.map((listing) => (
-                <button
+                <article
                   key={listing.key}
-                  type="button"
                   className={[styles.propertyCard, listing.key === selected?.key ? styles.propertyCardActive : ""].join(" ")}
-                  onClick={() => selectListing(listing.key)}
-                  aria-pressed={listing.key === selected?.key}
                 >
                   <div className={styles.visualWrap}>
-                    <PropertyVisual property={listing} />
+                    <PropertyVisual property={listing} navigation />
                     <span className={styles.cardProvider}>{listing.source}</span>
                   </div>
                   <div className={styles.cardBody}>
@@ -137,7 +134,16 @@ export function PropertiesView() {
                     <p>{listing.location ?? t("common.unavailable")} · {formatOptionalSurface(listing.surfaceM2, locale, t("common.unavailable"))}</p>
                     <DecisionSummary evaluation={listing.evaluation} locale={locale} />
                   </div>
-                </button>
+                  <button
+                    type="button"
+                    className={styles.cardSelect}
+                    onClick={() => selectListing(listing.key)}
+                    aria-label={t("properties.select", {
+                      title: display(listing.title, t("common.unavailable")),
+                    })}
+                    aria-pressed={listing.key === selected?.key}
+                  />
+                </article>
               ))}
             </div>
           )}
@@ -217,7 +223,7 @@ function ListingDetail({ listing, loading, detailRef }: { listing: PropertyListi
   const evaluation = listing.evaluation;
   return (
     <aside ref={detailRef} className={styles.detail} aria-busy={loading}>
-      <PropertyVisual property={listing} size="lg" />
+      <PropertyVisual key={listing.key} property={listing} size="lg" navigation />
       <div className={styles.detailBody}>
         <div className={styles.detailHeader}>
           <div>

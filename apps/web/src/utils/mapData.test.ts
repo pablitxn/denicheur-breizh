@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { PropertyListing } from "../types";
-import { propertiesToGeoJson, propertiesWithinBounds, summarizeMapCoverage } from "./mapData";
+import { BRETAGNE } from "../features/map/mapGeography";
+import {
+  propertiesToGeoJson,
+  propertiesWithinAdministrativeArea,
+  propertiesWithinBounds,
+  summarizeMapCoverage,
+} from "./mapData";
 
 const observedAt = "2026-07-18T10:00:00.000Z";
 
@@ -130,5 +136,27 @@ describe("propertiesWithinBounds", () => {
     });
 
     expect(result.map((property) => property.externalId)).toEqual(["west", "east"]);
+  });
+});
+
+describe("propertiesWithinAdministrativeArea", () => {
+  const coordinates = (latitude: number, longitude: number): NonNullable<PropertyListing["coordinates"]> => ({
+    latitude,
+    longitude,
+    verifiedAt: observedAt,
+    provenance: "administrative scope test",
+    locationKind: "source-property",
+  });
+
+  it("keeps only geolocated listings within administrative Bretagne", () => {
+    const result = propertiesWithinAdministrativeArea([
+      listing("quimper", coordinates(47.996, -4.102)),
+      listing("rennes", coordinates(48.117, -1.678)),
+      listing("nantes", coordinates(47.218, -1.554)),
+      listing("centre-val-de-loire", coordinates(48.2, 1.8)),
+      listing("unmapped"),
+    ], BRETAGNE);
+
+    expect(result.map((property) => property.externalId)).toEqual(["quimper", "rennes"]);
   });
 });

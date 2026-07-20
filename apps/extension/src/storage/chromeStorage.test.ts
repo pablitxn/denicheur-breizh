@@ -277,11 +277,13 @@ describe("crawler run recovery", () => {
 
     expect(storage["denicheur:crawler:records"]).toEqual([]);
     expect(storage["denicheur:crawler:run"]).toEqual(IDLE_RUN);
-    expect(storage["denicheur:sync:state"]).toEqual({
-      version: 1,
+    expect(storage["denicheur:sync:state"]).toMatchObject({
+      version: 2,
       status: "idle",
       queue: [],
       syncedFingerprints: {},
+      activePlan: { status: "unknown" },
+      evaluationQueue: [],
       activeRecipe: {
         status: "cached",
         recipeId: "preserved-recipe",

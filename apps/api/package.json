@@ -10,10 +10,12 @@
     "start": "node --env-file-if-exists=../../.env --env-file-if-exists=.env dist/server.js",
     "test": "vitest",
     "test:run": "vitest run",
+    "test:integration:minio": "RUN_MINIO_INTEGRATION=1 node --env-file-if-exists=../../.env --env-file-if-exists=.env ./node_modules/vitest/vitest.mjs run tests/minio.integration.test.ts",
     "test:coverage": "vitest run --coverage --coverage.include 'src/**/*.ts' --coverage.reporter text-summary --coverage.reportsDirectory ../../coverage/api",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "3.1089.0",
     "@denicheur-breizh/contracts": "workspace:*",
     "@denicheur-breizh/i18n": "workspace:*",
     "cors": "^2.8.6",
@@ -21,6 +23,7 @@
     "express-rate-limit": "^8.5.2",
     "helmet": "^8.1.0",
     "openai": "^6.46.0",
+    "sharp": "0.35.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {

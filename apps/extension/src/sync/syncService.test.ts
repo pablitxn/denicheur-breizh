@@ -6,14 +6,18 @@ import {
   CRAWLER_STORAGE_KEYS,
   IDLE_RUN,
   loadCrawlerState,
+  loadEvaluationPlan,
 } from "../storage/chromeStorage";
 import { loadExtensionSyncState } from "./storage";
 import {
   buildQueueEntries,
+  enqueueDefaultPlanEvaluation,
+  flushEvaluationQueue,
   flushQueuedIngestion,
   reconcileCrawlerSnapshot,
   reconcileStoredCrawlerState,
   refreshActiveRecipeCache,
+  refreshDefaultPlanCache,
 } from "./syncService";
 
 const NOW = new Date("2026-07-18T10:00:00.000Z");
@@ -32,6 +36,10 @@ beforeEach(() => {
           },
           set(patch: Record<string, unknown>, callback: () => void) {
             Object.assign(storage, patch);
+            callback();
+          },
+          remove(keys: string[], callback: () => void) {
+            for (const key of keys) delete storage[key];
             callback();
           },
         },
@@ -178,11 +186,13 @@ describe("extension API synchronization", () => {
     });
     const [oldEntry] = buildQueueEntries(oldCrawler, NOW);
     const pending = reconcileCrawlerSnapshot({
-      version: 1,
+      version: 2,
       status: "error",
       queue: [{ ...oldEntry, attempts: 1, nextAttemptAt: NOW.getTime() + 60_000 }],
       syncedFingerprints: {},
       lastError: "Local API unavailable",
+      activePlan: { status: "unknown" },
+      evaluationQueue: [],
       activeRecipe: { status: "unknown" },
     }, crawlerState({
       run: { ...IDLE_RUN, id: "run-offline-2", status: "completed", collected: 1 },
@@ -276,7 +286,275 @@ describe("extension API synchronization", () => {
     });
     expect((await loadExtensionSyncState()).activeRecipe.status).toBe("cached");
   });
+
+  it("caches a resolved default plan with exact recipe versions and full criterion semantics", async () => {
+    const state = await refreshDefaultPlanCache({
+      fetcher: vi.fn(async () => new Response(JSON.stringify(resolvedPlan()), { status: 200 })),
+      now: () => NOW,
+    });
+
+    expect(state.activePlan).toEqual({
+      status: "cached",
+      fetchedAt: NOW.toISOString(),
+      planId: "default-evaluation",
+      planVersion: 2,
+    });
+    expect(await loadEvaluationPlan()).toMatchObject({
+      id: "default-evaluation",
+      version: 2,
+      recipes: [{
+        recipeId: "coastal-home",
+        recipeVersion: 4,
+        recipe: {
+          criteria: [{ weight: 800, evidenceRequired: false }],
+        },
+      }],
+    });
+  });
+
+  it("migrates a crawl into one stable durable execution and restores aggregate results without replacing legacy evaluation", async () => {
+    storage[CRAWLER_STORAGE_KEYS.run] = {
+      ...IDLE_RUN,
+      id: "run-plan-1",
+      status: "completed",
+      collected: 1,
+    };
+    const detailed = { ...record("3007106066", "run-plan-1"), status: "detailed" as const };
+    detailed.evaluation = legacyEvaluation(detailed.id);
+    storage[CRAWLER_STORAGE_KEYS.records] = [detailed];
+    await refreshDefaultPlanCache({
+      fetcher: vi.fn(async () => new Response(JSON.stringify(resolvedPlan()), { status: 200 })),
+      now: () => NOW,
+    });
+
+    const first = await enqueueDefaultPlanEvaluation({ runId: "run-plan-1", locale: "fr", now: () => NOW });
+    const duplicate = await enqueueDefaultPlanEvaluation({ runId: "run-plan-1", locale: "fr", now: () => NOW });
+    expect(duplicate.key).toBe(first.key);
+    expect((await loadExtensionSyncState()).evaluationQueue).toHaveLength(1);
+
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs/run-plan-1/evaluation-executions")) {
+        expect(init?.headers).toMatchObject({ "Idempotency-Key": first.idempotencyKey });
+        return new Response(JSON.stringify(executionRecord("queued")), { status: 202 });
+      }
+      if (url.endsWith("/v1/evaluation-executions/execution-1/results")) {
+        return new Response(JSON.stringify(executionResults()), { status: 200 });
+      }
+      if (url.endsWith("/v1/evaluation-executions/execution-1")) {
+        return new Response(JSON.stringify(executionRecord("completed")), { status: 200 });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    const queued = await flushEvaluationQueue({ fetcher, now: () => NOW });
+    expect(queued.evaluationQueue[0]).toMatchObject({
+      status: "polling",
+      executionId: "execution-1",
+    });
+
+    const completed = await flushEvaluationQueue({
+      fetcher,
+      now: () => new Date(NOW.getTime() + 2_100),
+    });
+    expect(completed.evaluationQueue[0].status).toBe("completed");
+    const crawler = await loadCrawlerState();
+    expect(crawler.records[0].evaluation).toEqual(detailed.evaluation);
+    expect(crawler.records[0].planEvaluation).toMatchObject({
+      executionId: "execution-1",
+      listingId: "3007106066",
+      decision: "relevant",
+      steps: [{ evaluator: { provider: "openai", model: "gpt-test", version: "3.0.0" } }],
+    });
+    expect(crawler.run).toMatchObject({
+      intelligenceStatus: "completed",
+      evaluated: 1,
+      relevant: 1,
+    });
+  });
+
+  it("persists aggregate review results when every durable execution step fails", async () => {
+    storage[CRAWLER_STORAGE_KEYS.run] = {
+      ...IDLE_RUN,
+      id: "run-plan-1",
+      status: "completed",
+      collected: 1,
+    };
+    const detailed = { ...record("3007106066", "run-plan-1"), status: "detailed" as const };
+    detailed.evaluation = legacyEvaluation(detailed.id);
+    storage[CRAWLER_STORAGE_KEYS.records] = [detailed];
+    await refreshDefaultPlanCache({
+      fetcher: vi.fn(async () => new Response(JSON.stringify(resolvedPlan()), { status: 200 })),
+      now: () => NOW,
+    });
+    await enqueueDefaultPlanEvaluation({ runId: "run-plan-1", locale: "fr", now: () => NOW });
+
+    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs/run-plan-1/evaluation-executions") ||
+        url.endsWith("/v1/evaluation-executions/execution-1")) {
+        return new Response(JSON.stringify(executionRecord("failed")), { status: 200 });
+      }
+      if (url.endsWith("/v1/evaluation-executions/execution-1/results")) {
+        return new Response(JSON.stringify(failedExecutionResults()), { status: 200 });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+
+    const failed = await flushEvaluationQueue({ fetcher, now: () => NOW });
+    expect(failed.evaluationQueue[0]).toMatchObject({
+      status: "failed",
+      executionId: "execution-1",
+      lastError: "Every recipe step failed.",
+    });
+    const crawler = await loadCrawlerState();
+    expect(crawler.records[0].evaluation).toEqual(detailed.evaluation);
+    expect(crawler.records[0].planEvaluation).toMatchObject({
+      executionId: "execution-1",
+      decision: "review",
+      score: null,
+      steps: [{ status: "failed", error: { code: "OPENAI_UNAVAILABLE" } }],
+    });
+    expect(crawler.run).toMatchObject({
+      intelligenceStatus: "partial",
+      evaluated: 1,
+      review: 1,
+    });
+  });
 });
+
+function resolvedPlan() {
+  return {
+    id: "default-evaluation",
+    version: 2,
+    name: "Default evaluation",
+    operator: "all",
+    combinerVersion: "tri-state-v1",
+    recipes: [{
+      recipeId: "coastal-home",
+      recipeVersion: 4,
+      recipe: {
+        id: "coastal-home",
+        version: 4,
+        name: "Coastal home",
+        threshold: 72,
+        criteria: [{
+          id: "sea-view",
+          name: "Sea view",
+          description: "The listing explicitly describes a sea view.",
+          weight: 800,
+          required: true,
+          evidenceRequired: false,
+        }],
+        active: true,
+        createdAt: NOW.toISOString(),
+      },
+    }],
+    isDefault: true,
+    createdAt: NOW.toISOString(),
+  };
+}
+
+function executionRecord(status: "queued" | "completed" | "failed") {
+  const terminal = status === "completed" || status === "failed";
+  return {
+    id: "execution-1",
+    runId: "run-plan-1",
+    planId: "default-evaluation",
+    planVersion: 2,
+    locale: "fr",
+    status,
+    listingIds: ["leboncoin:3007106066"],
+    force: false,
+    createdAt: NOW.toISOString(),
+    ...(terminal ? { completedAt: new Date(NOW.getTime() + 2_000).toISOString() } : {}),
+    ...(status === "failed" ? { error: "Every recipe step failed." } : {}),
+    counters: {
+      total: 1,
+      processed: terminal ? 1 : 0,
+      relevant: status === "completed" ? 1 : 0,
+      notRelevant: 0,
+      review: status === "failed" ? 1 : 0,
+      failed: status === "failed" ? 1 : 0,
+    },
+  };
+}
+
+function executionResults() {
+  const evaluatedAt = new Date(NOW.getTime() + 2_000).toISOString();
+  return {
+    executionId: "execution-1",
+    items: [{
+      executionId: "execution-1",
+      listingId: "leboncoin:3007106066",
+      planId: "default-evaluation",
+      planVersion: 2,
+      decision: "relevant",
+      score: 91,
+      summary: "Relevant under every recipe.",
+      evaluatedAt,
+      steps: [{
+        recipeId: "coastal-home",
+        recipeVersion: 4,
+        status: "succeeded",
+        evaluator: { provider: "openai", model: "gpt-test", version: "3.0.0" },
+        evaluation: {
+          listingId: "leboncoin:3007106066",
+          decision: "relevant",
+          score: 91,
+          summary: "Sea view is explicit.",
+          criteria: [{ criterionId: "sea-view", verdict: "pass", reason: "Explicit.", evidence: ["vue mer"] }],
+          missingData: [],
+          evaluatedAt,
+        },
+      }],
+    }],
+  };
+}
+
+function failedExecutionResults() {
+  const evaluatedAt = new Date(NOW.getTime() + 2_000).toISOString();
+  return {
+    executionId: "execution-1",
+    items: [{
+      executionId: "execution-1",
+      listingId: "leboncoin:3007106066",
+      planId: "default-evaluation",
+      planVersion: 2,
+      decision: "review",
+      score: null,
+      summary: "Every recipe step failed.",
+      evaluatedAt,
+      steps: [{
+        recipeId: "coastal-home",
+        recipeVersion: 4,
+        status: "failed",
+        error: {
+          code: "OPENAI_UNAVAILABLE",
+          stage: "provider",
+          retryable: false,
+          requestId: "request-failed",
+        },
+      }],
+    }],
+  };
+}
+
+function legacyEvaluation(listingId: string) {
+  return {
+    listingId,
+    decision: "review" as const,
+    score: 50,
+    summary: "Legacy result",
+    criteria: [{ criterionId: "legacy", verdict: "unknown" as const, reason: "Legacy", evidence: [] }],
+    missingData: [],
+    evaluatedAt: NOW.toISOString(),
+    evaluator: { provider: "openai" as const, model: "legacy", version: "2.0.0" },
+    recipeId: "legacy",
+    recipeVersion: 1,
+    locale: "fr" as const,
+  };
+}
 
 function crawlerState(overrides: Partial<StoredCrawlerState> = {}): StoredCrawlerState {
   return {

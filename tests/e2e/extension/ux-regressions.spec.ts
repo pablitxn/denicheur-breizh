@@ -4,6 +4,7 @@ import {
   clearExtensionStorage,
   expect,
   extensionUrl,
+  readExtensionStorage,
   test,
 } from "./fixtures.js";
 
@@ -394,12 +395,16 @@ test.describe("Denicheur extension UX regressions", () => {
     await expect(page).not.toHaveURL(/(?:\?|&)page=/u);
   });
 
-  test("recovers a partial evaluation by retrying only the failed listing", async ({
+  test("re-evaluates stored listings through a durable default-plan execution", async ({
     context,
     page,
     extensionId,
   }) => {
     const apiBaseUrl = "http://127.0.0.1:14310";
+    const planId = "recovery-plan";
+    const executionId = "recovery-execution";
+    const createdAt = "2026-07-19T10:00:00.000Z";
+    const completedAt = "2026-07-19T10:02:00.000Z";
     const recipe = {
       id: "recovery-recipe",
       version: 1,
@@ -412,19 +417,60 @@ test.describe("Denicheur extension UX regressions", () => {
         description: "The listing explicitly describes a garden.",
         weight: 100,
         required: true,
+        evidenceRequired: true,
       }],
     };
-    const evaluationRequests: Array<Record<string, unknown>> = [];
+    const plan = {
+      id: planId,
+      version: 1,
+      name: "Recovery plan",
+      operator: "all",
+      combinerVersion: "tri-state-v1",
+      recipes: [{ recipeId: recipe.id, recipeVersion: recipe.version, recipe }],
+      isDefault: true,
+      createdAt,
+    };
+    const canonicalPlan = {
+      ...plan,
+      recipes: [{
+        recipeId: recipe.id,
+        recipeVersion: recipe.version,
+        recipe: {
+          ...recipe,
+          active: false,
+          createdAt,
+          enabled: undefined,
+        },
+      }],
+    };
+    const execution = {
+      id: executionId,
+      runId: "recovery-run",
+      planId,
+      planVersion: 1,
+      locale: "en",
+      status: "completed",
+      listingIds: [],
+      force: true,
+      createdAt,
+      startedAt: createdAt,
+      completedAt,
+      counters: {
+        total: 2,
+        processed: 2,
+        relevant: 1,
+        notRelevant: 1,
+        review: 0,
+        failed: 0,
+      },
+    };
+    const executionRequests: Array<Record<string, unknown>> = [];
+    const idempotencyKeys: string[] = [];
 
-    await context.route(`${apiBaseUrl}/v1/recipes/active`, (route) => route.fulfill({
+    await context.route(`${apiBaseUrl}/v1/evaluation-plans/default`, (route) => route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({
-        ...recipe,
-        active: true,
-        createdAt: "2026-07-19T10:00:00.000Z",
-        enabled: undefined,
-      }),
+      body: JSON.stringify(canonicalPlan),
     }));
     await context.route(`${apiBaseUrl}/v1/ingestion/runs/recovery-run`, async (route) => {
       const payload = route.request().postDataJSON() as { listings?: unknown[] };
@@ -440,49 +486,59 @@ test.describe("Denicheur extension UX regressions", () => {
         }),
       });
     });
-    await context.route(`${apiBaseUrl}/v1/runs/recovery-run/evaluations`, async (route) => {
-      evaluationRequests.push(route.request().postDataJSON() as Record<string, unknown>);
+    await context.route(`${apiBaseUrl}/v1/runs/recovery-run/evaluation-executions`, async (route) => {
+      executionRequests.push(route.request().postDataJSON() as Record<string, unknown>);
+      idempotencyKeys.push(route.request().headers()["idempotency-key"] ?? "");
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({
-          requestId: "request-retry",
-          runId: "recovery-run",
-          locale: "en",
-          recipeId: recipe.id,
-          recipeVersion: recipe.version,
-          status: "completed",
-          items: [{
-            listingId: "leboncoin:3100000102",
-            status: "succeeded",
-            attemptId: "attempt-retry",
-            evaluation: {
-              listingId: "leboncoin:3100000102",
-              decision: "not-relevant",
-              score: 30,
-              summary: "The garden requirement is not documented.",
-              criteria: [{
-                criterionId: "garden",
-                verdict: "fail",
-                reason: "No private garden is described.",
-                evidence: ["Appartement sans extérieur"],
-              }],
-              missingData: [],
-              evaluatedAt: "2026-07-19T10:02:00.000Z",
-            },
-            evaluator: {
-              provider: "openai",
-              model: "gpt-5-mini-2025-08-07",
-              version: "filter-v2",
-            },
-          }],
-        }),
+        body: JSON.stringify(execution),
       });
     });
+    await context.route(`${apiBaseUrl}/v1/evaluation-executions/${executionId}`, (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(execution),
+    }));
+    await context.route(`${apiBaseUrl}/v1/evaluation-executions/${executionId}/results`, (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        executionId,
+        items: [
+          planResult({
+            executionId,
+            planId,
+            recipeId: recipe.id,
+            listingId: "leboncoin:3100000101",
+            decision: "relevant",
+            score: 90,
+            verdict: "pass",
+            summary: "A private garden is explicitly documented.",
+            reason: "The listing describes a private garden.",
+            evidence: ["Maison avec jardin"],
+            evaluatedAt: completedAt,
+          }),
+          planResult({
+            executionId,
+            planId,
+            recipeId: recipe.id,
+            listingId: "leboncoin:3100000102",
+            decision: "not-relevant",
+            score: 30,
+            verdict: "fail",
+            summary: "The garden requirement is not documented.",
+            reason: "No private garden is described.",
+            evidence: ["Appartement sans extérieur"],
+            evaluatedAt: completedAt,
+          }),
+        ],
+      }),
+    }));
 
     await page.goto(extensionUrl(extensionId, "dashboard.html"));
     await clearExtensionStorage(page, "en");
-    await page.evaluate(async ({ recipe }) => {
+    await page.evaluate(async ({ plan, recipe }) => {
       const previousEvaluation = (listingId: string) => ({
         listingId,
         decision: "relevant",
@@ -503,11 +559,19 @@ test.describe("Denicheur extension UX regressions", () => {
       });
       await chrome.storage.local.set({
         "denicheur:intelligence:recipe": recipe,
+        "denicheur:intelligence:plan": plan,
         "denicheur:sync:state": {
-          version: 1,
+          version: 2,
           status: "idle",
           queue: [],
           syncedFingerprints: {},
+          activePlan: {
+            status: "cached",
+            planId: plan.id,
+            planVersion: plan.version,
+            fetchedAt: "2026-07-19T09:30:00.000Z",
+          },
+          evaluationQueue: [],
           activeRecipe: {
             status: "cached",
             recipeId: recipe.id,
@@ -560,59 +624,118 @@ test.describe("Denicheur extension UX regressions", () => {
             status: "detailed",
             rawTextSample: "Appartement sans extérieur",
             evaluation: previousEvaluation("3100000102"),
-            evaluationFailure: {
-              listingId: "3100000102",
-              code: "UNKNOWN_EVIDENCE_ID",
-              stage: "semantic",
-              retryable: true,
-              requestId: "request-partial",
-            },
           },
         ],
       });
-    }, { recipe });
+    }, { plan, recipe });
     await page.reload();
 
-    await expect(page.getByText("1 of 2 evaluated · 1 pending", { exact: true })).toBeVisible();
-    await expect(page.getByText(
-      "Intelligence evaluation failed. Your scraped records were preserved.",
-      { exact: true },
-    )).toHaveCount(0);
-    await page.getByText("Evaluation details", { exact: true }).click();
-    await expect(page.getByText("request-partial", { exact: true })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Copy request ID" })).toBeVisible();
-    const pendingRecord = page.getByRole("listitem").filter({
-      has: page.getByRole("heading", { name: "Pending fixture" }),
-    });
-    await expect(pendingRecord).toContainText(
-      "A new evaluation is pending. The last valid result is preserved.",
-    );
+    const intelligencePanel = page.locator("details.intelligence-panel");
+    if (await intelligencePanel.getAttribute("open") === null) {
+      await intelligencePanel.locator("summary").click();
+    }
+    await expect(page.getByText("Recovery plan", { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Reevaluate stored" }).click();
 
-    await page.getByRole("button", { name: "Retry 1 evaluation" }).click();
-
-    await expect.poll(() => evaluationRequests).toEqual([expect.objectContaining({
+    await expect.poll(() => executionRequests).toEqual([expect.objectContaining({
       locale: "en",
-      recipeId: recipe.id,
-      recipeVersion: recipe.version,
-      listingIds: ["leboncoin:3100000102"],
+      planId,
+      planVersion: 1,
+      force: true,
     })]);
-    expect(evaluationRequests[0]).not.toHaveProperty("force");
-    await expect(page.getByText("1 of 2 evaluated · 1 pending", { exact: true })).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Retry 1 evaluation" })).toHaveCount(0);
-    await expect(pendingRecord).not.toContainText("A new evaluation is pending.");
+    expect(executionRequests[0]).not.toHaveProperty("listingIds");
+    expect(idempotencyKeys).toEqual([expect.stringMatching(/^extension-/u)]);
 
-    const persistedPending = await page.evaluate(async () => {
-      const values = await chrome.storage.local.get("denicheur:crawler:records");
-      return (values["denicheur:crawler:records"] as Array<Record<string, unknown>>)
-        .find((record) => record.id === "3100000102");
-    });
-    expect(persistedPending).not.toHaveProperty("evaluationFailure");
-    expect(persistedPending?.evaluation).toMatchObject({
-      decision: "not-relevant",
-      evaluator: { version: "filter-v2" },
+    await expect.poll(async () => {
+      const storage = await readExtensionStorage(page);
+      return storage["denicheur:crawler:records"];
+    }).toEqual([
+      expect.objectContaining({
+        id: "3100000101",
+        evaluation: expect.objectContaining({ evaluatedAt: "2026-07-19T09:00:00.000Z" }),
+        planEvaluation: expect.objectContaining({
+          executionId,
+          planId,
+          decision: "relevant",
+          steps: [expect.objectContaining({
+            recipeId: recipe.id,
+            status: "succeeded",
+            evaluator: { provider: "openai", model: "gpt-test", version: "3.0.0" },
+          })],
+        }),
+      }),
+      expect.objectContaining({
+        id: "3100000102",
+        evaluation: expect.objectContaining({ evaluatedAt: "2026-07-19T09:00:00.000Z" }),
+        planEvaluation: expect.objectContaining({
+          executionId,
+          planId,
+          decision: "not-relevant",
+          steps: [expect.objectContaining({ status: "succeeded" })],
+        }),
+      }),
+    ]);
+    const persistedState = (await readExtensionStorage(page))["denicheur:sync:state"];
+    expect(persistedState).toMatchObject({
+      version: 2,
+      activePlan: { status: "cached", planId, planVersion: 1 },
+      evaluationQueue: [expect.objectContaining({
+        runId: "recovery-run",
+        planId,
+        planVersion: 1,
+        executionId,
+        status: "completed",
+      })],
     });
   });
 });
+
+interface PlanResultFixtureOptions {
+  executionId: string;
+  planId: string;
+  recipeId: string;
+  listingId: string;
+  decision: "relevant" | "not-relevant" | "review";
+  score: number | null;
+  verdict: "pass" | "fail" | "unknown";
+  summary: string;
+  reason: string;
+  evidence: string[];
+  evaluatedAt: string;
+}
+
+function planResult(options: PlanResultFixtureOptions): Record<string, unknown> {
+  return {
+    executionId: options.executionId,
+    listingId: options.listingId,
+    planId: options.planId,
+    planVersion: 1,
+    decision: options.decision,
+    score: options.score,
+    summary: options.summary,
+    evaluatedAt: options.evaluatedAt,
+    steps: [{
+      recipeId: options.recipeId,
+      recipeVersion: 1,
+      status: "succeeded",
+      evaluation: {
+        listingId: options.listingId,
+        decision: options.decision,
+        score: options.score,
+        summary: options.summary,
+        criteria: [{
+          criterionId: "garden",
+          verdict: options.verdict,
+          reason: options.reason,
+          evidence: options.evidence,
+        }],
+        missingData: [],
+        evaluatedAt: options.evaluatedAt,
+      },
+      evaluator: { provider: "openai", model: "gpt-test", version: "3.0.0" },
+    }],
+  };
+}
 
 async function expectNoUnexpectedHorizontalOverflow(
   page: import("@playwright/test").Page,

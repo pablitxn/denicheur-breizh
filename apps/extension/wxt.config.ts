@@ -18,6 +18,8 @@ export default defineConfig({
       "https://www.leboncoin.fr/*",
       "https://leboncoin.fr/*",
       "http://127.0.0.1/*",
+      "http://localhost/*",
+      "https://denicheur-breizh.orchid-labs.xyz/*",
     ],
     icons: {
       16: "icons/icon16.png",

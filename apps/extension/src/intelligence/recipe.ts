@@ -40,8 +40,9 @@ export function normalizeIntelligenceRecipe(
           id: cleanText(criterion.id, `criterion-${index + 1}`),
           name: cleanText(criterion.name === "Unnamed criterion" ? "" : criterion.name, ""),
           description: String(criterion.description ?? "").trim(),
-          weight: clampNumber(criterion.weight, 0, 100, 0),
+          weight: clampNumber(criterion.weight, 0, 1_000, 0),
           required: Boolean(criterion.required),
+          evidenceRequired: criterion.evidenceRequired !== false,
         }))
       : [],
   };
@@ -137,12 +138,12 @@ export function validateIntelligenceRecipe(recipe: IntelligenceRecipe): RecipeVa
         message: "Keep criterion descriptions under 2,000 characters.",
       });
     }
-    if (!Number.isFinite(criterion.weight) || criterion.weight < 0 || criterion.weight > 100) {
+    if (!Number.isFinite(criterion.weight) || criterion.weight < 0 || criterion.weight > 1_000) {
       issues.push({
         code: "criterion-weight-range",
         field: "criterion-weight",
         criterionId: criterion.id,
-        message: "Criterion weights must be between 0 and 100.",
+        message: "Criterion weights must be between 0 and 1,000.",
       });
     }
   }

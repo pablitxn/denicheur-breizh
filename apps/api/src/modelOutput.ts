@@ -104,7 +104,6 @@ export function buildModelOutputJsonSchema(request: FilterListingsRequest): Json
   const listingProperties = Object.fromEntries(request.listings.map((listing, listingIndex) => {
     const evidenceIds = buildEvidenceCatalog(listing).map((entry) => entry.id);
     const evidenceDefinition = `evidenceId${listingIndex}`;
-    const criterionDefinition = `criterion${listingIndex}`;
     if (evidenceIds.length > 0) {
       definitions[evidenceDefinition] = {
         type: "string",
@@ -113,14 +112,15 @@ export function buildModelOutputJsonSchema(request: FilterListingsRequest): Json
         enum: evidenceIds,
       };
     }
-    definitions[criterionDefinition] = buildCriterionJsonSchema(
-      evidenceIds,
-      evidenceIds.length > 0 ? `#/$defs/${evidenceDefinition}` : undefined,
-    );
-    const criterionProperties = Object.fromEntries(request.recipe.criteria.map((criterion) => [
-      criterion.id,
-      { $ref: `#/$defs/${criterionDefinition}` },
-    ]));
+    const criterionProperties = Object.fromEntries(request.recipe.criteria.map((criterion, criterionIndex) => {
+      const criterionDefinition = `criterion${listingIndex}_${criterionIndex}`;
+      definitions[criterionDefinition] = buildCriterionJsonSchema(
+        evidenceIds,
+        evidenceIds.length > 0 ? `#/$defs/${evidenceDefinition}` : undefined,
+        criterion.evidenceRequired !== false,
+      );
+      return [criterion.id, { $ref: `#/$defs/${criterionDefinition}` }];
+    }));
 
     return [listing.id, {
       type: "object",
@@ -228,7 +228,7 @@ export function parseAndValidateModelOutput(
         });
       }
 
-      validateEvidenceIds(generated.verdict, generated.evidenceIds, evidenceById, {
+      validateEvidenceIds(generated.verdict, generated.evidenceIds, evidenceById, criterion.evidenceRequired !== false, {
         listingId: listing.id,
         criterionId: criterion.id,
         ...options,
@@ -252,7 +252,11 @@ export function parseAndValidateModelOutput(
   return { results: orderedResults };
 }
 
-function buildCriterionJsonSchema(evidenceIds: readonly string[], evidenceReference?: string): JsonSchema {
+function buildCriterionJsonSchema(
+  evidenceIds: readonly string[],
+  evidenceReference: string | undefined,
+  evidenceRequired: boolean,
+): JsonSchema {
   const hasEvidence = evidenceIds.length > 0;
 
   return {
@@ -262,11 +266,12 @@ function buildCriterionJsonSchema(evidenceIds: readonly string[], evidenceRefere
     properties: {
       verdict: {
         type: "string",
-        enum: hasEvidence ? ["pass", "fail", "unknown"] : ["unknown"],
+        enum: hasEvidence || !evidenceRequired ? ["pass", "fail", "unknown"] : ["unknown"],
       },
       reason: { type: "string", minLength: 1, maxLength: 1_000 },
       evidenceIds: {
         type: "array",
+        minItems: hasEvidence && evidenceRequired ? 1 : 0,
         maxItems: hasEvidence ? MAX_EVIDENCE_ITEMS : 0,
         items: hasEvidence
           ? { $ref: evidenceReference }
@@ -303,9 +308,10 @@ function validateEvidenceIds(
   verdict: CriterionVerdict,
   evidenceIds: readonly string[],
   evidenceById: ReadonlyMap<string, string>,
+  evidenceRequired: boolean,
   context: Pick<SafeEvaluatorFailureDetails, "listingId" | "criterionId" | "responseId">,
 ): void {
-  if (verdict !== "unknown" && evidenceIds.length === 0) {
+  if (evidenceRequired && verdict !== "unknown" && evidenceIds.length === 0) {
     throw invalidOutput({
       stage: "semantic",
       detailCode: "EVIDENCE_REQUIRED",

@@ -1,0 +1,152 @@
+stages:
+  - validate
+  - build
+
+default:
+  interruptible: true
+  retry:
+    max: 1
+    when:
+      - runner_system_failure
+  tags:
+    - k8s
+    - shared
+
+variables:
+  PNPM_STORE_DIR: .pnpm-store
+  REGISTRY_PUSH_HOST: gitlab-registry.gitlab.svc.cluster.local:32443
+  REGISTRY_PULL_HOST: registry.orchid-labs.xyz:32443
+  EXPECTED_PROJECT_PATH: research-and-development/denicheur-breizh
+  KUBERNETES_CPU_REQUEST: "100m"
+  KUBERNETES_CPU_LIMIT: "2"
+  KUBERNETES_MEMORY_REQUEST: "256Mi"
+  KUBERNETES_MEMORY_LIMIT: "2Gi"
+  KUBERNETES_HELPER_CPU_REQUEST: "50m"
+  KUBERNETES_HELPER_CPU_LIMIT: "100m"
+  KUBERNETES_HELPER_MEMORY_REQUEST: "64Mi"
+  KUBERNETES_HELPER_MEMORY_LIMIT: "128Mi"
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+.app-changes: &app-changes
+  - .dockerignore
+  - .gitlab-ci.yml
+  - Dockerfile.api
+  - Dockerfile.web
+  - nginx.conf
+  - package.json
+  - pnpm-lock.yaml
+  - pnpm-workspace.yaml
+  - turbo.json
+  - apps/**/*
+  - packages/**/*
+  - scripts/**/*
+  - tests/**/*
+  - playwright.config.ts
+
+.validation-rules: &validation-rules
+  - if: $CI_COMMIT_TAG
+  - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    changes: *app-changes
+  - if: $CI_COMMIT_BRANCH
+    changes: *app-changes
+
+check-workspace:
+  stage: validate
+  image: node:24-bookworm-slim
+  rules: *validation-rules
+  cache:
+    key:
+      files:
+        - pnpm-lock.yaml
+    paths:
+      - .pnpm-store
+  before_script:
+    - corepack enable
+    - corepack prepare pnpm@11.1.3 --activate
+    - pnpm config set store-dir "${CI_PROJECT_DIR}/${PNPM_STORE_DIR}"
+    - pnpm install --frozen-lockfile
+  script:
+    - pnpm check
+
+.build-image:
+  stage: build
+  resource_group: denicheur-breizh-image-publish
+  image:
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    entrypoint: [""]
+  needs:
+    - check-workspace
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_BRANCH && $CI_PIPELINE_SOURCE != "merge_request_event"
+      changes: *app-changes
+  script:
+    - test "${CI_PROJECT_PATH}" = "${EXPECTED_PROJECT_PATH}"
+    - mkdir -p /kaniko/.docker
+    - |
+      gitlab_auth="$(printf '%s:%s' "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64 | tr -d '\n')"
+      printf '{"auths":{"%s":{"auth":"%s"},"%s":{"auth":"%s"}}}\n' \
+        "${CI_REGISTRY}" "${gitlab_auth}" "${REGISTRY_PUSH_HOST}" "${gitlab_auth}" \
+        > /kaniko/.docker/config.json
+    - |
+      image_repository="${REGISTRY_PUSH_HOST}/${CI_PROJECT_PATH}/${IMAGE_NAME}"
+      cache_repository="${image_repository}/cache"
+
+      /kaniko/executor \
+        --context "${CI_PROJECT_DIR}" \
+        --dockerfile "${CI_PROJECT_DIR}/${DOCKERFILE_PATH}" \
+        --build-arg OCI_REVISION="${CI_COMMIT_SHA}" \
+        --cache=true \
+        --cache-repo "${cache_repository}" \
+        --cache-copy-layers=true \
+        --cache-run-layers=true \
+        --compressed-caching=false \
+        --cache-ttl=168h \
+        --cleanup \
+        --snapshot-mode=redo \
+        --reproducible \
+        --skip-tls-verify-registry="${REGISTRY_PUSH_HOST}" \
+        --destination="${image_repository}:sha-${CI_COMMIT_SHA}" \
+        --destination="${image_repository}:ci-${CI_PIPELINE_ID}" \
+        --digest-file="${CI_PROJECT_DIR}/${IMAGE_NAME}.digest" \
+        ${EXTRA_BUILD_ARGS}
+    - |
+      digest="$(tr -d '\r\n' < "${CI_PROJECT_DIR}/${IMAGE_NAME}.digest")"
+      case "${digest}" in
+        sha256:*) ;;
+        *) echo "Kaniko did not emit a sha256 digest for ${IMAGE_NAME}" >&2; exit 1 ;;
+      esac
+      test "${#digest}" -eq 71
+      case "${digest#sha256:}" in
+        *[!0-9a-f]*|'') echo "Kaniko emitted an invalid digest for ${IMAGE_NAME}" >&2; exit 1 ;;
+      esac
+      printf '%s/%s/%s:sha-%s@%s\n' \
+        "${REGISTRY_PULL_HOST}" "${CI_PROJECT_PATH}" "${IMAGE_NAME}" "${CI_COMMIT_SHA}" "${digest}" \
+        > "${CI_PROJECT_DIR}/${IMAGE_NAME}.image"
+  artifacts:
+    name: "${CI_JOB_NAME}-${CI_COMMIT_SHA}"
+    paths:
+      - "${IMAGE_NAME}.digest"
+      - "${IMAGE_NAME}.image"
+    expire_in: 30 days
+
+build-api-image:
+  extends: .build-image
+  variables:
+    IMAGE_NAME: api
+    DOCKERFILE_PATH: Dockerfile.api
+    EXTRA_BUILD_ARGS: ""
+
+build-web-image:
+  extends: .build-image
+  variables:
+    IMAGE_NAME: web
+    DOCKERFILE_PATH: Dockerfile.web
+    EXTRA_BUILD_ARGS: >-
+      --build-arg VITE_API_BASE_URL=/api
+      --build-arg VITE_ENABLE_REALTIME=false

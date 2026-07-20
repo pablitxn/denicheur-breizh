@@ -2,6 +2,8 @@ import { z } from "zod";
 
 export const MAX_LISTINGS_PER_REQUEST = 20;
 export const MAX_CRITERIA_PER_RECIPE = 12;
+export const MAX_RECIPES_PER_EVALUATION_PLAN = 4;
+export const MAX_LISTINGS_PER_EVALUATION_EXECUTION = 1_000;
 export const MAX_LISTING_IMAGE_URLS = 50;
 export const MAX_EVALUATION_IMAGE_URLS = 3;
 export const MAX_LISTING_FEATURES = 100;
@@ -176,7 +178,10 @@ const recipeFields = {
 export const recipeDraftSchema = z
   .object(recipeFields)
   .strict()
-  .superRefine((recipe, context) => addDuplicateIdIssues(recipe.criteria, ["criteria"], "criterion", context));
+  .superRefine((recipe, context) => {
+    addDuplicateIdIssues(recipe.criteria, ["criteria"], "criterion", context);
+    addPositiveRecipeWeightIssue(recipe.criteria, context);
+  });
 
 export const intelligenceRecipeSchema = z
   .object({
@@ -185,7 +190,10 @@ export const intelligenceRecipeSchema = z
     ...recipeFields,
   })
   .strict()
-  .superRefine((recipe, context) => addDuplicateIdIssues(recipe.criteria, ["criteria"], "criterion", context));
+  .superRefine((recipe, context) => {
+    addDuplicateIdIssues(recipe.criteria, ["criteria"], "criterion", context);
+    addPositiveRecipeWeightIssue(recipe.criteria, context);
+  });
 
 export const recipeVersionSchema = z
   .object({
@@ -196,7 +204,71 @@ export const recipeVersionSchema = z
     createdAt: isoDateTimeSchema,
   })
   .strict()
-  .superRefine((recipe, context) => addDuplicateIdIssues(recipe.criteria, ["criteria"], "criterion", context));
+  .superRefine((recipe, context) => {
+    addDuplicateIdIssues(recipe.criteria, ["criteria"], "criterion", context);
+    addPositiveRecipeWeightIssue(recipe.criteria, context);
+  });
+
+export const evaluationPlanOperatorSchema = z.enum(["all", "any"]);
+export const evaluationPlanCombinerVersionSchema = z.literal("tri-state-v1");
+
+export const evaluationPlanRecipeReferenceSchema = z
+  .object({
+    recipeId: identifierSchema,
+    recipeVersion: z.number().int().min(1).max(2_147_483_647),
+  })
+  .strict();
+
+const evaluationPlanFields = {
+  name: z.string().trim().min(1).max(160),
+  operator: evaluationPlanOperatorSchema,
+  recipes: z.array(evaluationPlanRecipeReferenceSchema).min(1).max(MAX_RECIPES_PER_EVALUATION_PLAN),
+} as const;
+
+export const evaluationPlanDraftSchema = z
+  .object(evaluationPlanFields)
+  .strict()
+  .superRefine((plan, context) => addDuplicateValuesIssues(
+    plan.recipes.map((recipe) => recipe.recipeId),
+    ["recipes"],
+    "recipe family",
+    context,
+    "recipeId",
+  ));
+
+export const evaluationPlanVersionSchema = z
+  .object({
+    id: identifierSchema,
+    version: z.number().int().min(1).max(2_147_483_647),
+    ...evaluationPlanFields,
+    combinerVersion: evaluationPlanCombinerVersionSchema,
+    isDefault: z.boolean(),
+    createdAt: isoDateTimeSchema,
+  })
+  .strict()
+  .superRefine((plan, context) => addDuplicateValuesIssues(
+    plan.recipes.map((recipe) => recipe.recipeId),
+    ["recipes"],
+    "recipe family",
+    context,
+    "recipeId",
+  ));
+
+export const resolvedEvaluationPlanRecipeSchema = evaluationPlanRecipeReferenceSchema.extend({
+  recipe: recipeVersionSchema,
+});
+
+export const resolvedEvaluationPlanVersionSchema = evaluationPlanVersionSchema.safeExtend({
+  recipes: z.array(resolvedEvaluationPlanRecipeSchema).min(1).max(MAX_RECIPES_PER_EVALUATION_PLAN),
+});
+
+export const evaluationPlansResponseSchema = z
+  .object({ items: z.array(evaluationPlanVersionSchema) })
+  .strict();
+
+export const setDefaultEvaluationPlanRequestSchema = z
+  .object({ version: z.number().int().min(1).max(2_147_483_647) })
+  .strict();
 
 export const criterionVerdictSchema = z.enum(["pass", "fail", "unknown"]);
 export const listingDecisionSchema = z.enum(["relevant", "not-relevant", "review"]);
@@ -450,7 +522,171 @@ export const evaluationBatchResponseSchema = z
     });
   });
 
+export const evaluationExecutionStatusSchema = z.enum([
+  "queued",
+  "running",
+  "completed",
+  "partial",
+  "failed",
+  "cancelled",
+]);
+
+export const evaluationExecutionCreateRequestSchema = z
+  .object({
+    planId: identifierSchema,
+    planVersion: z.number().int().min(1).max(2_147_483_647),
+    locale: localeSchema,
+    listingIds: z.array(listingKeySchema)
+      .min(1)
+      .max(MAX_LISTINGS_PER_EVALUATION_EXECUTION)
+      .optional(),
+    force: z.boolean().optional(),
+  })
+  .strict()
+  .superRefine((request, context) => {
+    if (request.listingIds) {
+      addDuplicateValuesIssues(request.listingIds, ["listingIds"], "listing", context);
+    }
+  });
+
+export const evaluationExecutionCountersSchema = z
+  .object({
+    total: z.number().int().min(0),
+    processed: z.number().int().min(0),
+    relevant: z.number().int().min(0),
+    notRelevant: z.number().int().min(0),
+    review: z.number().int().min(0),
+    failed: z.number().int().min(0),
+  })
+  .strict()
+  .superRefine((counters, context) => {
+    if (counters.processed > counters.total) {
+      context.addIssue({ code: "custom", path: ["processed"], message: "Processed listings cannot exceed total listings." });
+    }
+    if (counters.relevant + counters.notRelevant + counters.review !== counters.processed) {
+      context.addIssue({
+        code: "custom",
+        path: ["processed"],
+        message: "Processed listings must equal the combined decision counters.",
+      });
+    }
+    if (counters.failed > counters.processed) {
+      context.addIssue({ code: "custom", path: ["failed"], message: "Failed listings cannot exceed processed listings." });
+    }
+  });
+
+export const evaluationExecutionRecordSchema = z
+  .object({
+    id: identifierSchema,
+    runId: identifierSchema,
+    planId: identifierSchema,
+    planVersion: z.number().int().min(1).max(2_147_483_647),
+    locale: localeSchema,
+    status: evaluationExecutionStatusSchema,
+    listingIds: z.array(listingKeySchema).max(MAX_LISTINGS_PER_EVALUATION_EXECUTION),
+    force: z.boolean(),
+    retryOfExecutionId: identifierSchema.optional(),
+    createdAt: isoDateTimeSchema,
+    startedAt: isoDateTimeSchema.optional(),
+    completedAt: isoDateTimeSchema.optional(),
+    counters: evaluationExecutionCountersSchema,
+    error: optionalText(2_000),
+  })
+  .strict();
+
+export const evaluationExecutionStepStatusSchema = z.enum(["succeeded", "cached", "failed", "skipped"]);
+
+const evaluationExecutionStepFields = {
+  recipeId: identifierSchema,
+  recipeVersion: z.number().int().min(1).max(2_147_483_647),
+} as const;
+
+export const evaluationExecutionSucceededStepSchema = z
+  .object({
+    ...evaluationExecutionStepFields,
+    status: z.enum(["succeeded", "cached"]),
+    evaluation: listingEvaluationResultSchema,
+    evaluator: evaluatorSchema,
+  })
+  .strict();
+
+export const evaluationExecutionFailedStepSchema = z
+  .object({
+    ...evaluationExecutionStepFields,
+    status: z.literal("failed"),
+    error: evaluationItemErrorSchema,
+  })
+  .strict();
+
+export const evaluationExecutionSkippedStepSchema = z
+  .object({
+    ...evaluationExecutionStepFields,
+    status: z.literal("skipped"),
+  })
+  .strict();
+
+export const evaluationExecutionStepResultSchema = z.discriminatedUnion("status", [
+  evaluationExecutionSucceededStepSchema,
+  evaluationExecutionFailedStepSchema,
+  evaluationExecutionSkippedStepSchema,
+]);
+
+export const evaluationExecutionListingResultSchema = z
+  .object({
+    executionId: identifierSchema,
+    listingId: listingKeySchema,
+    planId: identifierSchema,
+    planVersion: z.number().int().min(1).max(2_147_483_647),
+    decision: listingDecisionSchema,
+    score: z.number().min(0).max(100).nullable(),
+    summary: z.string().trim().min(1).max(2_000),
+    evaluatedAt: isoDateTimeSchema,
+    steps: z.array(evaluationExecutionStepResultSchema).min(1).max(MAX_RECIPES_PER_EVALUATION_PLAN),
+  })
+  .strict();
+
+export const evaluationExecutionResultsSchema = z
+  .object({
+    executionId: identifierSchema,
+    items: z.array(evaluationExecutionListingResultSchema),
+  })
+  .strict();
+
+export const evaluationExecutionRetryRequestSchema = z.object({}).strict();
+
+export const idempotencyKeySchema = z.string().trim().min(1).max(128);
+
 export const runRecordSchema = runIngestionSchema.extend({ updatedAt: isoDateTimeSchema });
+
+export const listingImageAssetStatusSchema = z.enum(["pending", "processing", "ready", "failed"]);
+
+export const listingImageAssetSchema = z
+  .object({
+    id: z.string().regex(/^[a-f0-9]{64}$/),
+    sourceUrl: httpsUrlSchema,
+    status: listingImageAssetStatusSchema,
+    thumbnailPath: z.string().regex(/^\/v1\/media\/[a-f0-9]{64}\/thumbnail\.webp$/).optional(),
+    galleryPath: z.string().regex(/^\/v1\/media\/[a-f0-9]{64}\/gallery\.webp$/).optional(),
+  })
+  .strict()
+  .superRefine((asset, context) => {
+    const expectedThumbnailPath = `/v1/media/${asset.id}/thumbnail.webp`;
+    const expectedGalleryPath = `/v1/media/${asset.id}/gallery.webp`;
+    if (asset.thumbnailPath && asset.thumbnailPath !== expectedThumbnailPath) {
+      context.addIssue({
+        code: "custom",
+        path: ["thumbnailPath"],
+        message: "Thumbnail path must belong to the declared media asset.",
+      });
+    }
+    if (asset.galleryPath && asset.galleryPath !== expectedGalleryPath) {
+      context.addIssue({
+        code: "custom",
+        path: ["galleryPath"],
+        message: "Gallery path must belong to the declared media asset.",
+      });
+    }
+  });
 
 export const listingRecordSchema = listingIngestionSchema.extend({
   id: listingKeySchema,
@@ -459,6 +695,7 @@ export const listingRecordSchema = listingIngestionSchema.extend({
   lastSeenAt: isoDateTimeSchema,
   updatedAt: isoDateTimeSchema,
   latestEvaluation: listingEvaluationRecordSchema.optional(),
+  imageAssets: z.array(listingImageAssetSchema).max(MAX_LISTING_IMAGE_URLS).optional(),
 });
 
 export const listingRunObservationSchema = z
@@ -509,6 +746,15 @@ export const runsQuerySchema = z
   })
   .strict();
 
+export const evaluationExecutionsQuerySchema = z
+  .object({
+    ...paginationQueryFields,
+    runId: identifierSchema.optional(),
+    status: evaluationExecutionStatusSchema.optional(),
+    order: z.enum(["asc", "desc"]).default("desc"),
+  })
+  .strict();
+
 export const listingsPageSchema = z
   .object({
     items: z.array(listingRecordSchema),
@@ -525,13 +771,28 @@ export const runsPageSchema = z
   })
   .strict();
 
+export const evaluationExecutionsPageSchema = z
+  .object({
+    items: z.array(evaluationExecutionRecordSchema),
+    nextCursor: z.string().nullable(),
+    total: z.number().int().min(0),
+  })
+  .strict();
+
 export const recipesResponseSchema = z.object({ items: z.array(recipeVersionSchema) }).strict();
 
 export const healthResponseSchema = z
   .object({
-    status: z.enum(["ok", "error"]),
+    status: z.enum(["ok", "degraded", "error"]),
     service: z.literal("denicheur-api"),
     database: z.object({ status: z.enum(["ok", "error"]) }).strict(),
+    media: z.object({
+      status: z.enum(["disabled", "ok", "degraded"]),
+      pending: z.number().int().min(0),
+      processing: z.number().int().min(0),
+      ready: z.number().int().min(0),
+      failed: z.number().int().min(0),
+    }).strict(),
     openAiConfigured: z.boolean(),
   })
   .strict();
@@ -550,6 +811,15 @@ export type IntelligenceCriterion = z.infer<typeof intelligenceCriterionSchema>;
 export type RecipeDraft = z.infer<typeof recipeDraftSchema>;
 export type IntelligenceRecipe = z.infer<typeof intelligenceRecipeSchema>;
 export type RecipeVersion = z.infer<typeof recipeVersionSchema>;
+export type EvaluationPlanOperator = z.infer<typeof evaluationPlanOperatorSchema>;
+export type EvaluationPlanCombinerVersion = z.infer<typeof evaluationPlanCombinerVersionSchema>;
+export type EvaluationPlanRecipeReference = z.infer<typeof evaluationPlanRecipeReferenceSchema>;
+export type EvaluationPlanDraft = z.infer<typeof evaluationPlanDraftSchema>;
+export type EvaluationPlanVersion = z.infer<typeof evaluationPlanVersionSchema>;
+export type ResolvedEvaluationPlanRecipe = z.infer<typeof resolvedEvaluationPlanRecipeSchema>;
+export type ResolvedEvaluationPlanVersion = z.infer<typeof resolvedEvaluationPlanVersionSchema>;
+export type EvaluationPlansResponse = z.infer<typeof evaluationPlansResponseSchema>;
+export type SetDefaultEvaluationPlanRequest = z.infer<typeof setDefaultEvaluationPlanRequestSchema>;
 export type CriterionVerdict = z.infer<typeof criterionVerdictSchema>;
 export type ListingDecision = z.infer<typeof listingDecisionSchema>;
 export type CriterionEvaluation = z.infer<typeof criterionEvaluationSchema>;
@@ -571,21 +841,53 @@ export type EvaluationSuccessItem = z.infer<typeof evaluationSuccessItemSchema>;
 export type EvaluationFailureItem = z.infer<typeof evaluationFailureItemSchema>;
 export type EvaluationBatchItem = z.infer<typeof evaluationBatchItemSchema>;
 export type EvaluationBatchResponse = z.infer<typeof evaluationBatchResponseSchema>;
+export type EvaluationExecutionStatus = z.infer<typeof evaluationExecutionStatusSchema>;
+export type EvaluationExecutionCreateRequest = z.infer<typeof evaluationExecutionCreateRequestSchema>;
+export type EvaluationExecutionCounters = z.infer<typeof evaluationExecutionCountersSchema>;
+export type EvaluationExecutionRecord = z.infer<typeof evaluationExecutionRecordSchema>;
+export type EvaluationExecutionStepStatus = z.infer<typeof evaluationExecutionStepStatusSchema>;
+export type EvaluationExecutionSucceededStep = z.infer<typeof evaluationExecutionSucceededStepSchema>;
+export type EvaluationExecutionFailedStep = z.infer<typeof evaluationExecutionFailedStepSchema>;
+export type EvaluationExecutionSkippedStep = z.infer<typeof evaluationExecutionSkippedStepSchema>;
+export type EvaluationExecutionStepResult = z.infer<typeof evaluationExecutionStepResultSchema>;
+export type EvaluationExecutionListingResult = z.infer<typeof evaluationExecutionListingResultSchema>;
+export type EvaluationExecutionResults = z.infer<typeof evaluationExecutionResultsSchema>;
+export type EvaluationExecutionRetryRequest = z.infer<typeof evaluationExecutionRetryRequestSchema>;
 export type RunRecord = z.infer<typeof runRecordSchema>;
+export type ListingImageAssetStatus = z.infer<typeof listingImageAssetStatusSchema>;
+export type ListingImageAsset = z.infer<typeof listingImageAssetSchema>;
 export type ListingRecord = z.infer<typeof listingRecordSchema>;
 export type ListingRunObservation = z.infer<typeof listingRunObservationSchema>;
 export type ListingDetail = z.infer<typeof listingDetailSchema>;
 export type RunDetail = z.infer<typeof runDetailSchema>;
 export type ListingsQuery = z.infer<typeof listingsQuerySchema>;
 export type RunsQuery = z.infer<typeof runsQuerySchema>;
+export type EvaluationExecutionsQuery = z.infer<typeof evaluationExecutionsQuerySchema>;
 export type ListingsPage = z.infer<typeof listingsPageSchema>;
 export type RunsPage = z.infer<typeof runsPageSchema>;
+export type EvaluationExecutionsPage = z.infer<typeof evaluationExecutionsPageSchema>;
 export type RecipesResponse = z.infer<typeof recipesResponseSchema>;
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
 export type FilterLocale = Locale;
 
 interface IdentifiedValue {
   readonly id: string;
+}
+
+interface WeightedValue {
+  readonly weight: number;
+}
+
+function addPositiveRecipeWeightIssue(
+  criteria: readonly WeightedValue[],
+  context: z.core.$RefinementCtx<unknown>,
+): void {
+  if (criteria.some((criterion) => criterion.weight > 0)) return;
+  context.addIssue({
+    code: "custom",
+    path: ["criteria"],
+    message: "At least one criterion must have a positive weight.",
+  });
 }
 
 function addDuplicateIdIssues(

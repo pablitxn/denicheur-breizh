@@ -28,15 +28,8 @@ import {
   type ExtensionMessageId,
 } from "../i18n";
 import {
-  createEvaluationFailureOutcome,
-  evaluateDetailedRecordsInBatches,
   evaluationFailureDescriptor,
-  FilterApiError,
-  mergeRecordEvaluationOutcome,
 } from "../intelligence/filterApi";
-import {
-  createDefaultIntelligenceRecipe,
-} from "../intelligence/recipe";
 import {
   CATEGORY_OPTIONS,
   createDefaultSearchFilters,
@@ -49,9 +42,10 @@ import {
 } from "../lib/leboncoinSearch";
 import type {
   IntelligenceRecipe,
+  EvaluationPlan,
   ListingEvaluation,
   ListingEvaluationFailure,
-  ListingEvaluationOutcome,
+  PlanEvaluation,
   ScrapeRun,
   ScrapedPropertyRecord,
   SearchFilters,
@@ -61,23 +55,27 @@ import {
   CRAWLER_STORAGE_KEYS,
   IDLE_RUN,
   loadCrawlerState,
+  loadEvaluationPlan,
   reconcileInterruptedRun,
-  saveCrawlerState,
   saveFilters,
   saveRun,
 } from "../storage/chromeStorage";
 import {
-  requestActiveRecipeRefresh,
+  requestDefaultPlanRefresh,
   requestImmediateSync,
+  requestPlanEvaluation,
 } from "../sync/runtime";
 import {
+  EMPTY_SYNC_STATE,
   loadExtensionSyncState,
   SYNC_STORAGE_KEY,
 } from "../sync/storage";
+import type { ExtensionSyncState } from "../sync/types";
 import {
   useThemePreference,
   type ThemePreference,
 } from "./theme";
+import { RuntimeApiSettings } from "./RuntimeApiSettings";
 
 type NumericFilterKey =
   | "priceMin"
@@ -139,7 +137,8 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
   const [filters, setFilters] = useState<SearchFilters>(createDefaultSearchFilters);
   const [run, setRun] = useState<ScrapeRun>(IDLE_RUN);
   const [records, setRecords] = useState<ScrapedPropertyRecord[]>([]);
-  const [recipe, setRecipe] = useState<IntelligenceRecipe>(createDefaultIntelligenceRecipe);
+  const [plan, setPlan] = useState<EvaluationPlan>();
+  const [syncState, setSyncState] = useState<ExtensionSyncState>(EMPTY_SYNC_STATE);
   const [filtersDirty, setFiltersDirty] = useState(false);
   const [hydrationState, setHydrationState] = useState<"loading" | "ready" | "error">("loading");
   const [hydrationRetry, setHydrationRetry] = useState(0);
@@ -164,17 +163,18 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
   const reevaluationPendingRef = useRef(false);
   const filtersDirtyRef = useRef(false);
   const formRef = useRef<HTMLFormElement>(null);
-  const reevaluationAbortRef = useRef<AbortController | undefined>(undefined);
   const isRunning = RUNNING_STATUSES.has(run.status);
   const isRunActive = isRunning || run.status === "paused-captcha";
-  const canControlActiveRun = Boolean(runnerRef.current || reevaluationAbortRef.current);
+  const canControlActiveRun = Boolean(runnerRef.current);
   const requiresReset = run.status === "blocked-captcha" || run.status === "blocked-activity";
   const formPending = savingFilters || refreshingRecipe || reevaluationPending || startPending;
+  const durableEvaluationPending = syncState.evaluationQueue.some((entry) =>
+    entry.status === "queued" || entry.status === "creating" || entry.status === "polling");
   const evaluationFailures = records.flatMap((record) => (
     record.evaluationFailure ? [record.evaluationFailure] : []
   ));
   const successfulEvaluationCount = records.filter((record) => (
-    record.status === "detailed" && record.evaluation && !record.evaluationFailure
+    record.status === "detailed" && (record.planEvaluation || (record.evaluation && !record.evaluationFailure))
   )).length;
   const filterIssues = useMemo(() => validateSearchFilters(filters), [filters]);
   const filterIssueMessages = useMemo(
@@ -186,7 +186,8 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
   );
   const filteredRecords = useMemo(
     () => records.filter((record) => {
-      if (decisionFilter !== "all" && record.evaluation?.decision !== decisionFilter) return false;
+      const decision = record.planEvaluation?.decision ?? record.evaluation?.decision;
+      if (decisionFilter !== "all" && decision !== decisionFilter) return false;
       return recordMatchesQuery(record, recordQuery, locale);
     }),
     [decisionFilter, locale, recordQuery, records],
@@ -206,8 +207,8 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
     setHydrationState("loading");
     setLoadError(undefined);
 
-    void Promise.all([loadCrawlerState(), loadExtensionSyncState()])
-      .then(async ([snapshot, syncState]) => {
+    void Promise.all([loadCrawlerState(), loadExtensionSyncState(), loadEvaluationPlan()])
+      .then(async ([snapshot, restoredSyncState, restoredPlan]) => {
         const hasLiveRunner = await hasLiveDashboardRunner(
           Boolean(runnerRef.current),
         );
@@ -218,13 +219,17 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
         setFilters(snapshot.filters);
         setRun(recoveredRun);
         setRecords(snapshot.records);
-        const activeRecipe = syncState.activeRecipe.status === "cached"
-          ? snapshot.recipe
-          : createDefaultIntelligenceRecipe();
-        setRecipe(activeRecipe);
+        const activePlan = restoredSyncState.activePlan.status === "cached" &&
+          restoredPlan !== undefined &&
+          restoredPlan.id === restoredSyncState.activePlan.planId &&
+          restoredPlan.version === restoredSyncState.activePlan.planVersion
+          ? restoredPlan
+          : undefined;
+        setSyncState(restoredSyncState);
+        setPlan(activePlan);
         setFiltersDirtyState(false);
         setDraftConflict(false);
-        setIntelligenceExpanded(activeRecipe.enabled);
+        setIntelligenceExpanded(Boolean(activePlan));
         setHydrationState("ready");
       })
       .catch((caught) => {
@@ -245,8 +250,8 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
         return;
       }
 
-      void Promise.all([loadCrawlerState(), loadExtensionSyncState()])
-        .then(([snapshot, syncState]) => {
+      void Promise.all([loadCrawlerState(), loadExtensionSyncState(), loadEvaluationPlan()])
+        .then(([snapshot, restoredSyncState, restoredPlan]) => {
           if (!mounted) return;
           if (CRAWLER_STORAGE_KEYS.filters in changes) {
             if (filtersDirtyRef.current) {
@@ -255,10 +260,15 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
               setFilters(snapshot.filters);
             }
           }
-          if (CRAWLER_STORAGE_KEYS.recipe in changes || SYNC_STORAGE_KEY in changes) {
-            setRecipe(syncState.activeRecipe.status === "cached"
-              ? snapshot.recipe
-              : createDefaultIntelligenceRecipe());
+          if (CRAWLER_STORAGE_KEYS.recipe in changes || CRAWLER_STORAGE_KEYS.plan in changes || SYNC_STORAGE_KEY in changes) {
+            const activePlan = restoredSyncState.activePlan.status === "cached" &&
+              restoredPlan !== undefined &&
+              restoredPlan.id === restoredSyncState.activePlan.planId &&
+              restoredPlan.version === restoredSyncState.activePlan.planVersion
+              ? restoredPlan
+              : undefined;
+            setSyncState(restoredSyncState);
+            setPlan(activePlan);
           }
           if (CRAWLER_STORAGE_KEYS.run in changes) setRun(snapshot.run);
           if (CRAWLER_STORAGE_KEYS.records in changes) setRecords(snapshot.records);
@@ -274,7 +284,6 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
       mounted = false;
       chrome.storage.onChanged.removeListener(listener);
       runnerRef.current?.cancel();
-      reevaluationAbortRef.current?.abort();
     };
   }, [hydrationRetry]);
 
@@ -306,6 +315,29 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
       abortController.abort();
     };
   }, [run.status]);
+
+  useEffect(() => {
+    if (hydrationState !== "ready" || !durableEvaluationPending) return;
+    let active = true;
+    let requestPending = false;
+    const poll = () => {
+      if (!active || requestPending) return;
+      requestPending = true;
+      void requestImmediateSync()
+        .catch((caught) => {
+          if (active) setError(caught instanceof Error ? caught.message : String(caught));
+        })
+        .finally(() => {
+          requestPending = false;
+        });
+    };
+    poll();
+    const intervalId = window.setInterval(poll, 2_000);
+    return () => {
+      active = false;
+      window.clearInterval(intervalId);
+    };
+  }, [durableEvaluationPending, hydrationState]);
 
   useEffect(() => {
     if (hydrationState !== "ready") return;
@@ -369,10 +401,6 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
     markFiltersDirty();
   }
 
-  function activeRecipeForUse(): IntelligenceRecipe {
-    return recipe;
-  }
-
   async function persistFiltersForUse(): Promise<SearchFilters> {
     if (filterIssues.length > 0) {
       focusFirstFilterIssue();
@@ -396,11 +424,12 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
     setRefreshingRecipe(true);
     setActionFeedback(t("intelligence.refreshingRecipe"));
     try {
-      const response = await requestActiveRecipeRefresh();
-      if (!response.ok || !response.recipe) {
-        throw new Error(response.error ?? "No active API recipe is available.");
+      const response = await requestDefaultPlanRefresh();
+      if (!response.ok || !response.plan) {
+        throw new Error(response.error ?? "No default evaluation plan is available.");
       }
-      setRecipe(response.recipe);
+      setPlan(response.plan);
+      setSyncState(response.state);
       setIntelligenceExpanded(true);
       setActionFeedback(t("feedback.recipeRefreshed"));
     } catch (caught) {
@@ -465,17 +494,16 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
     startPendingRef.current = true;
     setStartPending(true);
     runnerRef.current?.cancel();
-    reevaluationAbortRef.current?.abort();
     setError(undefined);
     setActionFeedback(t("action.starting"));
 
     try {
       await withDashboardRunnerLease(async () => {
-        const recipeForRun = activeRecipeForUse();
+        const planForRun = plan;
         const normalizedFilters = await persistFiltersForUse();
         const runnableFilters = normalizeSearchFilters({
           ...normalizedFilters,
-          collectDetailPages: recipeForRun.enabled ? true : normalizedFilters.collectDetailPages,
+          collectDetailPages: planForRun ? true : normalizedFilters.collectDetailPages,
         });
         if (runnableFilters.collectDetailPages !== normalizedFilters.collectDetailPages) {
           await saveFilters(runnableFilters);
@@ -486,7 +514,17 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
           setRecords(snapshot.records);
         });
         runnerRef.current = runner;
-        await runner.run(runnableFilters, recipeForRun, locale);
+        await runner.run(runnableFilters, undefined, locale);
+        const completed = await loadCrawlerState();
+        if (planForRun && completed.run.status === "completed" &&
+          completed.records.some((record) => record.searchRunId === completed.run.id && record.status === "detailed")) {
+          const response = await requestPlanEvaluation({
+            runId: completed.run.id,
+            locale,
+          });
+          if (!response.ok) throw new Error(response.error ?? "Evaluation execution could not be queued.");
+          setSyncState(response.state);
+        }
       });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
@@ -500,102 +538,31 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
 
   function handleCancel() {
     runnerRef.current?.cancel();
-    reevaluationAbortRef.current?.abort();
   }
 
   function handleResume() {
     runnerRef.current?.resume();
   }
 
-  async function handleReevaluate(pendingOnly = false) {
+  async function handleReevaluate(_pendingOnly = false) {
     if (reevaluationPendingRef.current) return;
     reevaluationPendingRef.current = true;
     setReevaluationPending(true);
     setError(undefined);
     setActionFeedback(t("intelligence.reevaluating"));
     try {
-      const recipeForRun = activeRecipeForUse();
-      if (!recipeForRun.enabled) throw extensionMessage("error.enableRecipe");
-      const allDetailedRecords = records.filter((record) => record.status === "detailed");
-      const detailedRecords = pendingOnly
-        ? allDetailedRecords.filter((record) => record.evaluationFailure?.retryable)
-        : allDetailedRecords;
+      if (!plan) throw extensionMessage("error.enableRecipe");
+      const detailedRecords = records.filter(
+        (record) => record.searchRunId === run.id && record.status === "detailed",
+      );
       if (detailedRecords.length === 0) throw extensionMessage("error.noDetailedRecords");
-
-      const abortController = new AbortController();
-      reevaluationAbortRef.current = abortController;
-      const evaluatingRun: ScrapeRun = {
-        ...run,
-        status: "evaluating",
-        intelligenceStatus: "evaluating",
-        intelligenceError: undefined,
-        message: extensionMessage("run.reevaluating", { count: detailedRecords.length }),
-      };
-      setRun(evaluatingRun);
-      await saveCrawlerState({ run: evaluatingRun });
-
-      let persistedRecords = records;
-      const attemptOutcome: ListingEvaluationOutcome = { evaluations: [], failures: [] };
-      const persistOutcome = async (batch: ListingEvaluationOutcome) => {
-        attemptOutcome.evaluations.push(...batch.evaluations);
-        attemptOutcome.failures.push(...batch.failures);
-        persistedRecords = mergeRecordEvaluationOutcome(persistedRecords, batch);
-        const progressRun: ScrapeRun = {
-          ...evaluatingRun,
-          evaluated: attemptOutcome.evaluations.length,
-          relevant: attemptOutcome.evaluations.filter((item) => item.decision === "relevant").length,
-          notRelevant: attemptOutcome.evaluations.filter((item) => item.decision === "not-relevant").length,
-          review: attemptOutcome.evaluations.filter((item) => item.decision === "review").length,
-        };
-        setRun(progressRun);
-        setRecords(persistedRecords);
-        await saveCrawlerState({ run: progressRun, records: persistedRecords });
-      };
-      try {
-        const syncResponse = await requestImmediateSync();
-        if (!syncResponse.ok) {
-          await persistOutcome(createEvaluationFailureOutcome(detailedRecords, new FilterApiError(
-            "Listings could not be synchronized before evaluation.",
-            undefined,
-            "SYNC_FAILED",
-          )));
-        } else {
-          const recordsByRun = groupRecordsByRun(detailedRecords);
-          for (const [sourceRunId, sourceRecords] of recordsByRun) {
-            await evaluateDetailedRecordsInBatches(
-              sourceRunId,
-              recipeForRun,
-              sourceRecords,
-              {
-                locale,
-                force: !pendingOnly,
-                signal: abortController.signal,
-                onBatchComplete: async (batch) => persistOutcome(batch),
-              },
-            );
-          }
-        }
-        const nextRun = runWithEvaluationState(evaluatingRun, persistedRecords, allDetailedRecords);
-        setRun(nextRun);
-        setRecords(persistedRecords);
-        await saveCrawlerState({ run: nextRun, records: persistedRecords });
-      } catch (caught) {
-        if (abortController.signal.aborted) throw caught;
-        const resolvedIds = new Set([
-          ...attemptOutcome.evaluations.map((item) => item.listingId),
-          ...attemptOutcome.failures.map((item) => item.listingId),
-        ]);
-        const unresolvedRecords = detailedRecords.filter((record) => !resolvedIds.has(record.id));
-        if (unresolvedRecords.length > 0) {
-          await persistOutcome(createEvaluationFailureOutcome(unresolvedRecords, caught));
-        }
-        const nextRun = runWithEvaluationState(evaluatingRun, persistedRecords, allDetailedRecords);
-        setRun(nextRun);
-        setRecords(persistedRecords);
-        await saveCrawlerState({ run: nextRun, records: persistedRecords });
-      } finally {
-        reevaluationAbortRef.current = undefined;
-      }
+      const response = await requestPlanEvaluation({
+        runId: run.id,
+        locale,
+        force: true,
+      });
+      setSyncState(response.state);
+      if (!response.ok) throw new Error(response.error ?? "Evaluation execution could not be queued.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : caught);
     } finally {
@@ -680,6 +647,7 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
       </header>
 
       <main id="main-content" className="dashboard-layout" tabIndex={-1}>
+        <RuntimeApiSettings />
         {hydrationState === "loading" && (
           <div className="dashboard-state loading-state" role="status">
             <LoaderCircle className="spin" size={18} />
@@ -870,40 +838,40 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
               <span className="intelligence-title-row">
                 <Brain size={17} />
                 <span id="intelligence-title">{t("intelligence.summary")}</span>
-                <Chip tone={recipe.enabled ? "good" : "sea"}>
-                  {recipe.enabled ? t("intelligence.enabled") : t("intelligence.disabled")}
+                <Chip tone={plan ? "good" : "sea"}>
+                  {plan ? t("intelligence.enabled") : t("intelligence.disabled")}
                 </Chip>
               </span>
             </summary>
             <div className="intelligence-content" aria-labelledby="intelligence-title">
               <div className="intelligence-head">
-                <p>{t("intelligence.activeRecipeDescription")}</p>
+                <p>{plan ? t("intelligence.activePlanDescription") : t("intelligence.noDefaultPlan")}</p>
               </div>
 
               <div className="recipe-grid">
                 <div className="field wide">
-                  <SectionLabel>{t("intelligence.recipeName")}</SectionLabel>
-                  <strong>{recipe.name}</strong>
+                  <SectionLabel>{t("intelligence.planName")}</SectionLabel>
+                  <strong>{plan?.name ?? "—"}</strong>
                 </div>
                 <div className="field">
-                  <SectionLabel>{t("intelligence.threshold")}</SectionLabel>
-                  <strong>{formatNumber(recipe.threshold)}%</strong>
+                  <SectionLabel>{t("intelligence.planOperator")}</SectionLabel>
+                  <strong>{plan ? t(plan.operator === "all" ? "intelligence.operatorAll" : "intelligence.operatorAny") : "—"}</strong>
                 </div>
                 <div className="recipe-version">
                   <SectionLabel>{t("intelligence.version")}</SectionLabel>
-                  <strong>v{formatNumber(recipe.version)}</strong>
+                  <strong>{plan ? `v${formatNumber(plan.version)}` : "—"}</strong>
                 </div>
               </div>
 
               <div className="criteria-list">
-                {recipe.criteria.length === 0 && (
+                {!plan && (
                   <p className="criteria-empty">{t("intelligence.noActiveCriteria")}</p>
                 )}
-                {recipe.criteria.map((criterion, index) => (
-                  <article className="criterion-row" key={criterion.id}>
+                {plan?.recipes.flatMap((step) => step.recipe.criteria.map((criterion) => ({ step, criterion }))).map(({ step, criterion }, index) => (
+                  <article className="criterion-row" key={`${step.recipeId}:${step.recipeVersion}:${criterion.id}`}>
                     <div className="criterion-index">{index + 1}</div>
                     <div className="criterion-fields">
-                      <strong>{criterion.name}</strong>
+                      <strong>{step.recipe.name} v{formatNumber(step.recipeVersion)} · {criterion.name}</strong>
                       <p>{criterion.description}</p>
                       <div className="criterion-options">
                         <span>{t("intelligence.weight")}: {formatNumber(criterion.weight)}</span>
@@ -923,20 +891,20 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
                   disabled={refreshingRecipe || isRunActive}
                 >
                   {refreshingRecipe ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}
-                  {refreshingRecipe ? t("intelligence.refreshingRecipe") : t("intelligence.refreshRecipe")}
+                  {refreshingRecipe ? t("intelligence.refreshingPlan") : t("intelligence.refreshPlan")}
                 </Button>
                 <Button
                   type="button"
                   size="sm"
                   variant="ghost"
                   onClick={() => void handleReevaluate(false)}
-                  disabled={reevaluationPending || isRunActive || !recipe.enabled || records.every((record) => record.status !== "detailed")}
+                  disabled={reevaluationPending || durableEvaluationPending || isRunActive || !plan || records.every((record) => record.status !== "detailed")}
                 >
                   {reevaluationPending ? <LoaderCircle className="spin" size={14} /> : <RefreshCw size={14} />}
                   {reevaluationPending ? t("intelligence.reevaluating") : t("intelligence.reevaluate")}
                 </Button>
               </div>
-              {recipe.enabled && <p className="intelligence-note">{t("intelligence.autoDetails")}</p>}
+              {plan && <p className="intelligence-note">{t("intelligence.autoDetails")}</p>}
             </div>
           </details>
 
@@ -1034,7 +1002,7 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
             <Metric label={t("metric.pages")} value={run.pagesVisited} />
             <Metric label={filters.collectDetailPages ? t("metric.detailed") : t("metric.collected")} value={run.collected} />
             <Metric label={t("metric.stored")} value={records.length} />
-            {(recipe.enabled || run.evaluated > 0) && (
+            {(plan || run.evaluated > 0) && (
               <>
                 <Metric label={t("metric.evaluated")} value={run.evaluated} />
                 <Metric label={t("metric.relevant")} value={run.relevant} />
@@ -1599,11 +1567,13 @@ function PropertyRecordCard({ record }: PropertyRecordCardProps) {
       {record.evaluationFailure && (
         <EvaluationFailureNotice
           failure={record.evaluationFailure}
-          hasPreviousEvaluation={Boolean(record.evaluation)}
+          hasPreviousEvaluation={Boolean(record.planEvaluation ?? record.evaluation)}
         />
       )}
 
-      {record.evaluation && <EvaluationSummary evaluation={record.evaluation} />}
+      {record.planEvaluation
+        ? <PlanEvaluationSummary evaluation={record.planEvaluation} />
+        : record.evaluation && <EvaluationSummary evaluation={record.evaluation} />}
 
       <div className="record-footer">
         <Chip tone={record.status === "failed" ? "danger" : record.status === "detailed" ? "good" : "sea"}>
@@ -1834,55 +1804,57 @@ function EvaluationSummary({ evaluation }: EvaluationSummaryProps) {
   );
 }
 
-function runWithEvaluationState(
-  run: ScrapeRun,
-  records: ScrapedPropertyRecord[],
-  scopedRecords: ScrapedPropertyRecord[],
-): ScrapeRun {
-  const scopedIds = new Set(scopedRecords.map((record) => record.id));
-  const currentRecords = records.filter((record) => scopedIds.has(record.id));
-  const failures = currentRecords.flatMap((record) => (
-    record.evaluationFailure ? [record.evaluationFailure] : []
-  ));
-  const evaluations = currentRecords.flatMap((record) => (
-    record.evaluation && !record.evaluationFailure ? [record.evaluation] : []
-  ));
-  const intelligenceStatus = failures.length === 0
-    ? "completed" as const
-    : evaluations.length > 0
-      ? "partial" as const
-      : "failed" as const;
-  return {
-    ...run,
-    status: "completed",
-    intelligenceStatus,
-    intelligenceError: failures[0] ? evaluationFailureDescriptor(failures[0]) : undefined,
-    evaluated: evaluations.length,
-    relevant: evaluations.filter((evaluation) => evaluation.decision === "relevant").length,
-    notRelevant: evaluations.filter((evaluation) => evaluation.decision === "not-relevant").length,
-    review: evaluations.filter((evaluation) => evaluation.decision === "review").length,
-    message: failures.length === 0
-      ? extensionMessage("run.reevaluated", { count: evaluations.length })
-      : evaluations.length > 0
-        ? extensionMessage("run.intelligencePartial", {
-            evaluated: evaluations.length,
-            pending: failures.length,
-            total: evaluations.length + failures.length,
-          })
-        : extensionMessage("run.intelligenceFailedPreserved"),
-  };
+interface PlanEvaluationSummaryProps {
+  evaluation: PlanEvaluation;
 }
 
-function groupRecordsByRun(
-  records: ScrapedPropertyRecord[],
-): Array<[string, ScrapedPropertyRecord[]]> {
-  const byRun = new Map<string, ScrapedPropertyRecord[]>();
-  for (const record of records) {
-    const runRecords = byRun.get(record.searchRunId) ?? [];
-    runRecords.push(record);
-    byRun.set(record.searchRunId, runRecords);
-  }
-  return [...byRun.entries()];
+function PlanEvaluationSummary({ evaluation }: PlanEvaluationSummaryProps) {
+  const { formatDateTime, formatNumber, t } = useExtensionI18n();
+  const tone = evaluation.decision === "relevant"
+    ? "good"
+    : evaluation.decision === "review"
+      ? "sunset"
+      : "danger";
+  return (
+    <section className="evaluation-summary" aria-label={t("evaluation.aria")}>
+      <div className="evaluation-head">
+        <Chip tone={tone}>{t(`decision.${evaluation.decision}`)}</Chip>
+        <strong>{evaluation.score === null ? t("evaluation.noScore") : `${formatNumber(Math.round(evaluation.score))} / 100`}</strong>
+      </div>
+      <p>{evaluation.summary}</p>
+      <details>
+        <summary>{t("evaluation.recipeBreakdown")}</summary>
+        <div className="evaluation-criteria">
+          {evaluation.steps.map((step) => (
+            <div key={`${step.recipeId}:${step.recipeVersion}`} className={`criterion-result ${step.status === "failed" ? "fail" : "pass"}`}>
+              <strong translate="no">{step.recipeId} v{formatNumber(step.recipeVersion)} · {step.status}</strong>
+              {step.evaluation?.criteria.map((criterion) => (
+                <span key={criterion.criterionId}>
+                  {t(`verdict.${criterion.verdict}`)} · {criterion.reason}
+                  {criterion.evidence.length > 0 ? ` · ${criterion.evidence.join(" · ")}` : ""}
+                </span>
+              ))}
+              {step.evaluator && (
+                <small className="evaluation-meta" translate="no">
+                  {step.evaluator.provider} · {step.evaluator.model} · {step.evaluator.version}
+                </small>
+              )}
+              {step.error && <span>{step.error.code}{step.error.message ? ` · ${step.error.message}` : ""}</span>}
+            </div>
+          ))}
+        </div>
+      </details>
+      <small className="evaluation-meta" translate="no">
+        {t("evaluation.planMeta", {
+          version: formatNumber(evaluation.planVersion),
+          date: formatDateTime(evaluation.evaluatedAt ?? new Date(0).toISOString(), {
+            dateStyle: "medium",
+            timeStyle: "short",
+          }),
+        })}
+      </small>
+    </section>
+  );
 }
 
 interface LocalizedMessageViewProps {

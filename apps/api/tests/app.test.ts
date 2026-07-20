@@ -17,7 +17,7 @@ describe("HTTP API", () => {
 
     const response = await request(app).get("/health").expect(200);
 
-    expect(response.body).toEqual({
+    expect(response.body).toMatchObject({
       status: "ok",
       service: "denicheur-api",
       database: { status: "ok" },
@@ -137,6 +137,12 @@ describe("HTTP API", () => {
       }],
     };
 
+    const zeroWeight = await request(app).put("/v1/recipes/invalid-zero-weight").send({
+      ...draft,
+      criteria: draft.criteria.map((criterion) => ({ ...criterion, weight: 0 })),
+    }).expect(400);
+    expect(zeroWeight.body.error).toMatchObject({ code: "INVALID_REQUEST" });
+
     const first = await request(app).put("/v1/recipes/recipe-1").send(draft).expect(201);
     const second = await request(app).put("/v1/recipes/recipe-1").send({ ...draft, threshold: 80 }).expect(201);
     const activated = await request(app).post("/v1/recipes/recipe-1/activate").send({ version: 1 }).expect(200);
@@ -148,6 +154,120 @@ describe("HTTP API", () => {
     expect(activated.body).toMatchObject({ id: "recipe-1", version: 1, active: true });
     expect(active.body).toEqual(activated.body);
     expect(recipes.body.items).toHaveLength(2);
+  });
+
+  it("publishes plans and creates idempotent durable executions over detailed run snapshots", async () => {
+    const { app, worker } = createTestApp();
+    const recipeDraft = {
+      name: "Maison avec jardin",
+      threshold: 70,
+      criteria: [{
+        id: "garden",
+        name: "Jardin",
+        description: "Le bien doit avoir un jardin.",
+        weight: 1,
+        required: false,
+      }],
+    };
+    await request(app).put("/v1/recipes/recipe-plan").send(recipeDraft).expect(201);
+    const plan = await request(app).put("/v1/evaluation-plans/plan-1").send({
+      name: "Plan principal",
+      operator: "all",
+      recipes: [{ recipeId: "recipe-plan", recipeVersion: 1 }],
+    }).expect(201);
+    await request(app).post("/v1/evaluation-plans/plan-1/set-default").send({ version: 1 }).expect(200);
+    const resolved = await request(app).get("/v1/evaluation-plans/default").expect(200);
+    expect(plan.body).toMatchObject({
+      id: "plan-1",
+      version: 1,
+      combinerVersion: "tri-state-v1",
+      isDefault: false,
+      recipes: [{ recipeId: "recipe-plan", recipeVersion: 1 }],
+    });
+    expect(resolved.body).toMatchObject({
+      id: "plan-1",
+      isDefault: true,
+      recipes: [{ recipe: { id: "recipe-plan", version: 1 } }],
+    });
+    await request(app).get("/v1/evaluation-plans/plan-1/1").expect(200);
+
+    await request(app).put("/v1/ingestion/runs/run-plan").send({
+      run: { id: "run-plan", source: "leboncoin", status: "completed" },
+      listings: [{
+        source: "leboncoin",
+        externalId: "listing-1",
+        url: "https://www.leboncoin.fr/ad/ventes_immobilieres/listing-1",
+        title: "Maison 1",
+        description: "Maison avec jardin.",
+        status: "detailed",
+        scrapedAt: "2026-07-19T10:00:00.000Z",
+      }],
+    }).expect(200);
+    const executionRequest = { planId: "plan-1", planVersion: 1, locale: "fr" };
+    await request(app)
+      .post("/v1/runs/run-plan/evaluation-executions")
+      .send(executionRequest)
+      .expect(400);
+    const first = await request(app)
+      .post("/v1/runs/run-plan/evaluation-executions")
+      .set("Idempotency-Key", "execution-key")
+      .send(executionRequest)
+      .expect(202);
+    expect(first.body).toMatchObject({
+      runId: "run-plan",
+      status: "queued",
+      listingIds: ["leboncoin:listing-1"],
+      counters: { total: 1, processed: 0 },
+    });
+
+    await request(app).put("/v1/ingestion/runs/run-plan").send({
+      run: { id: "run-plan", source: "leboncoin", status: "completed" },
+      listings: [{
+        source: "leboncoin",
+        externalId: "listing-2",
+        url: "https://www.leboncoin.fr/ad/ventes_immobilieres/listing-2",
+        title: "Maison 2",
+        description: "Maison avec jardin.",
+        status: "detailed",
+        scrapedAt: "2026-07-19T10:01:00.000Z",
+      }],
+    }).expect(200);
+    const replay = await request(app)
+      .post("/v1/runs/run-plan/evaluation-executions")
+      .set("Idempotency-Key", "execution-key")
+      .send(executionRequest)
+      .expect(202);
+    expect(replay.body.id).toBe(first.body.id);
+    expect(replay.body.listingIds).toEqual(["leboncoin:listing-1"]);
+    expect(worker.kick).toHaveBeenCalledTimes(1);
+
+    await request(app).get(`/v1/evaluation-executions/${first.body.id}`).expect(200);
+    await request(app).get(`/v1/evaluation-executions/${first.body.id}/results`).expect(200, {
+      executionId: first.body.id,
+      items: [],
+    });
+    await request(app).get("/v1/evaluation-executions?runId=run-plan&limit=20&order=desc").expect(200, {
+      items: [first.body],
+      nextCursor: null,
+      total: 1,
+    });
+    const cleanup = await request(app)
+      .post("/v1/maintenance/collected-data/clear")
+      .send({ confirm: "clear-collected-data" })
+      .expect(409);
+    expect(cleanup.body.error).toMatchObject({ code: "ACTIVE_EVALUATION_EXECUTION" });
+
+    const cancelled = await request(app)
+      .post(`/v1/evaluation-executions/${first.body.id}/cancel`)
+      .send({})
+      .expect(200);
+    expect(cancelled.body.status).toBe("cancelled");
+    const retried = await request(app)
+      .post(`/v1/evaluation-executions/${first.body.id}/retry`)
+      .set("Idempotency-Key", "retry-key")
+      .send({})
+      .expect(202);
+    expect(retried.body).toMatchObject({ status: "queued", retryOfExecutionId: first.body.id });
   });
 
   it("evaluates stored run listings and exposes persisted evidence", async () => {
@@ -406,7 +526,7 @@ describe("HTTP API", () => {
       .options("/v1/listings/filter")
       .set("Origin", VALID_EXTENSION_ORIGIN)
       .set("Access-Control-Request-Method", "POST")
-      .set("Access-Control-Request-Headers", "content-type")
+      .set("Access-Control-Request-Headers", "authorization,content-type,idempotency-key")
       .expect(204);
     const blockedExtension = await request(app)
       .get("/health")
@@ -416,8 +536,42 @@ describe("HTTP API", () => {
 
     expect(preflight.headers["access-control-allow-origin"]).toBe(VALID_EXTENSION_ORIGIN);
     expect(preflight.headers["access-control-allow-methods"]).toContain("POST");
+    expect(preflight.headers["access-control-allow-headers"]).toContain("Idempotency-Key");
+    expect(preflight.headers["access-control-allow-headers"]).toContain("Authorization");
     expect(blockedExtension.body.error).toMatchObject({ code: "ORIGIN_NOT_ALLOWED" });
     expect(blocked.body.error).toMatchObject({ code: "ORIGIN_NOT_ALLOWED" });
+  });
+
+  it("keeps reads public and requires the operator Bearer token for private methods", async () => {
+    const operatorToken = "test-operator-token-with-at-least-32-chars";
+    const { app, filter } = createTestApp({ config: { operatorToken } });
+
+    await request(app).get("/health").expect(200);
+    await request(app).get("/v1/listings").expect(200);
+
+    const missing = await request(app).post("/v1/listings/filter").send(createRequest()).expect(401);
+    const wrong = await request(app)
+      .post("/v1/listings/filter")
+      .set("Authorization", "Bearer wrong-token")
+      .send(createRequest())
+      .expect(401);
+    const malformed = await request(app)
+      .post("/v1/listings/filter")
+      .set("Authorization", `Basic ${operatorToken}`)
+      .send(createRequest())
+      .expect(401);
+
+    expect(missing.body.error).toMatchObject({ code: "OPERATOR_AUTH_REQUIRED" });
+    expect(wrong.body.error).toMatchObject({ code: "OPERATOR_AUTH_REQUIRED" });
+    expect(malformed.body.error).toMatchObject({ code: "OPERATOR_AUTH_REQUIRED" });
+    expect(filter).not.toHaveBeenCalled();
+
+    await request(app)
+      .post("/v1/listings/filter")
+      .set("Authorization", `Bearer ${operatorToken}`)
+      .send(createRequest())
+      .expect(200);
+    expect(filter).toHaveBeenCalledOnce();
   });
 
   it("rate limits the filter endpoint without rate limiting health", async () => {
@@ -490,9 +644,20 @@ function createTestApp(options: TestAppOptions = {}) {
       ? vi.fn(options.filterImplementation)
       : vi.fn().mockResolvedValue(options.response ?? createResponse());
   const repository = new DenicheurRepository({ path: ":memory:" });
-  const app = createApp({ config, filterService: { filter }, repository, logger });
+  const worker = {
+    start: vi.fn(),
+    kick: vi.fn(),
+    dispose: vi.fn().mockResolvedValue(undefined),
+  };
+  const app = createApp({
+    config,
+    filterService: { filter },
+    repository,
+    logger,
+    evaluationExecutionWorker: worker,
+  });
 
-  return { app, filter, logger, repository };
+  return { app, filter, logger, repository, worker };
 }
 
 function createLogger() {

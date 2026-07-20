@@ -1,11 +1,13 @@
-import { createApp } from "./app.js";
+import { createApp, evaluationExecutionWorkerFor } from "./app.js";
 import { loadConfig } from "./config.js";
 import { FilterListingsService } from "./filterService.js";
 import { jsonLogger } from "./logger.js";
+import { MediaService } from "./mediaService.js";
+import { S3ObjectStorage } from "./objectStorage.js";
 import { OpenAiListingEvaluator } from "./openAiEvaluator.js";
 import { DenicheurRepository } from "./repository.js";
 
-function main(): void {
+async function main(): Promise<void> {
   const config = loadConfig();
   const evaluator = new OpenAiListingEvaluator({
     ...(config.openAiApiKey ? { apiKey: config.openAiApiKey } : {}),
@@ -17,7 +19,15 @@ function main(): void {
   });
   const filterService = new FilterListingsService(evaluator);
   const repository = new DenicheurRepository({ path: config.databasePath });
-  const app = createApp({ config, filterService, repository, logger: jsonLogger });
+  const storage = config.media.mode === "minio" ? new S3ObjectStorage(config.media) : undefined;
+  const mediaService = new MediaService({
+    repository,
+    ...(storage ? { storage } : {}),
+    logger: jsonLogger,
+    concurrency: config.media.workerConcurrency,
+  });
+  await mediaService.start();
+  const app = createApp({ config, filterService, repository, logger: jsonLogger, mediaService });
   const server = app.listen(config.port, config.host, () => {
     jsonLogger.info({
       event: "server_started",
@@ -28,13 +38,15 @@ function main(): void {
   });
 
   const shutdown = () => {
-    server.close((error) => {
+    server.close(async (error) => {
       if (error) {
         jsonLogger.error({ event: "server_shutdown_failed" });
         process.exitCode = 1;
         return;
       }
 
+      await evaluationExecutionWorkerFor(app).dispose();
+      await mediaService.stop();
       repository.close();
       jsonLogger.info({ event: "server_stopped" });
     });
@@ -44,9 +56,7 @@ function main(): void {
   process.once("SIGTERM", shutdown);
 }
 
-try {
-  main();
-} catch {
+main().catch(() => {
   jsonLogger.error({ event: "server_start_failed" });
   process.exitCode = 1;
-}
+});

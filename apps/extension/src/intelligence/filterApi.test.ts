@@ -123,6 +123,36 @@ describe("intelligence filter API client", () => {
     });
   });
 
+  it("loads the runtime API URL and bearer token for costing evaluations", async () => {
+    vi.stubGlobal("chrome", {
+      runtime: { lastError: undefined },
+      storage: {
+        local: {
+          get(keys: string[], callback: (values: Record<string, unknown>) => void) {
+            callback(Object.fromEntries(keys.map((key) => [key, {
+              "denicheur:runtime-api-base-url": "https://denicheur-breizh.orchid-labs.xyz/api",
+              "denicheur:runtime-operator-token": "operator-secret",
+            }[key]])));
+          },
+        },
+      },
+    });
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe(
+        "https://denicheur-breizh.orchid-labs.xyz/api/v1/runs/run-1/evaluations",
+      );
+      expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer operator-secret");
+      return new Response(JSON.stringify(validPayload()), { status: 200 });
+    });
+
+    try {
+      const outcome = await evaluateDetailedRecords("run-1", recipe, [detailedRecord()], { fetcher });
+      expect(outcome.failures).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("sends identities only because listings must already be persisted", async () => {
     const fetcher = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as Record<string, unknown>;

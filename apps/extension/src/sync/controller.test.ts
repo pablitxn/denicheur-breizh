@@ -3,11 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   clearApiCollectedData: vi.fn(),
   clearRecordsAndSyncQueue: vi.fn(),
+  flushEvaluationQueue: vi.fn(),
   flushQueuedIngestion: vi.fn(),
   loadCrawlerState: vi.fn(),
   loadExtensionSyncState: vi.fn(),
   reconcileStoredCrawlerState: vi.fn(),
-  refreshActiveRecipeCache: vi.fn(),
+  refreshDefaultPlanCache: vi.fn(),
 }));
 
 vi.mock("../storage/chromeStorage", () => ({
@@ -17,9 +18,10 @@ vi.mock("../storage/chromeStorage", () => ({
 vi.mock("./api", () => ({ clearApiCollectedData: mocks.clearApiCollectedData }));
 vi.mock("./storage", () => ({ loadExtensionSyncState: mocks.loadExtensionSyncState }));
 vi.mock("./syncService", () => ({
+  flushEvaluationQueue: mocks.flushEvaluationQueue,
   flushQueuedIngestion: mocks.flushQueuedIngestion,
   reconcileStoredCrawlerState: mocks.reconcileStoredCrawlerState,
-  refreshActiveRecipeCache: mocks.refreshActiveRecipeCache,
+  refreshDefaultPlanCache: mocks.refreshDefaultPlanCache,
 }));
 
 import {
@@ -29,10 +31,12 @@ import {
 } from "./controller";
 
 const idleSyncState = {
-  version: 1 as const,
+  version: 2 as const,
   status: "idle" as const,
   queue: [],
   syncedFingerprints: {},
+  activePlan: { status: "unknown" as const },
+  evaluationQueue: [],
   activeRecipe: { status: "unknown" as const },
 };
 
@@ -47,8 +51,9 @@ describe("coordinated iteration reset", () => {
     });
     mocks.loadExtensionSyncState.mockReset().mockResolvedValue(idleSyncState);
     mocks.reconcileStoredCrawlerState.mockReset().mockResolvedValue(idleSyncState);
-    mocks.refreshActiveRecipeCache.mockReset().mockResolvedValue(idleSyncState);
+    mocks.refreshDefaultPlanCache.mockReset().mockResolvedValue(idleSyncState);
     mocks.flushQueuedIngestion.mockReset().mockResolvedValue(idleSyncState);
+    mocks.flushEvaluationQueue.mockReset().mockResolvedValue(idleSyncState);
   });
 
   afterEach(() => {

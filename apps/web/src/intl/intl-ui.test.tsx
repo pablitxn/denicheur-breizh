@@ -45,7 +45,13 @@ function installApiFixture() {
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
     if (url.endsWith("/health")) {
-      return new Response(JSON.stringify({ status: "ok", service: "denicheur-api", database: { status: "ok" }, openAiConfigured: true }), { status: 200 });
+      return new Response(JSON.stringify({
+        status: "ok",
+        service: "denicheur-api",
+        database: { status: "ok" },
+        media: { status: "ok", pending: 0, processing: 0, ready: 0, failed: 0 },
+        openAiConfigured: true,
+      }), { status: 200 });
     }
     if (url.includes("/v1/listings?")) {
       return new Response(JSON.stringify({

@@ -3,9 +3,12 @@ import { describe, expect, it } from "vitest";
 import {
   createListingKey,
   evaluationBatchResponseSchema,
+  evaluationExecutionListingResultSchema,
+  evaluationPlanDraftSchema,
   evaluationRequestSchema,
   filterListingInputSchema,
   ingestionRequestSchema,
+  intelligenceRecipeSchema,
   MAX_CRITERIA_PER_RECIPE,
   MAX_EVALUATION_IMAGE_URLS,
   MAX_LISTING_IMAGE_URLS,
@@ -13,6 +16,7 @@ import {
   listingIngestionSchema,
   parseListingKey,
   recipeDraftSchema,
+  recipeVersionSchema,
 } from "./index.js";
 
 describe("shared contracts", () => {
@@ -92,6 +96,100 @@ describe("shared contracts", () => {
     }));
 
     expect(recipeDraftSchema.safeParse({ name: "Too large", threshold: 50, criteria }).success).toBe(false);
+  });
+
+  it("rejects recipes whose criterion weights sum to zero", () => {
+    const draft = {
+      name: "No signal",
+      threshold: 50,
+      criteria: [{
+        id: "zero",
+        name: "Zero",
+        description: "This criterion cannot influence the score.",
+        weight: 0,
+        required: false,
+      }],
+    };
+
+    expect(recipeDraftSchema.safeParse(draft).success).toBe(false);
+    expect(intelligenceRecipeSchema.safeParse({
+      ...draft,
+      id: "zero-recipe",
+      version: 1,
+    }).success).toBe(false);
+    expect(recipeVersionSchema.safeParse({
+      ...draft,
+      id: "zero-recipe",
+      version: 1,
+      active: false,
+      createdAt: "2026-07-19T10:00:00.000Z",
+    }).success).toBe(false);
+  });
+
+  it("bounds evaluation plans and rejects duplicate recipe families", () => {
+    const base = {
+      name: "Search plan",
+      operator: "all" as const,
+      recipes: [{ recipeId: "house", recipeVersion: 1 }],
+    };
+
+    expect(evaluationPlanDraftSchema.safeParse(base).success).toBe(true);
+    expect(evaluationPlanDraftSchema.safeParse({
+      ...base,
+      recipes: [
+        { recipeId: "house", recipeVersion: 1 },
+        { recipeId: "house", recipeVersion: 2 },
+      ],
+    }).success).toBe(false);
+    expect(evaluationPlanDraftSchema.safeParse({
+      ...base,
+      recipes: Array.from({ length: 5 }, (_, index) => ({
+        recipeId: `recipe-${index}`,
+        recipeVersion: 1,
+      })),
+    }).success).toBe(false);
+  });
+
+  it("requires immutable evaluator provenance on successful execution steps", () => {
+    const evaluation = {
+      listingId: "leboncoin:2876543210",
+      decision: "relevant" as const,
+      score: 100,
+      summary: "Relevant.",
+      criteria: [{
+        criterionId: "garden",
+        verdict: "pass" as const,
+        reason: "The garden is mentioned.",
+        evidence: ["Garden"],
+      }],
+      missingData: [],
+      evaluatedAt: "2026-07-19T10:00:00.000Z",
+    };
+    const result = {
+      executionId: "execution-1",
+      listingId: evaluation.listingId,
+      planId: "plan-1",
+      planVersion: 1,
+      decision: "relevant",
+      score: 100,
+      summary: "ALL: relevant.",
+      evaluatedAt: evaluation.evaluatedAt,
+      steps: [{
+        recipeId: "recipe-1",
+        recipeVersion: 1,
+        status: "succeeded",
+        evaluation,
+      }],
+    };
+
+    expect(evaluationExecutionListingResultSchema.safeParse(result).success).toBe(false);
+    expect(evaluationExecutionListingResultSchema.safeParse({
+      ...result,
+      steps: [{
+        ...result.steps[0],
+        evaluator: { provider: "openai", model: "gpt-test", version: "3.0.0" },
+      }],
+    }).success).toBe(true);
   });
 
   it("allows a compatibility image alongside a full valid image gallery", () => {

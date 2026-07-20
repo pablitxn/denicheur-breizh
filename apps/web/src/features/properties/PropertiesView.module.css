@@ -112,7 +112,7 @@
   background: var(--color-surface);
 }
 
-.propertyCard:focus-visible {
+.propertyCard:has(.cardSelect:focus-visible) {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
 }
@@ -173,6 +173,7 @@
 }
 
 .propertyCard {
+  position: relative;
   display: block;
   width: 100%;
   overflow: hidden;
@@ -200,6 +201,28 @@
 
 .visualWrap {
   position: relative;
+  z-index: 2;
+  pointer-events: none;
+}
+
+.visualWrap button {
+  pointer-events: auto;
+}
+
+.cardSelect {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.cardSelect:focus-visible {
+  outline: 0;
 }
 
 .cardProvider,
@@ -209,12 +232,14 @@
 }
 
 .cardProvider {
+  z-index: 3;
   left: 10px;
   border-radius: 999px;
   background: var(--overlay-scrim);
   color: white;
   padding: 3px 9px;
   font-size: 12px;
+  pointer-events: none;
 }
 
 .cardScore {

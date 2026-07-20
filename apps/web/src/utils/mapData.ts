@@ -1,4 +1,8 @@
 import type { FeatureCollection, Point } from "geojson";
+import {
+  pointIsInAdministrativeArea,
+  type AdministrativeArea,
+} from "../features/map/mapGeography";
 import type { PropertyListing } from "../types";
 
 export interface MapCoverage {
@@ -44,6 +48,19 @@ export function propertiesWithinBounds(
       : coordinates.longitude >= bounds.west || coordinates.longitude <= bounds.east;
 
     return withinLatitude && withinLongitude;
+  });
+}
+
+export function propertiesWithinAdministrativeArea(
+  properties: PropertyListing[],
+  area: AdministrativeArea,
+): PropertyListing[] {
+  return properties.filter((property) => {
+    const coordinates = property.coordinates;
+    return coordinates !== undefined && pointIsInAdministrativeArea(
+      [coordinates.longitude, coordinates.latitude],
+      area,
+    );
   });
 }
 

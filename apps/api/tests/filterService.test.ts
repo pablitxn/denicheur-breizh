@@ -37,6 +37,16 @@ describe("buildFilterResponse", () => {
     expect(response.results[0]).toMatchObject({ decision: "review", score: 100 });
   });
 
+  it("marks a listing not relevant when a required criterion fails even above threshold", () => {
+    const request = createRequest();
+    request.recipe.threshold = 20;
+    const modelBatch = createModelBatch(request, ["fail", "pass"]);
+
+    const response = buildFilterResponse(request, modelBatch, "gpt-fixed", "3.0.0", EVALUATED_AT);
+
+    expect(response.results[0]).toMatchObject({ decision: "not-relevant", score: 25 });
+  });
+
   it("requires review with a null score when no positive-weight criterion is evaluable", () => {
     const request = createRequest();
     const modelBatch = createModelBatch(request, ["unknown", "unknown"]);

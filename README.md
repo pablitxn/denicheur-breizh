@@ -59,6 +59,7 @@ flowchart LR
   subgraph local["Local machine · 127.0.0.1"]
     api["Typed HTTP API<br/>Express · Zod"]
     sqlite[("SQLite<br/>runs · listings · recipes · evaluations")]
+    minio[("MinIO · optional<br/>private listing media")]
   end
 
   leboncoin["Leboncoin<br/>visible native UI"]
@@ -69,6 +70,7 @@ flowchart LR
   extension -->|"idempotent batches"| api
   web <-->|"typed queries"| api
   api <--> sqlite
+  api <--> minio
   api -.->|"evaluation; server-side key"| openai
   web -.->|"opt-in Realtime WebRTC"| openai
 ```
@@ -135,14 +137,51 @@ Set `OPENAI_API_KEY` in `apps/api/.env`. The key is read only by the API and mus
 |---|---|---|
 | `OPENAI_API_KEY` | unset | Enables listing evaluation and Realtime session creation. |
 | `OPENAI_FILTER_MODEL` | pinned in `apps/api/.env.example` | Selects the server-side evaluation model. |
+| `FILTER_API_HOST` | `127.0.0.1` | Bind address; use `0.0.0.0` only inside an authenticated container/network boundary. |
 | `FILTER_API_PORT` | `4310` | Changes the localhost API port. |
 | `DENICHEUR_DB_PATH` | `.data/denicheur.sqlite` | Changes the private SQLite path; use `:memory:` for isolated runs. |
 | `FILTER_API_ALLOWED_ORIGINS` | local web + pinned extension | Replaces the exact CORS allowlist. |
+| `MEDIA_STORAGE_MODE` | `disabled` | Enables asynchronous image mirroring when set to `minio`; production requires it. |
+| `MEDIA_S3_ENDPOINT` | unset | S3-compatible endpoint; use `http://127.0.0.1:9000` with the local Compose service. |
+| `MEDIA_S3_BUCKET` | unset | Private media bucket; the provided bootstrap creates `denicheur-breizh-media`. |
+| `MEDIA_S3_REGION` | unset | S3 signing region; local MinIO uses `us-east-1`. |
+| `MEDIA_S3_ACCESS_KEY_ID` / `MEDIA_S3_SECRET_ACCESS_KEY` | unset | Server-only media credentials; the example values are local-development defaults. |
+| `MEDIA_S3_FORCE_PATH_STYLE` | `true` | Uses path-style requests for MinIO compatibility. |
 | `VITE_API_BASE_URL` | `http://127.0.0.1:4310` | Points the web client at the API. |
 | `VITE_ENABLE_REALTIME` | `false` | Reveals the experimental voice workspace. |
-| `WXT_FILTER_API_URL` | `http://127.0.0.1:4310` | Points the extension at the API. |
+| Extension API URL / operator token | local runtime storage | Configured in the extension dashboard; never embedded in its build. |
 
 </details>
+
+### Optional local media mirror
+
+To keep listing images in the private local MinIO bucket, copy the API example environment, enable its media mode, and start the dedicated Compose project:
+
+```bash
+cp apps/api/.env.example apps/api/.env
+# In apps/api/.env, set MEDIA_STORAGE_MODE=minio.
+docker compose --env-file apps/api/.env -f compose.media.yml up -d
+docker compose --env-file apps/api/.env -f compose.media.yml ps -a
+pnpm dev
+```
+
+MinIO serves its S3 API at [http://127.0.0.1:9000](http://127.0.0.1:9000) and its local console at [http://127.0.0.1:9001](http://127.0.0.1:9001); both published ports are bound to loopback only. The bootstrap service exits successfully after creating the private `denicheur-breizh-media` bucket and a user restricted to listing, reading, writing, and deleting objects in that bucket. Re-running the command is safe and preserves objects in the named volume.
+
+The extension still sends the original Leboncoin URLs. Ingestion returns without waiting for downloads; the API worker validates and stores each original plus 480 px and 1280 px WebP variants. The web app uses API-served variants when ready and keeps the source URL as a temporary fallback. `pnpm db:clean` removes mirrored objects before clearing SQLite and fails safely with `503` if MinIO cannot be reached.
+
+Once the local MinIO Compose project is healthy, its real S3 integration suite is explicitly opt-in:
+
+```bash
+pnpm --filter @denicheur-breizh/api test:integration:minio
+```
+
+The command loads the configured local `MEDIA_S3_*` values and refuses non-loopback endpoints. Regular test runs skip this suite without contacting MinIO.
+
+Stop the service without deleting stored media:
+
+```bash
+docker compose --env-file apps/api/.env -f compose.media.yml down
+```
 
 ## The workspace
 
@@ -207,6 +246,7 @@ Manual acceptance procedures:
 |---|---|
 | Core workspace | Web app and extension talk to the API over localhost; the extension talks to Leboncoin only during a user-started collection. |
 | AI evaluation | The API sends the requested recipe and normalized listing evidence to OpenAI, validates the response, and stores the result locally. |
+| Media mirror | The API downloads allowlisted Leboncoin CDN images and stores originals plus WebP variants in the private MinIO bucket; browsers receive them through API routes. |
 | Realtime voice | The browser joins an explicitly started OpenAI WebRTC session; the API authenticates session creation without revealing the key. |
 
 Re-ingesting the same `source + externalId` is idempotent. Sparse, newer observations do not erase richer earlier fields, and evaluation failure never blocks persistence. See the [API reference](apps/api/README.md) for endpoints, contracts, migrations, and configuration details.
@@ -234,6 +274,7 @@ This validates the OpenAI-backed extension → API → storage path. It is separ
 
 ```text
 denicheur-breizh/
+├── compose.media.yml    # optional private MinIO + idempotent bucket bootstrap
 ├── apps/
 │   ├── api/             # localhost Express API, SQLite, OpenAI boundary
 │   ├── extension/       # WXT + React Chrome MV3 extension
