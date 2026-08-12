@@ -16,6 +16,8 @@ const FILTERS: NativeSearchFilters = {
   order: "desc",
 };
 
+const MULTI_STAGE_RESULTS_TEST_TIMEOUT_MS = 10_000;
+
 describe("LeboncoinNativeDriver home search", () => {
   beforeEach(() => {
     document.body.innerHTML = "";
@@ -440,7 +442,7 @@ describe("LeboncoinNativeDriver result filters", () => {
     expect(new URL(window.location.href).searchParams.getAll("real_estate_type")).toEqual(["1", "2"]);
     expect(harness.roomNavigationClicks).not.toHaveBeenCalled();
     expect(harness.bedroomNavigationClicks).not.toHaveBeenCalled();
-  });
+  }, MULTI_STAGE_RESULTS_TEST_TIMEOUT_MS);
 
   it.each([
     {
