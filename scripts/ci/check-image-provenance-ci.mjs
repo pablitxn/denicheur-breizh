@@ -236,6 +236,26 @@ export function validateCiSupplyChain({ ci, common, sign, cryptography, semantic
   );
   requireMatch(
     ci,
+    /^  KUBERNETES_CPU_LIMIT: "1"$/m,
+    "CI jobs must retain the runner-quota CPU cap",
+  );
+  requireMatch(
+    ci,
+    /^  KUBERNETES_HELPER_CPU_LIMIT: "100m"$/m,
+    "CI helper jobs must retain the runner-quota CPU cap",
+  );
+  requireMatch(
+    ci,
+    /^  KUBERNETES_MEMORY_LIMIT: "1Gi"$/m,
+    "CI jobs must retain teardown headroom under the runner memory quota",
+  );
+  requireMatch(
+    ci,
+    /^  KUBERNETES_HELPER_MEMORY_LIMIT: "128Mi"$/m,
+    "CI helper jobs must retain teardown headroom under the runner memory quota",
+  );
+  requireMatch(
+    ci,
     new RegExp(`REGISTRY_PUSH_HOST: ${CANONICAL_REGISTRY_HOST.replaceAll(".", "\\.")}`),
     "image pushes must use the TLS certificate's canonical registry hostname",
   );
@@ -245,6 +265,11 @@ export function validateCiSupplyChain({ ci, common, sign, cryptography, semantic
     "image evidence must use the canonical registry hostname",
   );
   const workspaceBlock = requiredBlock(blocks, "check-workspace");
+  requireMatch(
+    workspaceBlock,
+    /^    TURBO_CONCURRENCY: "1"$/m,
+    "workspace tasks must remain serialized within the single-CPU runner pod",
+  );
   requireMatch(workspaceBlock, /test -z "\$\{COSIGN_PRIVATE_KEY_FILE:-\}" && test -z "\$\{COSIGN_PASSWORD:-\}"/, "workspace validation must reject mis-scoped private signing variables before dependency installation");
   requireMatch(
     ci,
@@ -544,6 +569,12 @@ function runSelfTest(sources) {
   })));
   expectRejected("runner quota lock removed", () => validateCiSupplyChain(mutate({
     ci: sources.ci.replaceAll("  resource_group: denicheur-breizh-ci\n", ""),
+  })));
+  expectRejected("runner memory cap raised", () => validateCiSupplyChain(mutate({
+    ci: sources.ci.replace('  KUBERNETES_MEMORY_LIMIT: "1Gi"', '  KUBERNETES_MEMORY_LIMIT: "2Gi"'),
+  })));
+  expectRejected("workspace task serialization removed", () => validateCiSupplyChain(mutate({
+    ci: sources.ci.replace('    TURBO_CONCURRENCY: "1"', '    TURBO_CONCURRENCY: "10"'),
   })));
   expectRejected("non-canonical registry push hostname", () => validateCiSupplyChain(mutate({
     ci: sources.ci.replace(

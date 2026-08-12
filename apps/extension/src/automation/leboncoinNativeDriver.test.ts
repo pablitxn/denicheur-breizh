@@ -16,7 +16,8 @@ const FILTERS: NativeSearchFilters = {
   order: "desc",
 };
 
-const MULTI_STAGE_RESULTS_TEST_TIMEOUT_MS = 10_000;
+const DOM_CONVERGENCE_TEST_TIMEOUT_MS = 15_000;
+const MULTI_NAVIGATION_TEST_TIMEOUT_MS = 30_000;
 
 describe("LeboncoinNativeDriver home search", () => {
   beforeEach(() => {
@@ -164,7 +165,7 @@ describe("LeboncoinNativeDriver home search", () => {
     expect(harness.categoryOptionClicks).not.toHaveBeenCalled();
     expect(harness.locationOptionClicks).not.toHaveBeenCalled();
     expect(harness.submitClicks).not.toHaveBeenCalled();
-  });
+  }, DOM_CONVERGENCE_TEST_TIMEOUT_MS);
 
   it("does not activate a home filter control that can submit or navigate before the ACK", async () => {
     const harness = installAccessibleHome({ includeConsent: false, includeNativeFilters: true });
@@ -213,7 +214,7 @@ describe("LeboncoinNativeDriver home search", () => {
     expect(harness.categoryOptionClicks).toHaveBeenCalledOnce();
     expect(harness.locationOptionClicks).not.toHaveBeenCalled();
     expect(harness.submitClicks).not.toHaveBeenCalled();
-  });
+  }, DOM_CONVERGENCE_TEST_TIMEOUT_MS);
 
   it("stops immediately when a challenge appears while observing location suggestions", async () => {
     const harness = installAccessibleHome({ includeConsent: false, includeNativeFilters: true });
@@ -327,7 +328,7 @@ describe("LeboncoinNativeDriver home search", () => {
     });
     expect(harness.recentSearchClicks).not.toHaveBeenCalled();
     expect(harness.submitClicks).not.toHaveBeenCalled();
-  });
+  }, DOM_CONVERGENCE_TEST_TIMEOUT_MS);
 
   it("keeps a challenged post-ACK home submit rearmable until one click executes", async () => {
     const harness = installAccessibleHome({ includeConsent: false });
@@ -442,7 +443,7 @@ describe("LeboncoinNativeDriver result filters", () => {
     expect(new URL(window.location.href).searchParams.getAll("real_estate_type")).toEqual(["1", "2"]);
     expect(harness.roomNavigationClicks).not.toHaveBeenCalled();
     expect(harness.bedroomNavigationClicks).not.toHaveBeenCalled();
-  }, MULTI_STAGE_RESULTS_TEST_TIMEOUT_MS);
+  }, MULTI_NAVIGATION_TEST_TIMEOUT_MS);
 
   it.each([
     {
@@ -482,7 +483,7 @@ describe("LeboncoinNativeDriver result filters", () => {
 
     expect(harness.propertyTypeValidationClicks).toHaveBeenCalledOnce();
     expect(new URL(window.location.href).searchParams.getAll("real_estate_type")).toEqual(expected);
-  });
+  }, DOM_CONVERGENCE_TEST_TIMEOUT_MS);
 
   it("uses the property validation captured from its own root instead of a global decoy", async () => {
     const harness = installAccessibleResults();
@@ -709,7 +710,7 @@ describe("LeboncoinNativeDriver result filters", () => {
     expect(harness.applyClicks).toHaveBeenCalledOnce();
     expect(harness.closeFilterClicks).toHaveBeenCalledOnce();
     expect(document.querySelector<HTMLElement>("#filter-dialog")?.hidden).toBe(true);
-  });
+  }, MULTI_NAVIGATION_TEST_TIMEOUT_MS);
 
   it("opens the collapsed Nombre de pièces group and accepts unit-bearing option names", async () => {
     installAccessibleResults();

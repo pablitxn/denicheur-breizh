@@ -33,7 +33,9 @@ variables:
   # namespace's 2500m CPU quota: 2 * (1000m build + 100m helper) = 2200m.
   KUBERNETES_CPU_LIMIT: "1"
   KUBERNETES_MEMORY_REQUEST: "256Mi"
-  KUBERNETES_MEMORY_LIMIT: "2Gi"
+  # The observed shared-namespace teardown high-water mark was 3584Mi. A new
+  # 1024Mi build plus its 128Mi helper still fits below the 5Gi quota.
+  KUBERNETES_MEMORY_LIMIT: "1Gi"
   KUBERNETES_HELPER_CPU_REQUEST: "50m"
   KUBERNETES_HELPER_CPU_LIMIT: "100m"
   KUBERNETES_HELPER_MEMORY_REQUEST: "64Mi"
@@ -74,9 +76,13 @@ workflow:
 
 check-workspace:
   stage: validate
-  # Every real job uses this project-wide lock. The 1100m CPU cap including
-  # helper also leaves teardown headroom for one terminating predecessor pod.
+  # Every real job uses this project-wide lock. CPU, memory and inner Turbo
+  # serialization leave teardown headroom for a terminating predecessor pod.
   resource_group: denicheur-breizh-ci
+  variables:
+    # The runner grants one CPU, so do not let Turbo contend API, web and
+    # extension tasks against each other inside the same pod.
+    TURBO_CONCURRENCY: "1"
   image: node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
   rules: *validation-rules
   cache:
