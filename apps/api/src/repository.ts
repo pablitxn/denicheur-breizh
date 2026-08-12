@@ -1,12 +1,24 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import {
+  closeSync,
+  constants,
+  fchmodSync,
+  fstatSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  realpathSync,
+  type Stats,
+} from "node:fs";
+import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
 import {
   createListingKey,
   evaluatorSchema,
   evaluationExecutionListingResultSchema,
+  evaluationExecutionBudgetSchema,
+  evaluationExecutionResourceUsageSchema,
   evaluationExecutionRecordSchema,
   evaluationExecutionResultsSchema,
   evaluationExecutionsPageSchema,
@@ -21,10 +33,13 @@ import {
   recipeVersionSchema,
   resolvedEvaluationPlanVersionSchema,
   runDetailSchema,
+  runListingsPageSchema,
   runIngestionSchema,
   runRecordSchema,
   type EvaluationRequest,
   type EvaluationExecutionCreateRequest,
+  type EvaluationExecutionBudget,
+  type EvaluationExecutionResourceUsage,
   type EvaluationExecutionListingResult,
   type EvaluationExecutionRecord,
   type EvaluationExecutionResults,
@@ -51,6 +66,8 @@ import {
   type RecipeVersion,
   type ResolvedEvaluationPlanVersion,
   type RunDetail,
+  type RunListingsPage,
+  type RunListingsQuery,
   type RunIngestion,
   type RunRecord,
   type RunsPage,
@@ -58,6 +75,11 @@ import {
   type VerifiedCoordinates,
 } from "./contracts.js";
 import { ApiError } from "./errors.js";
+import { addUsage, exceedsUsage, subtractUsage } from "./evaluationBudget.js";
+import type {
+  GlobalProviderBudgetStore,
+  GlobalProviderCallReservation,
+} from "./globalProviderBudget.js";
 
 interface Migration {
   readonly version: number;
@@ -337,6 +359,114 @@ export const DATABASE_MIGRATIONS: readonly Migration[] = [
       CREATE INDEX media_assets_status_idx ON media_assets(status, updated_at);
     `,
   },
+  {
+    version: 5,
+    sql: `
+      CREATE TABLE evaluation_execution_budgets (
+        execution_id TEXT PRIMARY KEY REFERENCES evaluation_executions(id) ON DELETE CASCADE,
+        limit_json TEXT NOT NULL CHECK (json_valid(limit_json)),
+        estimate_json TEXT NOT NULL CHECK (json_valid(estimate_json)),
+        consumed_json TEXT NOT NULL CHECK (json_valid(consumed_json)),
+        updated_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE TABLE evaluation_provider_call_reservations (
+        id TEXT PRIMARY KEY,
+        execution_id TEXT NOT NULL REFERENCES evaluation_executions(id) ON DELETE CASCADE,
+        reserved_json TEXT NOT NULL CHECK (json_valid(reserved_json)),
+        settled INTEGER NOT NULL DEFAULT 0 CHECK (settled IN (0, 1)),
+        created_at TEXT NOT NULL,
+        settled_at TEXT
+      ) STRICT;
+
+      CREATE INDEX evaluation_provider_reservations_execution_idx
+        ON evaluation_provider_call_reservations(execution_id, settled, created_at);
+
+      INSERT INTO evaluation_execution_budgets (
+        execution_id, limit_json, estimate_json, consumed_json, updated_at
+      )
+      SELECT id,
+        '{"providerCalls":10000,"inputTokens":100000000,"outputTokens":100000000,"costMicroUsd":1000000000}',
+        '{"providerCalls":0,"inputTokens":0,"outputTokens":0,"costMicroUsd":0}',
+        '{"providerCalls":0,"inputTokens":0,"outputTokens":0,"costMicroUsd":0}',
+        updated_at
+      FROM evaluation_executions;
+
+      CREATE TABLE media_gc_tombstones (
+        asset_id TEXT PRIMARY KEY REFERENCES media_assets(id) ON DELETE CASCADE,
+        status TEXT NOT NULL CHECK (status IN ('pending', 'deleting')),
+        attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+        next_attempt_at TEXT NOT NULL,
+        lease_owner TEXT,
+        lease_expires_at TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+
+      CREATE INDEX media_gc_claim_idx
+        ON media_gc_tombstones(status, next_attempt_at, lease_expires_at, created_at);
+
+      CREATE TABLE run_media_admissions (
+        run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+        asset_id TEXT NOT NULL CHECK (length(asset_id) = 64),
+        admitted_at TEXT NOT NULL,
+        PRIMARY KEY (run_id, asset_id)
+      ) STRICT;
+
+      CREATE INDEX run_media_admissions_asset_idx
+        ON run_media_admissions(asset_id, run_id);
+    `,
+  },
+  {
+    version: 6,
+    sql: `
+      CREATE INDEX run_listings_run_page_idx
+        ON run_listings(run_id, observed_at DESC, source ASC, external_id ASC);
+    `,
+  },
+  {
+    version: 7,
+    sql: `
+      ALTER TABLE media_assets ADD COLUMN storage_generation TEXT;
+
+      UPDATE media_assets
+      SET storage_generation = lower(hex(randomblob(16)))
+      WHERE storage_generation IS NULL;
+
+      CREATE INDEX media_assets_storage_generation_idx
+        ON media_assets(storage_generation);
+    `,
+  },
+  {
+    version: 8,
+    sql: `
+      CREATE TABLE global_provider_call_reservations (
+        id TEXT PRIMARY KEY,
+        created_at TEXT NOT NULL,
+        settled INTEGER NOT NULL DEFAULT 0 CHECK (settled IN (0, 1)),
+        provider_calls INTEGER NOT NULL CHECK (provider_calls >= 0),
+        input_tokens INTEGER NOT NULL CHECK (input_tokens >= 0),
+        output_tokens INTEGER NOT NULL CHECK (output_tokens >= 0),
+        cost_micro_usd INTEGER NOT NULL CHECK (cost_micro_usd >= 0),
+        settled_at TEXT
+      ) STRICT;
+
+      CREATE INDEX global_provider_reservations_window_idx
+        ON global_provider_call_reservations(created_at);
+    `,
+  },
+  {
+    version: 9,
+    sql: `
+      CREATE TABLE collected_data_cleanup_lease (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        lease_owner TEXT NOT NULL,
+        lease_expires_at TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      ) STRICT;
+    `,
+  },
 ];
 
 interface StoredListingRow extends Record<string, unknown> {
@@ -449,12 +579,34 @@ interface StoredMediaAssetRow extends Record<string, unknown> {
   readonly height: number | null;
   readonly error_code: string | null;
   readonly error_message: string | null;
+  readonly storage_generation: string;
+}
+
+interface MediaGlobalUsage {
+  readonly pendingJobs: number;
+  readonly reservedBytes: number;
 }
 
 interface StoredMediaJobRow extends Record<string, unknown> {
   readonly asset_id: string;
   readonly source_url: string;
   readonly attempts: number;
+}
+
+interface StoredEvaluationExecutionBudgetRow extends Record<string, unknown> {
+  readonly limit_json: string;
+  readonly estimate_json: string;
+  readonly consumed_json: string;
+}
+
+interface StoredMediaGarbageRow extends Record<string, unknown> {
+  readonly asset_id: string;
+  readonly attempts: number;
+  readonly lease_owner: string | null;
+  readonly original_object_key: string | null;
+  readonly thumbnail_object_key: string | null;
+  readonly gallery_object_key: string | null;
+  readonly object_keys_json: string;
 }
 
 export interface EvaluationAttemptInput {
@@ -479,7 +631,22 @@ export interface EvaluationAttemptFailure {
 export interface RepositoryOptions {
   readonly path: string;
   readonly now?: () => Date;
+  readonly mediaAdmission?: Partial<MediaAdmissionPolicy>;
 }
+
+export interface MediaAdmissionPolicy {
+  readonly maxAssetsPerRun: number;
+  readonly maxPendingJobs: number;
+  readonly maxReservedBytes: number;
+  readonly reservedBytesPerAsset: number;
+}
+
+export const DEFAULT_MEDIA_ADMISSION_POLICY: MediaAdmissionPolicy = {
+  maxAssetsPerRun: 500,
+  maxPendingJobs: 1_000,
+  maxReservedBytes: 5 * 1024 * 1024 * 1024,
+  reservedBytesPerAsset: 20 * 1024 * 1024,
+};
 
 export interface MediaHealthCounts {
   readonly pending: number;
@@ -491,6 +658,13 @@ export interface MediaHealthCounts {
 export interface MediaJob {
   readonly assetId: string;
   readonly sourceUrl: string;
+  readonly attempt: number;
+  readonly leaseOwner: string;
+}
+
+export interface MediaGarbageCollectionJob {
+  readonly assetId: string;
+  readonly objectKeys: readonly string[];
   readonly attempt: number;
   readonly leaseOwner: string;
 }
@@ -526,7 +700,13 @@ export interface CreateEvaluationExecutionInput {
   readonly listingIds: readonly string[];
   readonly idempotencyKey: string;
   readonly requestFingerprint: string;
+  readonly budget: EvaluationExecutionBudget;
   readonly retryOfExecutionId?: string;
+}
+
+export interface EvaluationProviderCallReservation {
+  readonly id: string;
+  readonly reserved: EvaluationExecutionResourceUsage;
 }
 
 export interface CreateEvaluationExecutionResult {
@@ -572,6 +752,11 @@ export interface CollectedDataCounts {
   readonly evaluations: number;
 }
 
+export interface CollectedDataCleanupLease {
+  readonly leaseOwner: string;
+  readonly objectKeys: readonly string[];
+}
+
 export interface ClearCollectedDataOptions {
   readonly allowActiveRun?: boolean;
 }
@@ -585,20 +770,45 @@ const ACTIVE_RUN_STATUSES = [
   "paused-captcha",
 ] as const;
 const ABANDONED_EVALUATION_ATTEMPT_AFTER_MS = 15 * 60 * 1_000;
+const MEDIA_GC_LEASE_DURATION_MS = 5 * 60_000;
+const COLLECTED_DATA_CLEANUP_LEASE_DURATION_MS = 5 * 60_000;
+const PRIVATE_DATABASE_DIRECTORY_MODE = 0o700;
+const PRIVATE_DATABASE_FILE_MODE = 0o600;
 
-export class DenicheurRepository {
+interface PrivateDatabaseHandle {
+  readonly database: DatabaseSync;
+  readonly databasePath: string;
+  readonly directoryPath: string;
+  readonly databaseDescriptor: number;
+  readonly directoryDescriptor: number;
+}
+
+export class DenicheurRepository implements GlobalProviderBudgetStore {
   private readonly database: DatabaseSync;
   private readonly now: () => Date;
+  private readonly mediaAdmission: MediaAdmissionPolicy;
 
   constructor(options: RepositoryOptions) {
-    if (options.path !== ":memory:") mkdirSync(dirname(options.path), { recursive: true });
-    this.database = new DatabaseSync(options.path, { timeout: 5_000 });
+    const privateDatabase = options.path === ":memory:"
+      ? undefined
+      : openPrivateDatabase(options.path);
+    this.database = privateDatabase?.database ?? new DatabaseSync(options.path, { timeout: 5_000 });
     this.now = options.now ?? (() => new Date());
-    this.database.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;");
-    this.migrate();
-    this.backfillListingMedia();
-    this.seedDefaultEvaluationPlan();
-    this.reconcileAbandonedEvaluationAttempts();
+    this.mediaAdmission = { ...DEFAULT_MEDIA_ADMISSION_POLICY, ...options.mediaAdmission };
+    try {
+      this.database.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;");
+      assertMediaAdmissionPolicy(this.mediaAdmission);
+      this.migrate();
+      if (!this.isCollectedDataCleanupActive()) this.reconcileLegacyMedia();
+      this.seedDefaultEvaluationPlan();
+      this.reconcileAbandonedEvaluationAttempts();
+      if (privateDatabase) hardenPrivateDatabaseFiles(privateDatabase);
+    } catch (error) {
+      this.database.close();
+      throw error;
+    } finally {
+      if (privateDatabase) releasePrivateDatabaseHandle(privateDatabase);
+    }
   }
 
   close(): void {
@@ -613,9 +823,18 @@ export class DenicheurRepository {
     }
   }
 
+  isCollectedDataCleanupActive(): boolean {
+    return Boolean(this.database.prepare(
+      "SELECT 1 FROM collected_data_cleanup_lease WHERE singleton = 1",
+    ).get());
+  }
+
   mediaHealthCounts(): MediaHealthCounts {
     const rows = this.database.prepare(`
-      SELECT status, COUNT(*) AS total FROM media_assets GROUP BY status
+      SELECT a.status, COUNT(*) AS total
+      FROM media_assets a
+      WHERE EXISTS (SELECT 1 FROM listing_media lm WHERE lm.asset_id = a.id)
+      GROUP BY a.status
     `).all();
     const counts: Record<keyof MediaHealthCounts, number> = {
       pending: 0,
@@ -631,7 +850,11 @@ export class DenicheurRepository {
   }
 
   getMediaAsset(assetId: string): MediaAssetRecord | undefined {
-    const row = this.database.prepare("SELECT * FROM media_assets WHERE id = ?")
+    const row = this.database.prepare(`
+      SELECT a.* FROM media_assets a
+      WHERE a.id = ?
+        AND EXISTS (SELECT 1 FROM listing_media lm WHERE lm.asset_id = a.id)
+    `)
       .get(assetId) as StoredMediaAssetRow | undefined;
     return row ? mapMediaAsset(row) : undefined;
   }
@@ -649,8 +872,154 @@ export class DenicheurRepository {
     ].filter((key): key is string => Boolean(key))));
   }
 
+  beginCollectedDataCleanup(options: ClearCollectedDataOptions = {}): CollectedDataCleanupLease {
+    return this.transaction(() => {
+      const now = this.now();
+      const nowIso = now.toISOString();
+      const existing = this.database.prepare(`
+        SELECT lease_expires_at FROM collected_data_cleanup_lease WHERE singleton = 1
+      `).get() as { lease_expires_at: string } | undefined;
+      if (existing && existing.lease_expires_at > nowIso) {
+        throw new ApiError(409, "MEDIA_CLEANUP_IN_PROGRESS", "Collected data cleanup is already in progress.");
+      }
+
+      this.assertCollectedDataCanBeCleared(options);
+      const processing = this.database.prepare(`
+        SELECT asset_id FROM media_jobs WHERE status = 'processing' ORDER BY asset_id LIMIT 1
+      `).get() as { asset_id: string } | undefined;
+      if (processing) {
+        throw new ApiError(
+          409,
+          "ACTIVE_MEDIA_JOB",
+          `Media asset ${processing.asset_id} is still processing. Wait for it to finish before clearing data.`,
+        );
+      }
+
+      const leaseOwner = `collected-data-cleanup:${randomUUID()}`;
+      const leaseExpiresAt = new Date(
+        now.getTime() + COLLECTED_DATA_CLEANUP_LEASE_DURATION_MS,
+      ).toISOString();
+      this.database.prepare(`
+        INSERT INTO collected_data_cleanup_lease (
+          singleton, lease_owner, lease_expires_at, started_at, updated_at
+        ) VALUES (1, ?, ?, ?, ?)
+        ON CONFLICT(singleton) DO UPDATE SET
+          lease_owner = excluded.lease_owner,
+          lease_expires_at = excluded.lease_expires_at,
+          started_at = excluded.started_at,
+          updated_at = excluded.updated_at
+      `).run(leaseOwner, leaseExpiresAt, nowIso, nowIso);
+      return { leaseOwner, objectKeys: this.listMediaObjectKeys() };
+    });
+  }
+
+  renewCollectedDataCleanup(leaseOwner: string): void {
+    this.transaction(() => {
+      const now = this.now();
+      const renewed = this.database.prepare(`
+        UPDATE collected_data_cleanup_lease
+        SET lease_expires_at = ?, updated_at = ?
+        WHERE singleton = 1 AND lease_owner = ?
+      `).run(
+        new Date(now.getTime() + COLLECTED_DATA_CLEANUP_LEASE_DURATION_MS).toISOString(),
+        now.toISOString(),
+        leaseOwner,
+      );
+      if (renewed.changes !== 1) {
+        throw new ApiError(
+          409,
+          "MEDIA_CLEANUP_LEASE_LOST",
+          "Collected data cleanup ownership was lost before it could finish.",
+        );
+      }
+    });
+  }
+
+  releaseCollectedDataCleanup(leaseOwner: string): void {
+    this.database.prepare(`
+      DELETE FROM collected_data_cleanup_lease WHERE singleton = 1 AND lease_owner = ?
+    `).run(leaseOwner);
+  }
+
+  claimMediaGarbage(leaseOwner: string): MediaGarbageCollectionJob | undefined {
+    return this.transaction(() => {
+      if (this.isCollectedDataCleanupActive()) return undefined;
+      const now = this.now();
+      const nowIso = now.toISOString();
+      const row = this.database.prepare(`
+        SELECT tombstone.asset_id, tombstone.attempts, tombstone.lease_owner,
+          asset.original_object_key, asset.thumbnail_object_key, asset.gallery_object_key,
+          asset.object_keys_json
+        FROM media_gc_tombstones tombstone
+        JOIN media_assets asset ON asset.id = tombstone.asset_id
+        LEFT JOIN media_jobs job ON job.asset_id = tombstone.asset_id
+        WHERE (
+          (tombstone.status = 'pending' AND tombstone.next_attempt_at <= ?)
+          OR (
+            tombstone.status = 'deleting'
+            AND (tombstone.lease_expires_at IS NULL OR tombstone.lease_expires_at <= ?)
+          )
+        )
+          AND NOT EXISTS (SELECT 1 FROM listing_media lm WHERE lm.asset_id = tombstone.asset_id)
+          AND (job.status IS NULL OR job.status <> 'processing')
+        ORDER BY tombstone.next_attempt_at ASC, tombstone.created_at ASC, tombstone.asset_id ASC
+        LIMIT 1
+      `).get(nowIso, nowIso) as StoredMediaGarbageRow | undefined;
+      if (!row) return undefined;
+
+      const attempt = row.attempts + 1;
+      const leaseToken = `${leaseOwner}:${randomUUID()}`;
+      const leaseExpiresAt = new Date(now.getTime() + MEDIA_GC_LEASE_DURATION_MS).toISOString();
+      this.database.prepare(`
+        UPDATE media_gc_tombstones
+        SET status = 'deleting', attempts = ?, lease_owner = ?, lease_expires_at = ?, updated_at = ?
+        WHERE asset_id = ?
+      `).run(attempt, leaseToken, leaseExpiresAt, nowIso, row.asset_id);
+      const protectedKeys = new Set((this.database.prepare(`
+        SELECT asset.*, tombstone.status AS gc_status
+        FROM media_assets asset
+        LEFT JOIN media_gc_tombstones tombstone ON tombstone.asset_id = asset.id
+        WHERE asset.id <> ?
+      `).all(row.asset_id) as Array<StoredMediaAssetRow & { gc_status: string | null }>)
+        .filter((asset) => asset.gc_status !== "deleting")
+        .flatMap(mediaObjectKeys));
+      return {
+        assetId: row.asset_id,
+        objectKeys: mediaObjectKeys(row).filter((key) => !protectedKeys.has(key)),
+        attempt,
+        leaseOwner: leaseToken,
+      };
+    });
+  }
+
+  completeMediaGarbage(assetId: string, leaseOwner: string): void {
+    this.transaction(() => {
+      this.assertMediaGarbageLease(assetId, leaseOwner);
+      if (this.database.prepare("SELECT 1 FROM listing_media WHERE asset_id = ? LIMIT 1").get(assetId)) {
+        this.database.prepare("DELETE FROM media_gc_tombstones WHERE asset_id = ?").run(assetId);
+        return;
+      }
+      this.database.prepare("DELETE FROM media_jobs WHERE asset_id = ?").run(assetId);
+      this.database.prepare(`
+        DELETE FROM media_assets
+        WHERE id = ? AND NOT EXISTS (SELECT 1 FROM listing_media lm WHERE lm.asset_id = media_assets.id)
+      `).run(assetId);
+    });
+  }
+
+  failMediaGarbage(assetId: string, leaseOwner: string, retryDelayMs: number): void {
+    this.assertMediaGarbageLease(assetId, leaseOwner);
+    const now = this.now();
+    this.database.prepare(`
+      UPDATE media_gc_tombstones
+      SET status = 'pending', next_attempt_at = ?, lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+      WHERE asset_id = ? AND lease_owner = ?
+    `).run(new Date(now.getTime() + retryDelayMs).toISOString(), now.toISOString(), assetId, leaseOwner);
+  }
+
   claimMediaJob(leaseOwner: string, leaseDurationMs: number): MediaJob | undefined {
     return this.transaction(() => {
+      if (this.isCollectedDataCleanupActive()) return undefined;
       const now = this.now();
       const nowIso = now.toISOString();
       const row = this.database.prepare(`
@@ -688,14 +1057,15 @@ export class DenicheurRepository {
     return this.transaction(() => {
       const now = this.now().toISOString();
       const assetRows = this.database.prepare(`
-        SELECT asset_id FROM media_jobs WHERE status = 'processing'
-      `).all();
+        SELECT asset_id FROM media_jobs
+        WHERE status = 'processing' AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+      `).all(now);
       if (!assetRows.length) return 0;
       this.database.prepare(`
         UPDATE media_jobs
         SET status = 'pending', next_attempt_at = ?, lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
-        WHERE status = 'processing'
-      `).run(now, now);
+        WHERE status = 'processing' AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+      `).run(now, now, now);
       this.database.prepare(`
         UPDATE media_assets
         SET status = 'pending', updated_at = ?
@@ -706,47 +1076,80 @@ export class DenicheurRepository {
     });
   }
 
-  stageMediaJobObjects(assetId: string, leaseOwner: string, completed: CompletedMediaAsset): void {
-    this.transaction(() => {
+  stageMediaJobObjects(assetId: string, leaseOwner: string, completed: CompletedMediaAsset): CompletedMediaAsset {
+    return this.transaction(() => {
+      this.assertCollectedDataCleanupInactive();
       this.assertMediaJobLease(assetId, leaseOwner);
-      const row = this.database.prepare("SELECT object_keys_json FROM media_assets WHERE id = ?")
-        .get(assetId) as { object_keys_json: string } | undefined;
+      const row = this.database.prepare("SELECT * FROM media_assets WHERE id = ?")
+        .get(assetId) as StoredMediaAssetRow | undefined;
       if (!row) throw new Error("The staged media asset no longer exists.");
+      const isolated = this.storageIsolatedCompletedMedia(assetId, row, completed);
+      const storedCompleted = isolated.completed;
       const objectKeys = uniqueStrings([
         ...parseMediaObjectKeys(row.object_keys_json),
-        completed.originalObjectKey,
-        completed.thumbnailObjectKey,
-        completed.galleryObjectKey,
+        storedCompleted.originalObjectKey,
+        storedCompleted.thumbnailObjectKey,
+        storedCompleted.galleryObjectKey,
       ]);
+      this.assertMediaObjectKeysAreNotBeingDeleted(assetId, objectKeys);
+      const actualBytes = completedMediaSize(storedCompleted);
+      const currentBytes = this.mediaReservedBytes();
+      const projectedBytes = currentBytes
+        - storedMediaAssetBytes(row, this.mediaAdmission.reservedBytesPerAsset)
+        + actualBytes;
+      if (
+        projectedBytes > this.mediaAdmission.maxReservedBytes
+        && projectedBytes > currentBytes
+      ) {
+        throw new ApiError(
+          507,
+          "MEDIA_STORAGE_BUDGET_EXCEEDED",
+          "The processed media asset would exceed the configured storage budget.",
+          { retryable: false },
+        );
+      }
       this.database.prepare(`
         UPDATE media_assets SET
-          content_sha256 = ?, source_mime_type = ?,
+          content_sha256 = ?, source_mime_type = ?, storage_generation = ?,
           original_object_key = ?, thumbnail_object_key = ?, gallery_object_key = ?,
           object_keys_json = ?,
           original_size_bytes = ?, thumbnail_size_bytes = ?, gallery_size_bytes = ?,
           width = ?, height = ?, updated_at = ?
         WHERE id = ?
       `).run(
-        completed.contentSha256,
-        completed.sourceMimeType,
-        completed.originalObjectKey,
-        completed.thumbnailObjectKey,
-        completed.galleryObjectKey,
+        storedCompleted.contentSha256,
+        storedCompleted.sourceMimeType,
+        isolated.storageGeneration,
+        storedCompleted.originalObjectKey,
+        storedCompleted.thumbnailObjectKey,
+        storedCompleted.galleryObjectKey,
         JSON.stringify(objectKeys),
-        completed.originalSizeBytes,
-        completed.thumbnailSizeBytes,
-        completed.gallerySizeBytes,
-        completed.width,
-        completed.height,
+        storedCompleted.originalSizeBytes,
+        storedCompleted.thumbnailSizeBytes,
+        storedCompleted.gallerySizeBytes,
+        storedCompleted.width,
+        storedCompleted.height,
         this.now().toISOString(),
         assetId,
       );
+      return storedCompleted;
     });
   }
 
   completeMediaJob(assetId: string, leaseOwner: string, completed: CompletedMediaAsset): void {
     this.transaction(() => {
+      this.assertCollectedDataCleanupInactive();
       this.assertMediaJobLease(assetId, leaseOwner);
+      const staged = this.database.prepare("SELECT * FROM media_assets WHERE id = ?")
+        .get(assetId) as StoredMediaAssetRow | undefined;
+      if (!staged || !completedMediaMatchesStored(staged, completed)) {
+        throw new ApiError(
+          409,
+          "MEDIA_STAGED_OBJECT_MISMATCH",
+          "Completed media metadata does not match the objects admitted before upload.",
+          { retryable: false },
+        );
+      }
       const now = this.now().toISOString();
       this.database.prepare(`
         UPDATE media_assets SET
@@ -787,6 +1190,7 @@ export class DenicheurRepository {
     retryDelayMs?: number,
   ): void {
     this.transaction(() => {
+      this.assertCollectedDataCleanupInactive();
       this.assertMediaJobLease(assetId, leaseOwner);
       const now = this.now();
       const nowIso = now.toISOString();
@@ -812,8 +1216,20 @@ export class DenicheurRepository {
     });
   }
 
-  clearCollectedData(options: ClearCollectedDataOptions = {}): CollectedDataCounts {
+  clearCollectedData(
+    options: ClearCollectedDataOptions = {},
+    cleanupLeaseOwner?: string,
+  ): CollectedDataCounts {
+    if (!cleanupLeaseOwner) {
+      const cleanup = this.beginCollectedDataCleanup(options);
+      try {
+        return this.clearCollectedData(options, cleanup.leaseOwner);
+      } finally {
+        this.releaseCollectedDataCleanup(cleanup.leaseOwner);
+      }
+    }
     return this.transaction(() => {
+      this.assertCollectedDataCleanupLease(cleanupLeaseOwner);
       this.assertCollectedDataCanBeCleared(options);
 
       const deleted = this.collectedDataCounts();
@@ -880,7 +1296,11 @@ export class DenicheurRepository {
 
   ingest(request: IngestionRequest): IngestionResponse {
     return this.transaction(() => {
+      this.assertCollectedDataCleanupInactive();
+      const mediaBaseline = this.mediaGlobalUsage();
+      this.assertRunMediaAdmissionBudget(request);
       this.upsertRun(request.run);
+      this.recordRunMediaAdmissions(request);
       let inserted = 0;
       let updated = 0;
       let unchanged = 0;
@@ -895,6 +1315,7 @@ export class DenicheurRepository {
         else if (outcome === "updated") updated += 1;
         else unchanged += 1;
       }
+      this.assertMediaGlobalBudgets(mediaBaseline);
 
       return {
         runId: request.run.id,
@@ -984,15 +1405,59 @@ export class DenicheurRepository {
   getRun(id: string): RunDetail | undefined {
     const row = this.database.prepare("SELECT * FROM runs WHERE id = ?").get(id) as StoredRunRow | undefined;
     if (!row) return undefined;
-    const listingRows = this.database.prepare(`
-      SELECT * FROM run_listings
+    const counts = this.database.prepare(`
+      SELECT COUNT(*) AS listing_count,
+        COALESCE(SUM(CASE WHEN status = 'detailed' THEN 1 ELSE 0 END), 0) AS detailed_listing_count
+      FROM run_listings
       WHERE run_id = ?
-      ORDER BY observed_at DESC, source ASC, external_id ASC
-    `).all(id) as StoredRunListingRow[];
+    `).get(id);
 
     return runDetailSchema.parse({
       ...rowToRun(row),
-      listings: listingRows.map((listing) => this.rowToRunSnapshot(listing)),
+      listingCount: readNumber(counts, "listing_count"),
+      detailedListingCount: readNumber(counts, "detailed_listing_count"),
+    });
+  }
+
+  listRunListings(id: string, query: RunListingsQuery): RunListingsPage | undefined {
+    if (!this.database.prepare("SELECT 1 FROM runs WHERE id = ?").get(id)) return undefined;
+    const cursor = decodeRunListingsCursor(query.cursor);
+    const limit = Math.min(100, Math.max(1, Math.floor(query.limit)));
+    const total = readNumber(this.database.prepare(`
+      SELECT COUNT(*) AS total FROM run_listings WHERE run_id = ?
+    `).get(id), "total");
+    const cursorClause = cursor
+      ? `AND (
+          observed_at < ?
+          OR (observed_at = ? AND source > ?)
+          OR (observed_at = ? AND source = ? AND external_id > ?)
+        )`
+      : "";
+    const cursorParameters: SQLInputValue[] = cursor
+      ? [
+          cursor.observedAt,
+          cursor.observedAt,
+          cursor.source,
+          cursor.observedAt,
+          cursor.source,
+          cursor.externalId,
+        ]
+      : [];
+    const pageRows = this.database.prepare(`
+      SELECT * FROM run_listings
+      WHERE run_id = ?
+      ${cursorClause}
+      ORDER BY observed_at DESC, source ASC, external_id ASC
+      LIMIT ?
+    `).all(id, ...cursorParameters, limit + 1) as StoredRunListingRow[];
+    const hasMore = pageRows.length > limit;
+    const rows = pageRows.slice(0, limit);
+    const items = rows.map((listing) => this.rowToRunSnapshot(listing, false));
+    const lastRow = rows.at(-1);
+    return runListingsPageSchema.parse({
+      items,
+      nextCursor: hasMore && lastRow ? encodeRunListingsCursor(lastRow) : null,
+      total,
     });
   }
 
@@ -1166,6 +1631,24 @@ export class DenicheurRepository {
     }));
   }
 
+  replayEvaluationExecution(
+    idempotencyKey: string,
+    requestFingerprint: string,
+  ): CreateEvaluationExecutionResult | undefined {
+    const row = this.database.prepare(`
+      SELECT * FROM evaluation_executions WHERE idempotency_key = ?
+    `).get(idempotencyKey) as StoredEvaluationExecutionRow | undefined;
+    if (!row) return undefined;
+    if (readString(row, "request_fingerprint") !== requestFingerprint) {
+      throw new ApiError(
+        409,
+        "IDEMPOTENCY_KEY_REUSED",
+        "The Idempotency-Key was already used for a different evaluation execution request.",
+      );
+    }
+    return { execution: this.rowToEvaluationExecution(row), created: false };
+  }
+
   createEvaluationExecution(input: CreateEvaluationExecutionInput): CreateEvaluationExecutionResult {
     return this.transaction(() => {
       const existing = this.database.prepare(`
@@ -1233,6 +1716,17 @@ export class DenicheurRepository {
         createdAt,
         JSON.stringify({ ...input.request, listingIds: input.listingIds }),
         JSON.stringify(counters),
+      );
+      this.database.prepare(`
+        INSERT INTO evaluation_execution_budgets (
+          execution_id, limit_json, estimate_json, consumed_json, updated_at
+        ) VALUES (?, ?, ?, ?, ?)
+      `).run(
+        input.id,
+        JSON.stringify(input.budget.limit),
+        JSON.stringify(input.budget.estimate),
+        JSON.stringify(input.budget.consumed),
+        createdAt,
       );
       const insertItem = this.database.prepare(`
         INSERT INTO evaluation_execution_items (
@@ -1625,6 +2119,150 @@ export class DenicheurRepository {
     return readNumber(this.database.prepare("SELECT COUNT(*) AS total FROM evaluation_executions").get(), "total");
   }
 
+  reserveEvaluationProviderCall(
+    id: string,
+    leaseOwner: string,
+    reserved: EvaluationExecutionResourceUsage,
+  ): EvaluationProviderCallReservation {
+    return this.transaction(() => {
+      this.assertEvaluationExecutionLease(id, leaseOwner);
+      const budget = this.getEvaluationExecutionBudget(id);
+      const nextConsumed = addUsage(budget.consumed, reserved);
+      if (exceedsUsage(nextConsumed, budget.limit)) {
+        throw new ApiError(
+          429,
+          "EVALUATION_EXECUTION_BUDGET_EXHAUSTED",
+          "The evaluation execution exhausted its provider-call budget.",
+        );
+      }
+      const reservationId = randomUUID();
+      const now = this.now().toISOString();
+      this.database.prepare(`
+        INSERT INTO evaluation_provider_call_reservations (
+          id, execution_id, reserved_json, settled, created_at
+        ) VALUES (?, ?, ?, 0, ?)
+      `).run(reservationId, id, JSON.stringify(reserved), now);
+      this.database.prepare(`
+        UPDATE evaluation_execution_budgets SET consumed_json = ?, updated_at = ? WHERE execution_id = ?
+      `).run(JSON.stringify(nextConsumed), now, id);
+      return { id: reservationId, reserved };
+    });
+  }
+
+  settleEvaluationProviderCall(
+    id: string,
+    leaseOwner: string,
+    reservation: EvaluationProviderCallReservation,
+    actual: EvaluationExecutionResourceUsage,
+  ): void {
+    this.transaction(() => {
+      this.assertEvaluationExecutionLease(id, leaseOwner);
+      const row = this.database.prepare(`
+        SELECT settled, reserved_json
+        FROM evaluation_provider_call_reservations
+        WHERE id = ? AND execution_id = ?
+      `).get(reservation.id, id);
+      if (!row || readNumber(row, "settled") === 1) return;
+      const persistedReserved = parseResourceUsage(readString(row, "reserved_json"));
+      const budget = this.getEvaluationExecutionBudget(id);
+      const nextConsumed = addUsage(subtractUsage(budget.consumed, persistedReserved), actual);
+      const now = this.now().toISOString();
+      this.database.prepare(`
+        UPDATE evaluation_provider_call_reservations
+        SET settled = 1, settled_at = ? WHERE id = ? AND settled = 0
+      `).run(now, reservation.id);
+      this.database.prepare(`
+        UPDATE evaluation_execution_budgets SET consumed_json = ?, updated_at = ? WHERE execution_id = ?
+      `).run(JSON.stringify(nextConsumed), now, id);
+    });
+  }
+
+  tryReserveGlobalProviderCall(
+    reservation: GlobalProviderCallReservation,
+    cutoff: string,
+    limit: EvaluationExecutionResourceUsage,
+  ): boolean {
+    return this.transaction(() => {
+      this.pruneGlobalProviderCalls(cutoff);
+      const candidate = addUsage(this.readGlobalProviderUsage(), reservation.usage);
+      if (exceedsUsage(candidate, limit)) return false;
+      this.database.prepare(`
+        INSERT INTO global_provider_call_reservations (
+          id, created_at, settled, provider_calls, input_tokens, output_tokens, cost_micro_usd
+        ) VALUES (?, ?, 0, ?, ?, ?, ?)
+      `).run(
+        reservation.id,
+        reservation.createdAt,
+        reservation.usage.providerCalls,
+        reservation.usage.inputTokens,
+        reservation.usage.outputTokens,
+        reservation.usage.costMicroUsd,
+      );
+      return true;
+    });
+  }
+
+  settleGlobalProviderCall(
+    id: string,
+    usage: EvaluationExecutionResourceUsage,
+    settledAt: string,
+    cutoff: string,
+  ): void {
+    this.transaction(() => {
+      this.pruneGlobalProviderCalls(cutoff);
+      this.database.prepare(`
+        UPDATE global_provider_call_reservations
+        SET settled = 1, provider_calls = ?, input_tokens = ?, output_tokens = ?,
+          cost_micro_usd = ?, settled_at = ?
+        WHERE id = ? AND settled = 0
+      `).run(
+        usage.providerCalls,
+        usage.inputTokens,
+        usage.outputTokens,
+        usage.costMicroUsd,
+        settledAt,
+        id,
+      );
+    });
+  }
+
+  releaseGlobalProviderCall(id: string, cutoff: string): void {
+    this.transaction(() => {
+      this.pruneGlobalProviderCalls(cutoff);
+      this.database.prepare(`
+        DELETE FROM global_provider_call_reservations WHERE id = ? AND settled = 0
+      `).run(id);
+    });
+  }
+
+  getGlobalProviderUsage(cutoff: string): EvaluationExecutionResourceUsage {
+    return this.transaction(() => {
+      this.pruneGlobalProviderCalls(cutoff);
+      return this.readGlobalProviderUsage();
+    });
+  }
+
+  private pruneGlobalProviderCalls(cutoff: string): void {
+    this.database.prepare("DELETE FROM global_provider_call_reservations WHERE created_at <= ?").run(cutoff);
+  }
+
+  private readGlobalProviderUsage(): EvaluationExecutionResourceUsage {
+    const row = this.database.prepare(`
+      SELECT
+        COALESCE(SUM(provider_calls), 0) AS provider_calls,
+        COALESCE(SUM(input_tokens), 0) AS input_tokens,
+        COALESCE(SUM(output_tokens), 0) AS output_tokens,
+        COALESCE(SUM(cost_micro_usd), 0) AS cost_micro_usd
+      FROM global_provider_call_reservations
+    `).get();
+    return {
+      providerCalls: readNumber(row, "provider_calls"),
+      inputTokens: readNumber(row, "input_tokens"),
+      outputTokens: readNumber(row, "output_tokens"),
+      costMicroUsd: readNumber(row, "cost_micro_usd"),
+    };
+  }
+
   getListingsForEvaluation(runId: string, listingIds: readonly string[]): ListingRecord[] | undefined {
     const records: ListingRecord[] = [];
     for (const listingId of listingIds) {
@@ -1846,12 +2484,40 @@ export class DenicheurRepository {
     const listings = this.database.prepare("SELECT * FROM listings ORDER BY source, external_id")
       .all() as StoredListingRow[];
     if (!listings.length) return;
-    this.transaction(() => {
-      for (const row of listings) this.syncListingMedia(parseListingData(row.data_json));
-    });
+    for (const row of listings) this.syncListingMedia(parseListingData(row.data_json), false);
   }
 
-  private syncListingMedia(listing: ListingIngestion): void {
+  private backfillRunMediaAdmissions(): void {
+    const snapshots = this.database.prepare(`
+      SELECT run_id, observation_json FROM run_listings ORDER BY run_id, source, external_id
+    `).all() as Array<{ run_id: string; observation_json: string }>;
+    if (!snapshots.length) return;
+    const insert = this.database.prepare(`
+      INSERT INTO run_media_admissions (run_id, asset_id, admitted_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(run_id, asset_id) DO NOTHING
+    `);
+    const admittedAt = this.now().toISOString();
+    for (const snapshot of snapshots) {
+      for (const sourceUrl of listingMediaSourceUrls(parseListingData(snapshot.observation_json))) {
+        insert.run(snapshot.run_id, mediaAssetId(sourceUrl), admittedAt);
+      }
+    }
+  }
+
+  private recordRunMediaAdmissions(request: IngestionRequest): void {
+    const insert = this.database.prepare(`
+      INSERT INTO run_media_admissions (run_id, asset_id, admitted_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(run_id, asset_id) DO NOTHING
+    `);
+    const admittedAt = this.now().toISOString();
+    const assetIds = new Set(request.listings.flatMap((listing) =>
+      listingMediaSourceUrls(listing).map(mediaAssetId)));
+    for (const assetId of assetIds) insert.run(request.run.id, assetId, admittedAt);
+  }
+
+  private syncListingMedia(listing: ListingIngestion, queueOrphans = true): void {
     const sourceUrls = listingMediaSourceUrls(listing);
     const now = this.now().toISOString();
 
@@ -1859,11 +2525,21 @@ export class DenicheurRepository {
       .run(listing.source, listing.externalId);
     sourceUrls.forEach((sourceUrl, position) => {
       const assetId = mediaAssetId(sourceUrl);
+      const tombstone = this.database.prepare(
+        "SELECT status FROM media_gc_tombstones WHERE asset_id = ?",
+      ).get(assetId);
+      if (tombstone && readString(tombstone, "status") === "deleting") {
+        throw new ApiError(
+          409,
+          "MEDIA_ASSET_GC_IN_PROGRESS",
+          "A referenced media asset is currently being deleted; retry the ingestion shortly.",
+        );
+      }
       this.database.prepare(`
-        INSERT INTO media_assets (id, source_url, status, created_at, updated_at)
-        VALUES (?, ?, 'pending', ?, ?)
+        INSERT INTO media_assets (id, source_url, status, storage_generation, created_at, updated_at)
+        VALUES (?, ?, 'pending', ?, ?, ?)
         ON CONFLICT(source_url) DO NOTHING
-      `).run(assetId, sourceUrl, now, now);
+      `).run(assetId, sourceUrl, randomUUID(), now, now);
       this.database.prepare(`
         INSERT INTO media_jobs (asset_id, status, attempts, next_attempt_at, created_at, updated_at)
         VALUES (?, 'pending', 0, ?, ?, ?)
@@ -1873,7 +2549,86 @@ export class DenicheurRepository {
         INSERT INTO listing_media (source, external_id, position, asset_id)
         VALUES (?, ?, ?, ?)
       `).run(listing.source, listing.externalId, position, assetId);
+      this.database.prepare("DELETE FROM media_gc_tombstones WHERE asset_id = ?").run(assetId);
     });
+    if (queueOrphans) this.queueOrphanMediaAssets();
+  }
+
+  private assertRunMediaAdmissionBudget(request: IngestionRequest): void {
+    const incomingAssetIds = new Set(request.listings.flatMap((listing) =>
+      listingMediaSourceUrls(listing).map(mediaAssetId)));
+    const currentRunAssetIds = new Set((this.database.prepare(`
+      SELECT asset_id FROM run_media_admissions WHERE run_id = ?
+    `).all(request.run.id) as Array<{ asset_id: string }>).map((row) => row.asset_id));
+    const baseline = currentRunAssetIds.size;
+    for (const assetId of incomingAssetIds) currentRunAssetIds.add(assetId);
+    if (
+      currentRunAssetIds.size > this.mediaAdmission.maxAssetsPerRun
+      && currentRunAssetIds.size > baseline
+    ) {
+      throw new ApiError(
+        429,
+        "MEDIA_RUN_BUDGET_EXCEEDED",
+        `Run media is limited to ${this.mediaAdmission.maxAssetsPerRun} distinct assets.`,
+      );
+    }
+  }
+
+  private mediaGlobalUsage(): MediaGlobalUsage {
+    return {
+      pendingJobs: readNumber(this.database.prepare(`
+      SELECT COUNT(*) AS total FROM (
+        SELECT asset_id FROM media_jobs WHERE status IN ('pending', 'processing')
+        UNION
+        SELECT asset_id FROM media_gc_tombstones WHERE status IN ('pending', 'deleting')
+      )
+      `).get(), "total"),
+      reservedBytes: this.mediaReservedBytes(),
+    };
+  }
+
+  private assertMediaGlobalBudgets(baseline: MediaGlobalUsage, legacyBackfill = false): void {
+    const projected = this.mediaGlobalUsage();
+    if (
+      projected.pendingJobs > this.mediaAdmission.maxPendingJobs
+      && projected.pendingJobs > baseline.pendingJobs
+    ) {
+      throw new ApiError(
+        429,
+        "MEDIA_QUEUE_BUDGET_EXCEEDED",
+        legacyBackfill
+          ? `Legacy media backfill would grow queued work from ${baseline.pendingJobs} to ${projected.pendingJobs}, above MEDIA_MAX_PENDING_JOBS=${this.mediaAdmission.maxPendingJobs}. Raise the limit or clean legacy collected data before restarting.`
+          : `Media ingestion is paused while ${projected.pendingJobs} assets would be queued.`,
+      );
+    }
+
+    if (
+      projected.reservedBytes > this.mediaAdmission.maxReservedBytes
+      && projected.reservedBytes > baseline.reservedBytes
+    ) {
+      throw new ApiError(
+        507,
+        "MEDIA_STORAGE_BUDGET_EXCEEDED",
+        legacyBackfill
+          ? `Legacy media backfill would grow reserved bytes from ${baseline.reservedBytes} to ${projected.reservedBytes}, above MEDIA_MAX_RESERVED_BYTES=${this.mediaAdmission.maxReservedBytes}. Raise the limit or clean legacy collected data before restarting.`
+          : "The configured media storage budget would be exceeded.",
+      );
+    }
+  }
+
+  private mediaReservedBytes(): number {
+    return readNumber(this.database.prepare(`
+      SELECT COALESCE(SUM(
+        CASE
+          WHEN asset.original_size_bytes IS NOT NULL
+            AND asset.thumbnail_size_bytes IS NOT NULL
+            AND asset.gallery_size_bytes IS NOT NULL
+          THEN asset.original_size_bytes + asset.thumbnail_size_bytes + asset.gallery_size_bytes
+          ELSE ?
+        END
+      ), 0) AS total
+      FROM media_assets asset
+    `).get(this.mediaAdmission.reservedBytesPerAsset), "total");
   }
 
   private listListingMedia(listing: ListingIngestion): ListingImageAsset[] {
@@ -1896,6 +2651,162 @@ export class DenicheurRepository {
       WHERE asset_id = ? AND status = 'processing' AND lease_owner = ?
     `).get(assetId, leaseOwner);
     if (!row) throw new Error("The media job lease is no longer owned by this worker.");
+  }
+
+  private assertCollectedDataCleanupInactive(): void {
+    if (!this.isCollectedDataCleanupActive()) return;
+    throw new ApiError(
+      503,
+      "MAINTENANCE_IN_PROGRESS",
+      "Collected data cleanup is in progress.",
+      { retryable: true },
+    );
+  }
+
+  private assertCollectedDataCleanupLease(leaseOwner: string): void {
+    const row = this.database.prepare(`
+      SELECT 1 FROM collected_data_cleanup_lease
+      WHERE singleton = 1 AND lease_owner = ?
+    `).get(leaseOwner);
+    if (row) return;
+    throw new ApiError(
+      409,
+      "MEDIA_CLEANUP_LEASE_LOST",
+      "Collected data cleanup ownership was lost before SQLite could be cleared.",
+    );
+  }
+
+  private assertMediaGarbageLease(assetId: string, leaseOwner: string): void {
+    const row = this.database.prepare(`
+      SELECT 1 AS owned FROM media_gc_tombstones
+      WHERE asset_id = ? AND status = 'deleting' AND lease_owner = ?
+    `).get(assetId, leaseOwner);
+    if (!row) throw new Error("The media garbage-collection lease is no longer owned by this worker.");
+  }
+
+  private reconcileLegacyMedia(): void {
+    this.transaction(() => {
+      this.assertCollectedDataCleanupInactive();
+      const baselineGlobal = this.mediaGlobalUsage();
+      const baselineRuns = new Map((this.database.prepare(`
+        SELECT run_id, COUNT(*) AS total
+        FROM run_media_admissions
+        GROUP BY run_id
+      `).all() as Array<{ run_id: string; total: number }>).map((row) => [row.run_id, row.total]));
+
+      this.backfillListingMedia();
+      this.backfillRunMediaAdmissions();
+      this.queueOrphanMediaAssets();
+
+      const overBudgetRun = (this.database.prepare(`
+        SELECT run_id, COUNT(*) AS total
+        FROM run_media_admissions
+        GROUP BY run_id
+        HAVING COUNT(*) > ?
+        ORDER BY run_id ASC
+      `).all(this.mediaAdmission.maxAssetsPerRun) as Array<{ run_id: string; total: number }>)
+        .find((row) => row.total > (baselineRuns.get(row.run_id) ?? 0));
+      if (overBudgetRun) {
+        throw new ApiError(
+          429,
+          "MEDIA_RUN_BUDGET_EXCEEDED",
+          `Legacy run ${overBudgetRun.run_id} would grow to ${overBudgetRun.total} distinct media assets, above MEDIA_MAX_ASSETS_PER_RUN=${this.mediaAdmission.maxAssetsPerRun}. Raise the limit or clean legacy collected data before restarting.`,
+        );
+      }
+      this.assertMediaGlobalBudgets(baselineGlobal, true);
+    });
+  }
+
+  private storageIsolatedCompletedMedia(
+    assetId: string,
+    asset: StoredMediaAssetRow,
+    completed: CompletedMediaAsset,
+  ): { readonly completed: CompletedMediaAsset; readonly storageGeneration: string } {
+    const shared = this.database.prepare(`
+      SELECT candidate.*
+      FROM media_assets candidate
+      LEFT JOIN media_gc_tombstones tombstone ON tombstone.asset_id = candidate.id
+      WHERE candidate.id <> ?
+        AND candidate.status = 'ready'
+        AND candidate.content_sha256 = ?
+        AND candidate.source_mime_type = ?
+        AND candidate.original_size_bytes = ?
+        AND candidate.thumbnail_size_bytes = ?
+        AND candidate.gallery_size_bytes = ?
+        AND candidate.width = ?
+        AND candidate.height = ?
+        AND candidate.original_object_key IS NOT NULL
+        AND candidate.thumbnail_object_key IS NOT NULL
+        AND candidate.gallery_object_key IS NOT NULL
+        AND (tombstone.status IS NULL OR tombstone.status <> 'deleting')
+      ORDER BY
+        CASE WHEN EXISTS (
+          SELECT 1 FROM listing_media linked WHERE linked.asset_id = candidate.id
+        ) THEN 0 ELSE 1 END,
+        candidate.updated_at DESC,
+        candidate.id ASC
+      LIMIT 1
+    `).get(
+      assetId,
+      completed.contentSha256,
+      completed.sourceMimeType,
+      completed.originalSizeBytes,
+      completed.thumbnailSizeBytes,
+      completed.gallerySizeBytes,
+      completed.width,
+      completed.height,
+    ) as StoredMediaAssetRow | undefined;
+    if (shared) {
+      const canonicalShared = isolateCompletedMediaStorage(
+        completed,
+        readString(shared, "storage_generation"),
+      );
+      if (
+        shared.original_object_key === canonicalShared.originalObjectKey
+        && shared.thumbnail_object_key === canonicalShared.thumbnailObjectKey
+        && shared.gallery_object_key === canonicalShared.galleryObjectKey
+      ) {
+        return {
+          completed: canonicalShared,
+          storageGeneration: readString(shared, "storage_generation"),
+        };
+      }
+    }
+    const storageGeneration = readString(asset, "storage_generation");
+    return {
+      completed: isolateCompletedMediaStorage(completed, storageGeneration),
+      storageGeneration,
+    };
+  }
+
+  private assertMediaObjectKeysAreNotBeingDeleted(assetId: string, objectKeys: readonly string[]): void {
+    const deletingAssets = this.database.prepare(`
+      SELECT asset.*
+      FROM media_assets asset
+      JOIN media_gc_tombstones tombstone ON tombstone.asset_id = asset.id
+      WHERE tombstone.status = 'deleting' AND asset.id <> ?
+    `).all(assetId) as StoredMediaAssetRow[];
+    const deletingKeys = new Set(deletingAssets.flatMap(mediaObjectKeys));
+    if (!objectKeys.some((key) => deletingKeys.has(key))) return;
+    throw new ApiError(
+      409,
+      "MEDIA_OBJECT_GC_IN_PROGRESS",
+      "A content-addressed media object is currently being deleted; retry processing shortly.",
+      { retryable: true },
+    );
+  }
+
+  private queueOrphanMediaAssets(): void {
+    const now = this.now().toISOString();
+    this.database.prepare(`
+      INSERT INTO media_gc_tombstones (
+        asset_id, status, attempts, next_attempt_at, created_at, updated_at
+      )
+      SELECT asset.id, 'pending', 0, ?, ?, ?
+      FROM media_assets asset
+      WHERE NOT EXISTS (SELECT 1 FROM listing_media lm WHERE lm.asset_id = asset.id)
+      ON CONFLICT(asset_id) DO NOTHING
+    `).run(now, now, now);
   }
 
   private migrate(): void {
@@ -2099,6 +3010,19 @@ export class DenicheurRepository {
     `).get(id) as StoredEvaluationExecutionRow | undefined;
   }
 
+  private getEvaluationExecutionBudget(id: string): EvaluationExecutionBudget {
+    const row = this.database.prepare(`
+      SELECT limit_json, estimate_json, consumed_json
+      FROM evaluation_execution_budgets WHERE execution_id = ?
+    `).get(id) as StoredEvaluationExecutionBudgetRow | undefined;
+    if (!row) throw new Error("The evaluation execution budget is missing.");
+    return evaluationExecutionBudgetSchema.parse({
+      limit: JSON.parse(row.limit_json) as unknown,
+      estimate: JSON.parse(row.estimate_json) as unknown,
+      consumed: JSON.parse(row.consumed_json) as unknown,
+    });
+  }
+
   private assertEvaluationExecutionLease(id: string, leaseOwner: string): void {
     const row = this.database.prepare(`
       SELECT 1 AS owned FROM evaluation_executions
@@ -2123,6 +3047,7 @@ export class DenicheurRepository {
       ...(row.started_at ? { startedAt: row.started_at } : {}),
       ...(row.completed_at ? { completedAt: row.completed_at } : {}),
       counters: JSON.parse(row.counters_json) as unknown,
+      budget: this.getEvaluationExecutionBudget(row.id),
       ...(row.error ? { error: row.error } : {}),
     });
   }
@@ -2166,9 +3091,9 @@ export class DenicheurRepository {
     });
   }
 
-  private rowToRunSnapshot(row: StoredRunListingRow): ListingRecord {
+  private rowToRunSnapshot(row: StoredRunListingRow, includeRelated = true): ListingRecord {
     const data = parseListingData(row.observation_json);
-    const latestEvaluation = this.latestEvaluation(data, row.run_id);
+    const latestEvaluation = includeRelated ? this.latestEvaluation(data, row.run_id) : undefined;
     return listingRecordSchema.parse({
       ...data,
       id: createListingKey(data),
@@ -2176,7 +3101,7 @@ export class DenicheurRepository {
       firstSeenAt: row.first_observed_at,
       lastSeenAt: row.observed_at,
       updatedAt: row.observed_at,
-      imageAssets: this.listListingMedia(data),
+      ...(includeRelated ? { imageAssets: this.listListingMedia(data) } : {}),
       ...(latestEvaluation ? { latestEvaluation } : {}),
     });
   }
@@ -2288,6 +3213,83 @@ function parseMediaObjectKeys(value: string): string[] {
     throw new Error("Stored media object keys are invalid.");
   }
   return parsed;
+}
+
+function mediaObjectKeys(row: {
+  readonly original_object_key: string | null;
+  readonly thumbnail_object_key: string | null;
+  readonly gallery_object_key: string | null;
+  readonly object_keys_json: string;
+}): string[] {
+  return uniqueStrings([
+    row.original_object_key,
+    row.thumbnail_object_key,
+    row.gallery_object_key,
+    ...parseMediaObjectKeys(row.object_keys_json),
+  ].filter((key): key is string => Boolean(key)));
+}
+
+function storedMediaAssetBytes(row: StoredMediaAssetRow, fallbackReservation: number): number {
+  if (
+    row.original_size_bytes === null
+    || row.thumbnail_size_bytes === null
+    || row.gallery_size_bytes === null
+  ) {
+    return fallbackReservation;
+  }
+  return row.original_size_bytes + row.thumbnail_size_bytes + row.gallery_size_bytes;
+}
+
+function completedMediaSize(completed: CompletedMediaAsset): number {
+  const sizes = [
+    completed.originalSizeBytes,
+    completed.thumbnailSizeBytes,
+    completed.gallerySizeBytes,
+  ];
+  if (sizes.some((size) => !Number.isSafeInteger(size) || size < 0)) {
+    throw new Error("Completed media sizes must be safe non-negative integers.");
+  }
+  const total = sizes.reduce((sum, size) => sum + size, 0);
+  if (!Number.isSafeInteger(total)) throw new Error("Completed media size exceeds the safe integer range.");
+  return total;
+}
+
+function completedMediaMatchesStored(row: StoredMediaAssetRow, completed: CompletedMediaAsset): boolean {
+  return row.content_sha256 === completed.contentSha256
+    && row.source_mime_type === completed.sourceMimeType
+    && row.original_object_key === completed.originalObjectKey
+    && row.thumbnail_object_key === completed.thumbnailObjectKey
+    && row.gallery_object_key === completed.galleryObjectKey
+    && row.original_size_bytes === completed.originalSizeBytes
+    && row.thumbnail_size_bytes === completed.thumbnailSizeBytes
+    && row.gallery_size_bytes === completed.gallerySizeBytes
+    && row.width === completed.width
+    && row.height === completed.height;
+}
+
+function isolateCompletedMediaStorage(
+  completed: CompletedMediaAsset,
+  storageGeneration: string,
+): CompletedMediaAsset {
+  if (!/^[a-f0-9-]{32,36}$/u.test(storageGeneration)) {
+    throw new Error("The media storage generation is invalid.");
+  }
+  const originalExtension = (() => {
+    switch (completed.sourceMimeType) {
+      case "image/jpeg": return "jpg";
+      case "image/png": return "png";
+      case "image/webp": return "webp";
+      case "image/avif": return "avif";
+      default: throw new Error("The completed media MIME type is unsupported.");
+    }
+  })();
+  const prefix = `media/${completed.contentSha256.slice(0, 2)}/${completed.contentSha256}/generation-${storageGeneration}`;
+  return {
+    ...completed,
+    originalObjectKey: `${prefix}/original.${originalExtension}`,
+    thumbnailObjectKey: `${prefix}/thumbnail.webp`,
+    galleryObjectKey: `${prefix}/gallery.webp`,
+  };
 }
 
 function normalizeListing(listing: ListingIngestion): ListingIngestion {
@@ -2495,6 +3497,49 @@ function decodeCursor(cursor: string | undefined): number {
   }
 }
 
+interface RunListingsCursor {
+  readonly observedAt: string;
+  readonly source: string;
+  readonly externalId: string;
+}
+
+function encodeRunListingsCursor(row: StoredRunListingRow): string {
+  return Buffer.from(JSON.stringify({
+    observedAt: row.observed_at,
+    source: row.source,
+    externalId: row.external_id,
+  }), "utf8").toString("base64url");
+}
+
+function decodeRunListingsCursor(cursor: string | undefined): RunListingsCursor | undefined {
+  if (!cursor) return undefined;
+  try {
+    const decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as unknown;
+    if (
+      typeof decoded !== "object"
+      || decoded === null
+      || !("observedAt" in decoded)
+      || typeof decoded.observedAt !== "string"
+      || Number.isNaN(Date.parse(decoded.observedAt))
+      || !("source" in decoded)
+      || typeof decoded.source !== "string"
+      || decoded.source.length === 0
+      || !("externalId" in decoded)
+      || typeof decoded.externalId !== "string"
+      || decoded.externalId.length === 0
+    ) {
+      throw new Error("invalid run listings cursor");
+    }
+    return {
+      observedAt: decoded.observedAt,
+      source: decoded.source,
+      externalId: decoded.externalId,
+    };
+  } catch (error) {
+    throw new ApiError(400, "INVALID_CURSOR", "The pagination cursor is invalid.", { cause: error });
+  }
+}
+
 function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values)];
 }
@@ -2527,4 +3572,254 @@ function readNumber(row: Record<string, unknown> | undefined, key: string): numb
   const value = row?.[key];
   if (typeof value !== "number") throw new Error(`Expected ${key} to be a number.`);
   return value;
+}
+
+function parseResourceUsage(value: string): EvaluationExecutionResourceUsage {
+  return evaluationExecutionResourceUsageSchema.parse(JSON.parse(value) as unknown);
+}
+
+function assertMediaAdmissionPolicy(policy: MediaAdmissionPolicy): void {
+  for (const [name, value] of Object.entries(policy)) {
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw new Error(`Media admission policy ${name} must be a safe positive integer.`);
+    }
+  }
+  if (policy.reservedBytesPerAsset > policy.maxReservedBytes) {
+    throw new Error("Media admission reservation cannot exceed the total storage budget.");
+  }
+}
+
+function openPrivateDatabase(requestedPath: string): PrivateDatabaseHandle {
+  const absolutePath = resolve(requestedPath);
+  const requestedDirectoryPath = dirname(absolutePath);
+  assertNoUnsafeDirectorySymlinkComponents(requestedDirectoryPath);
+  const existingDirectory = tryLstat(requestedDirectoryPath);
+  if (existingDirectory?.isSymbolicLink()) {
+    throw unsafeFilesystemPath("database directory", requestedDirectoryPath, "is a symbolic link");
+  }
+  if (existingDirectory && !existingDirectory.isDirectory()) {
+    throw unsafeFilesystemPath("database directory", requestedDirectoryPath, "is not a directory");
+  }
+
+  mkdirSync(requestedDirectoryPath, {
+    recursive: true,
+    mode: PRIVATE_DATABASE_DIRECTORY_MODE,
+  });
+
+  assertNoUnsafeDirectorySymlinkComponents(requestedDirectoryPath);
+  const createdDirectory = lstatSync(requestedDirectoryPath);
+  if (createdDirectory.isSymbolicLink()) {
+    throw unsafeFilesystemPath("database directory", requestedDirectoryPath, "is a symbolic link");
+  }
+  if (!createdDirectory.isDirectory()) {
+    throw unsafeFilesystemPath("database directory", requestedDirectoryPath, "is not a directory");
+  }
+  assertPrivateDatabaseDirectory(createdDirectory, requestedDirectoryPath);
+
+  // Resolve inherited system-level aliases (for example macOS /var -> /private/var)
+  // once, then keep descriptors for the canonical directory and database inode.
+  // Every permission change below uses a descriptor opened with O_NOFOLLOW.
+  const directoryPath = realpathSync.native(requestedDirectoryPath);
+  const databasePath = join(directoryPath, basename(absolutePath));
+  const directoryDescriptor = openSync(
+    directoryPath,
+    constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
+  );
+  let databaseDescriptor: number | undefined;
+  let database: DatabaseSync | undefined;
+
+  try {
+    const directoryIdentity = fstatSync(directoryDescriptor);
+    assertSameIdentity(
+      createdDirectory,
+      directoryIdentity,
+      requestedDirectoryPath,
+      "database directory",
+    );
+    assertDirectoryIdentity(directoryPath, directoryIdentity);
+
+    hardenPrivateSqliteSidecars(databasePath);
+    assertSafeFilePath(databasePath, "database");
+
+    databaseDescriptor = openSync(
+      databasePath,
+      constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW,
+      PRIVATE_DATABASE_FILE_MODE,
+    );
+    const databaseIdentity = fstatSync(databaseDescriptor);
+    assertRegularSingleLinkFile(databaseIdentity, databasePath, "database");
+    assertFileIdentity(databasePath, databaseIdentity, "database");
+    fchmodSync(databaseDescriptor, PRIVATE_DATABASE_FILE_MODE);
+    assertFileIdentity(databasePath, databaseIdentity, "database");
+
+    database = new DatabaseSync(databasePath, { timeout: 5_000 });
+    assertDirectoryIdentity(directoryPath, directoryIdentity);
+    assertFileIdentity(databasePath, databaseIdentity, "database");
+
+    return {
+      database,
+      databasePath,
+      directoryPath,
+      databaseDescriptor,
+      directoryDescriptor,
+    };
+  } catch (error) {
+    database?.close();
+    if (databaseDescriptor !== undefined) closeSync(databaseDescriptor);
+    closeSync(directoryDescriptor);
+    throw error;
+  }
+}
+
+function hardenPrivateDatabaseFiles(handle: PrivateDatabaseHandle): void {
+  const directoryIdentity = fstatSync(handle.directoryDescriptor);
+  assertDirectoryIdentity(handle.directoryPath, directoryIdentity);
+
+  const databaseIdentity = fstatSync(handle.databaseDescriptor);
+  assertRegularSingleLinkFile(databaseIdentity, handle.databasePath, "database");
+  assertFileIdentity(handle.databasePath, databaseIdentity, "database");
+  fchmodSync(handle.databaseDescriptor, PRIVATE_DATABASE_FILE_MODE);
+  assertFileIdentity(handle.databasePath, databaseIdentity, "database");
+
+  hardenPrivateSqliteSidecars(handle.databasePath);
+}
+
+function releasePrivateDatabaseHandle(handle: PrivateDatabaseHandle): void {
+  closeSync(handle.databaseDescriptor);
+  closeSync(handle.directoryDescriptor);
+}
+
+function hardenPrivateFileIfPresent(path: string, label: string): void {
+  const initialIdentity = tryLstat(path);
+  if (!initialIdentity) return;
+  assertRegularSingleLinkFile(initialIdentity, path, label);
+
+  const descriptor = openSync(path, constants.O_RDWR | constants.O_NOFOLLOW);
+  try {
+    const descriptorIdentity = fstatSync(descriptor);
+    assertRegularSingleLinkFile(descriptorIdentity, path, label);
+    assertSameIdentity(initialIdentity, descriptorIdentity, path, label);
+    assertFileIdentity(path, descriptorIdentity, label);
+    fchmodSync(descriptor, PRIVATE_DATABASE_FILE_MODE);
+    assertFileIdentity(path, descriptorIdentity, label);
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
+function hardenPrivateSqliteSidecars(databasePath: string): void {
+  hardenPrivateFileIfPresent(`${databasePath}-journal`, "SQLite rollback-journal sidecar");
+  hardenPrivateFileIfPresent(`${databasePath}-wal`, "SQLite WAL sidecar");
+  hardenPrivateFileIfPresent(`${databasePath}-shm`, "SQLite shared-memory sidecar");
+}
+
+function assertSafeFilePath(path: string, label: string): void {
+  const identity = tryLstat(path);
+  if (identity) assertRegularSingleLinkFile(identity, path, label);
+}
+
+function assertNoUnsafeDirectorySymlinkComponents(path: string): void {
+  const root = parse(path).root;
+  let currentPath = root;
+  for (const component of path.slice(root.length).split(sep).filter(Boolean)) {
+    currentPath = join(currentPath, component);
+    const identity = tryLstat(currentPath);
+    if (!identity) continue;
+    if (identity.isSymbolicLink()) {
+      // macOS exposes stable root-owned aliases such as /var -> /private/var.
+      // Resolve those once below, but reject every user-controlled nested alias.
+      const trustedRootAlias = dirname(currentPath) === root && identity.uid === 0;
+      if (!trustedRootAlias) {
+        throw unsafeFilesystemPath("database directory component", currentPath, "is a symbolic link");
+      }
+      continue;
+    }
+    if (!identity.isDirectory()) {
+      throw unsafeFilesystemPath("database directory component", currentPath, "is not a directory");
+    }
+    if (currentPath !== path && isReplaceableDirectory(identity)) {
+      throw unsafeFilesystemPath(
+        "database directory ancestor",
+        currentPath,
+        "is group/world writable without the sticky bit",
+      );
+    }
+  }
+}
+
+function isReplaceableDirectory(identity: Stats): boolean {
+  const GROUP_OR_WORLD_WRITABLE = 0o022;
+  const STICKY_BIT = 0o1000;
+  return (identity.mode & GROUP_OR_WORLD_WRITABLE) !== 0 && (identity.mode & STICKY_BIT) === 0;
+}
+
+function assertDirectoryIdentity(path: string, descriptorIdentity: Stats): void {
+  if (!descriptorIdentity.isDirectory()) {
+    throw unsafeFilesystemPath("database directory", path, "is not a directory");
+  }
+  assertPrivateDatabaseDirectory(descriptorIdentity, path);
+  const pathIdentity = lstatSync(path);
+  if (pathIdentity.isSymbolicLink()) {
+    throw unsafeFilesystemPath("database directory", path, "is a symbolic link");
+  }
+  if (!pathIdentity.isDirectory()) {
+    throw unsafeFilesystemPath("database directory", path, "is not a directory");
+  }
+  assertPrivateDatabaseDirectory(pathIdentity, path);
+  assertSameIdentity(pathIdentity, descriptorIdentity, path, "database directory");
+}
+
+function assertPrivateDatabaseDirectory(identity: Stats, path: string): void {
+  if ((identity.mode & 0o777) !== PRIVATE_DATABASE_DIRECTORY_MODE) {
+    throw unsafeFilesystemPath(
+      "database directory",
+      path,
+      "is not a private owner-only directory (expected mode 0700)",
+    );
+  }
+  const effectiveUserId = process.geteuid?.();
+  if (effectiveUserId !== undefined && identity.uid !== effectiveUserId) {
+    throw unsafeFilesystemPath(
+      "database directory",
+      path,
+      "is not owned by the effective runtime user",
+    );
+  }
+}
+
+function assertFileIdentity(path: string, descriptorIdentity: Stats, label: string): void {
+  const pathIdentity = lstatSync(path);
+  assertRegularSingleLinkFile(pathIdentity, path, label);
+  assertSameIdentity(pathIdentity, descriptorIdentity, path, label);
+}
+
+function assertRegularSingleLinkFile(identity: Stats, path: string, label: string): void {
+  if (identity.isSymbolicLink()) {
+    throw unsafeFilesystemPath(label, path, "is a symbolic link");
+  }
+  if (!identity.isFile()) {
+    throw unsafeFilesystemPath(label, path, "is not a regular file");
+  }
+  if (identity.nlink !== 1) {
+    throw unsafeFilesystemPath(label, path, "has multiple hard links");
+  }
+}
+
+function assertSameIdentity(first: Stats, second: Stats, path: string, label: string): void {
+  if (first.dev !== second.dev || first.ino !== second.ino) {
+    throw unsafeFilesystemPath(label, path, "changed while it was being opened");
+  }
+}
+
+function tryLstat(path: string): Stats | undefined {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+function unsafeFilesystemPath(label: string, path: string, reason: string): Error {
+  return new Error(`Unsafe ${label} path ${JSON.stringify(path)}: ${reason}.`);
 }

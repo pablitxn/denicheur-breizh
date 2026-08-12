@@ -2,7 +2,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 const isCi = Boolean(process.env.CI);
 const runsLiveOpenAi = process.env.RUN_LIVE_OPENAI_E2E === "1";
-const apiEnvironment = "DENICHEUR_DB_PATH=:memory: FILTER_API_PORT=14310 FILTER_API_ALLOWED_ORIGINS=http://127.0.0.1:14173,chrome-extension://oekklajlieiinmjcmhdfeodpdhahhjdi";
+const apiEnvironment = "DENICHEUR_DB_PATH=:memory: FILTER_API_PORT=14310 MEDIA_STORAGE_MODE=disabled FILTER_API_ALLOWED_ORIGINS=http://127.0.0.1:14173,chrome-extension://oekklajlieiinmjcmhdfeodpdhahhjdi";
 const apiServer = {
   command: runsLiveOpenAi
     ? `${apiEnvironment} node --env-file-if-exists=.env --env-file-if-exists=apps/api/.env apps/api/dist/server.js`
@@ -15,7 +15,7 @@ const apiServer = {
 };
 
 const webServer = {
-  command: "node_modules/.bin/vite preview apps/web --host 127.0.0.1 --port 14173",
+  command: "node apps/web/node_modules/vite/bin/vite.js preview apps/web --host 127.0.0.1 --port 14173",
   url: "http://127.0.0.1:14173",
   reuseExistingServer: !isCi,
   timeout: 30_000,

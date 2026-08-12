@@ -116,6 +116,36 @@ describe("denicheurApi", () => {
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
+  it("requests one bounded run-listings page with an encoded run id and opaque cursor", async () => {
+    const page = {
+      items: [listing()],
+      nextCursor: "next+page/=",
+      total: 3,
+    };
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(page), { status: 200 }));
+    vi.stubGlobal("fetch", fetcher);
+
+    const result = await denicheurApi.listRunListings("run/with space", { cursor: "opaque+/=", limit: 25 });
+
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(fetcher.mock.calls[0]?.[0]).toBe(
+      `${API_BASE_URL}/v1/runs/run%2Fwith%20space/listings?cursor=opaque%2B%2F%3D&limit=25`,
+    );
+    expect(result).toEqual(page);
+  });
+
+  it("rejects run-listings pages that drift from the shared response schema", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      items: [{ id: "invented" }],
+      nextCursor: null,
+      total: 1,
+    }), { status: 200 })));
+
+    await expect(denicheurApi.listRunListings("run-1", { limit: 20 })).rejects.toMatchObject({
+      code: "INVALID_API_RESPONSE",
+    } satisfies Partial<DenicheurApiError>);
+  });
+
   it("normalizes detail history, coordinate provenance and the latest evaluation", async () => {
     const payload = listing({
       coordinates: {
@@ -180,13 +210,14 @@ describe("denicheurApi", () => {
   });
 
   it("derives the connection badge state from health and database readiness", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       status: "ok",
       service: "denicheur-api",
       database: { status: "ok" },
       media: { status: "ok", pending: 0, processing: 0, ready: 0, failed: 0 },
       openAiConfigured: false,
-    }), { status: 200 })));
+    }), { status: 200 }));
+    vi.stubGlobal("fetch", fetcher);
 
     await expect(denicheurApi.health()).resolves.toEqual({
       status: "ok",
@@ -194,6 +225,10 @@ describe("denicheurApi", () => {
       media: { status: "ok", pending: 0, processing: 0, ready: 0, failed: 0 },
       openAiConfigured: false,
     });
+    expect(fetcher).toHaveBeenCalledWith(
+      `${API_BASE_URL}/v1/health/details`,
+      expect.objectContaining({ signal: undefined }),
+    );
   });
 
   it("activates the explicitly selected recipe version", async () => {
@@ -291,5 +326,10 @@ function evaluationExecution(id: string, status: "queued" | "running" | "complet
     force: false,
     createdAt: now,
     counters: { total: 1, processed: 0, relevant: 0, notRelevant: 0, review: 0, failed: 0 },
+    budget: {
+      limit: { providerCalls: 10, inputTokens: 100_000, outputTokens: 20_000, costMicroUsd: 1_000_000 },
+      estimate: { providerCalls: 1, inputTokens: 2_000, outputTokens: 1_000, costMicroUsd: 10_000 },
+      consumed: { providerCalls: 0, inputTokens: 0, outputTokens: 0, costMicroUsd: 0 },
+    },
   };
 }

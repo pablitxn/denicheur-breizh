@@ -12,20 +12,30 @@ import { createRequest, createResponse } from "./fixtures.js";
 const VALID_EXTENSION_ORIGIN = "chrome-extension://oekklajlieiinmjcmhdfeodpdhahhjdi";
 
 describe("HTTP API", () => {
-  it("reports health without invoking the evaluator or exposing credential state", async () => {
+  it("reports only minimal public health without invoking the evaluator", async () => {
     const { app, filter } = createTestApp();
 
     const response = await request(app).get("/health").expect(200);
 
-    expect(response.body).toMatchObject({
+    expect(response.body).toEqual({
       status: "ok",
       service: "denicheur-api",
-      database: { status: "ok" },
-      openAiConfigured: false,
     });
-    expect(response.body).not.toHaveProperty("openAiApiKey");
     expect(response.headers["x-content-type-options"]).toBe("nosniff");
     expect(response.headers["cross-origin-resource-policy"]).toBe("cross-origin");
+    expect(filter).not.toHaveBeenCalled();
+  });
+
+  it("returns minimal non-ready health when the database is unavailable", async () => {
+    const { app, filter, repository } = createTestApp();
+    repository.close();
+
+    const response = await request(app).get("/health").expect(503);
+
+    expect(response.body).toEqual({
+      status: "error",
+      service: "denicheur-api",
+    });
     expect(filter).not.toHaveBeenCalled();
   });
 
@@ -83,6 +93,7 @@ describe("HTTP API", () => {
     const list = await request(app).get("/v1/listings?limit=10&sort=updatedAt&order=desc").expect(200);
     const detail = await request(app).get("/v1/listings/leboncoin/2876543210").expect(200);
     const run = await request(app).get("/v1/runs/run-ingestion").expect(200);
+    const runListings = await request(app).get("/v1/runs/run-ingestion/listings?limit=10").expect(200);
 
     expect(list.body).toMatchObject({ total: 1, nextCursor: null });
     expect(list.body.items[0]).toMatchObject({ id: "leboncoin:2876543210", lastRunId: "run-ingestion" });
@@ -90,8 +101,10 @@ describe("HTTP API", () => {
     expect(list.body.items[0]).not.toHaveProperty("title");
     expect(detail.body.coordinates).toEqual(coordinates);
     expect(detail.body.runs).toEqual([expect.objectContaining({ runId: "run-ingestion" })]);
-    expect(run.body.listings[0].coordinates).toEqual(coordinates);
-    expect(run.body.listings).toEqual([expect.objectContaining({ id: "leboncoin:2876543210" })]);
+    expect(run.body).toMatchObject({ listingCount: 1, detailedListingCount: 0 });
+    expect(run.body).not.toHaveProperty("listings");
+    expect(runListings.body.items[0].coordinates).toEqual(coordinates);
+    expect(runListings.body.items).toEqual([expect.objectContaining({ id: "leboncoin:2876543210" })]);
   });
 
   it("rejects coordinate payloads that do not declare a supported location kind", async () => {
@@ -542,28 +555,57 @@ describe("HTTP API", () => {
     expect(blocked.body.error).toMatchObject({ code: "ORIGIN_NOT_ALLOWED" });
   });
 
-  it("keeps reads public and requires the operator Bearer token for private methods", async () => {
+  it("requires the operator Bearer token for every /v1 method while keeping health and preflight public", async () => {
     const operatorToken = "test-operator-token-with-at-least-32-chars";
     const { app, filter } = createTestApp({ config: { operatorToken } });
 
     await request(app).get("/health").expect(200);
-    await request(app).get("/v1/listings").expect(200);
+    await request(app).get("/health/").expect(200);
+    await request(app).head("/health").expect(200);
+    await request(app)
+      .options("/v1/listings")
+      .set("Origin", VALID_EXTENSION_ORIGIN)
+      .set("Access-Control-Request-Method", "GET")
+      .expect(204);
+
+    const missingRead = await request(app).get("/v1/listings").expect(401);
+    await request(app).head("/v1/listings").expect(401);
+    const missingMedia = await request(app)
+      .get(`/v1/media/${"a".repeat(64)}/thumbnail.webp`)
+      .expect(401);
+    const missingHealthDetails = await request(app).get("/v1/health/details").expect(401);
+    const wrongRead = await request(app)
+      .get("/v1/listings")
+      .set("Authorization", "Bearer wrong-token")
+      .expect(401);
+    const malformedRead = await request(app)
+      .get("/v1/listings")
+      .set("Authorization", `Basic ${operatorToken}`)
+      .expect(401);
+
+    expect(missingRead.body.error).toMatchObject({ code: "OPERATOR_AUTH_REQUIRED" });
+    expect(missingMedia.body.error).toMatchObject({ code: "OPERATOR_AUTH_REQUIRED" });
+    expect(missingHealthDetails.body.error).toMatchObject({ code: "OPERATOR_AUTH_REQUIRED" });
+    expect(wrongRead.body.error).toMatchObject({ code: "OPERATOR_AUTH_REQUIRED" });
+    expect(malformedRead.body.error).toMatchObject({ code: "OPERATOR_AUTH_REQUIRED" });
+
+    await request(app).get("/v1/listings").set("Authorization", `Bearer ${operatorToken}`).expect(200);
+    await request(app).head("/v1/listings").set("Authorization", `Bearer ${operatorToken}`).expect(200);
+    const healthDetails = await request(app)
+      .get("/v1/health/details")
+      .set("Authorization", `Bearer ${operatorToken}`)
+      .expect(200);
+    expect(healthDetails.body).toEqual({
+      status: "ok",
+      service: "denicheur-api",
+      database: { status: "ok" },
+      media: { status: "disabled", pending: 0, processing: 0, ready: 0, failed: 0 },
+      openAiConfigured: false,
+    });
 
     const missing = await request(app).post("/v1/listings/filter").send(createRequest()).expect(401);
-    const wrong = await request(app)
-      .post("/v1/listings/filter")
-      .set("Authorization", "Bearer wrong-token")
-      .send(createRequest())
-      .expect(401);
-    const malformed = await request(app)
-      .post("/v1/listings/filter")
-      .set("Authorization", `Basic ${operatorToken}`)
-      .send(createRequest())
-      .expect(401);
 
     expect(missing.body.error).toMatchObject({ code: "OPERATOR_AUTH_REQUIRED" });
-    expect(wrong.body.error).toMatchObject({ code: "OPERATOR_AUTH_REQUIRED" });
-    expect(malformed.body.error).toMatchObject({ code: "OPERATOR_AUTH_REQUIRED" });
     expect(filter).not.toHaveBeenCalled();
 
     await request(app)
@@ -571,6 +613,16 @@ describe("HTTP API", () => {
       .set("Authorization", `Bearer ${operatorToken}`)
       .send(createRequest())
       .expect(200);
+    expect(filter).toHaveBeenCalledOnce();
+  });
+
+  it("preserves unauthenticated reads and writes when local mode has no operator token", async () => {
+    const { app, filter } = createTestApp();
+
+    await request(app).get("/v1/listings").expect(200);
+    await request(app).head("/v1/listings").expect(200);
+    await request(app).post("/v1/listings/filter").send(createRequest()).expect(200);
+
     expect(filter).toHaveBeenCalledOnce();
   });
 

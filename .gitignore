@@ -14,4 +14,26 @@ playwright-report
 test-results
 *.tsbuildinfo
 .playwright-mcp
-apps/api/.data
+.data
+**/.data
+
+# Cosign private material must never be staged. The repository's tracked
+# `.npmrc` contains only pnpm storage policy; the public key is also safe to track.
+cosign.key
+**/cosign.key
+
+# Registry evidence is produced as ephemeral CI artifacts at the repository
+# root. Keep local harness runs from accidentally staging those outputs.
+/api.digest
+/api.image
+/api.build-job-id
+/api.provenance.json
+/api.signature-verification.json
+/api.attestation-verification.json
+/web.digest
+/web.image
+/web.build-job-id
+/web.provenance.json
+/web.signature-verification.json
+/web.attestation-verification.json
+/verified-images.env

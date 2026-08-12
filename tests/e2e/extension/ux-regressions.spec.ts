@@ -463,6 +463,11 @@ test.describe("Denicheur extension UX regressions", () => {
         review: 0,
         failed: 0,
       },
+      budget: {
+        limit: { providerCalls: 10, inputTokens: 100_000, outputTokens: 20_000, costMicroUsd: 1_000_000 },
+        estimate: { providerCalls: 2, inputTokens: 2_000, outputTokens: 1_000, costMicroUsd: 10_000 },
+        consumed: { providerCalls: 2, inputTokens: 1_000, outputTokens: 500, costMicroUsd: 5_000 },
+      },
     };
     const executionRequests: Array<Record<string, unknown>> = [];
     const idempotencyKeys: string[] = [];

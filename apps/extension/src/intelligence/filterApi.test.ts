@@ -131,7 +131,10 @@ describe("intelligence filter API client", () => {
           get(keys: string[], callback: (values: Record<string, unknown>) => void) {
             callback(Object.fromEntries(keys.map((key) => [key, {
               "denicheur:runtime-api-base-url": "https://denicheur-breizh.orchid-labs.xyz/api",
-              "denicheur:runtime-operator-token": "operator-secret",
+              "denicheur:runtime-api-credential": {
+                endpoint: "https://denicheur-breizh.orchid-labs.xyz/api",
+                token: "operator-secret",
+              },
             }[key]])));
           },
         },

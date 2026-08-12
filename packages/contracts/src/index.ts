@@ -5,6 +5,7 @@ export const MAX_CRITERIA_PER_RECIPE = 12;
 export const MAX_RECIPES_PER_EVALUATION_PLAN = 4;
 export const MAX_LISTINGS_PER_EVALUATION_EXECUTION = 1_000;
 export const MAX_LISTING_IMAGE_URLS = 50;
+export const MAX_MEDIA_ASSETS_PER_INGESTION = 100;
 export const MAX_EVALUATION_IMAGE_URLS = 3;
 export const MAX_LISTING_FEATURES = 100;
 
@@ -394,6 +395,20 @@ export const ingestionRequestSchema = z
   .superRefine((request, context) => {
     const keys = request.listings.map(createListingKey);
     addDuplicateValuesIssues(keys, ["listings"], "listing", context);
+    const mediaUrls = new Set(request.listings.flatMap((listing) => [
+      ...(listing.imageUrl ? [listing.imageUrl] : []),
+      ...(listing.imageUrls ?? []),
+    ]));
+    if (mediaUrls.size > MAX_MEDIA_ASSETS_PER_INGESTION) {
+      context.addIssue({
+        code: "too_big",
+        maximum: MAX_MEDIA_ASSETS_PER_INGESTION,
+        origin: "array",
+        inclusive: true,
+        path: ["listings"],
+        message: `An ingestion request can reference at most ${MAX_MEDIA_ASSETS_PER_INGESTION} unique media assets.`,
+      });
+    }
     request.listings.forEach((listing, index) => {
       if (listing.source !== request.run.source) {
         context.addIssue({
@@ -541,6 +556,16 @@ export const evaluationExecutionCreateRequestSchema = z
       .max(MAX_LISTINGS_PER_EVALUATION_EXECUTION)
       .optional(),
     force: z.boolean().optional(),
+    budget: z
+      .object({
+        maxProviderCalls: z.number().int().min(1).max(10_000).optional(),
+        maxInputTokens: z.number().int().min(1).max(100_000_000).optional(),
+        maxOutputTokens: z.number().int().min(1).max(100_000_000).optional(),
+        maxCostMicroUsd: z.number().int().min(1).max(1_000_000_000).optional(),
+      })
+      .strict()
+      .refine((budget) => Object.keys(budget).length > 0, "At least one execution budget limit is required.")
+      .optional(),
   })
   .strict()
   .superRefine((request, context) => {
@@ -575,6 +600,34 @@ export const evaluationExecutionCountersSchema = z
     }
   });
 
+export const evaluationExecutionResourceUsageSchema = z
+  .object({
+    providerCalls: z.number().int().min(0),
+    inputTokens: z.number().int().min(0),
+    outputTokens: z.number().int().min(0),
+    costMicroUsd: z.number().int().min(0),
+  })
+  .strict();
+
+export const evaluationExecutionBudgetSchema = z
+  .object({
+    limit: evaluationExecutionResourceUsageSchema,
+    estimate: evaluationExecutionResourceUsageSchema,
+    consumed: evaluationExecutionResourceUsageSchema,
+  })
+  .strict()
+  .superRefine((budget, context) => {
+    for (const field of ["providerCalls", "inputTokens", "outputTokens", "costMicroUsd"] as const) {
+      if (budget.estimate[field] > budget.limit[field]) {
+        context.addIssue({
+          code: "custom",
+          path: ["estimate", field],
+          message: `Estimated ${field} cannot exceed its execution limit.`,
+        });
+      }
+    }
+  });
+
 export const evaluationExecutionRecordSchema = z
   .object({
     id: identifierSchema,
@@ -590,6 +643,7 @@ export const evaluationExecutionRecordSchema = z
     startedAt: isoDateTimeSchema.optional(),
     completedAt: isoDateTimeSchema.optional(),
     counters: evaluationExecutionCountersSchema,
+    budget: evaluationExecutionBudgetSchema,
     error: optionalText(2_000),
   })
   .strict();
@@ -712,7 +766,10 @@ export const listingDetailSchema = listingRecordSchema.extend({
   evaluations: z.array(listingEvaluationRecordSchema),
 });
 
-export const runDetailSchema = runRecordSchema.extend({ listings: z.array(listingRecordSchema) });
+export const runDetailSchema = runRecordSchema.extend({
+  listingCount: z.number().int().min(0),
+  detailedListingCount: z.number().int().min(0),
+});
 
 const paginationQueryFields = {
   cursor: z.string().trim().min(1).max(512).optional(),
@@ -746,6 +803,8 @@ export const runsQuerySchema = z
   })
   .strict();
 
+export const runListingsQuerySchema = z.object(paginationQueryFields).strict();
+
 export const evaluationExecutionsQuerySchema = z
   .object({
     ...paginationQueryFields,
@@ -771,6 +830,14 @@ export const runsPageSchema = z
   })
   .strict();
 
+export const runListingsPageSchema = z
+  .object({
+    items: z.array(listingRecordSchema).max(100),
+    nextCursor: z.string().nullable(),
+    total: z.number().int().min(0),
+  })
+  .strict();
+
 export const evaluationExecutionsPageSchema = z
   .object({
     items: z.array(evaluationExecutionRecordSchema),
@@ -785,6 +852,11 @@ export const healthResponseSchema = z
   .object({
     status: z.enum(["ok", "degraded", "error"]),
     service: z.literal("denicheur-api"),
+  })
+  .strict();
+
+export const healthDetailsResponseSchema = healthResponseSchema
+  .extend({
     database: z.object({ status: z.enum(["ok", "error"]) }).strict(),
     media: z.object({
       status: z.enum(["disabled", "ok", "degraded"]),
@@ -844,6 +916,8 @@ export type EvaluationBatchResponse = z.infer<typeof evaluationBatchResponseSche
 export type EvaluationExecutionStatus = z.infer<typeof evaluationExecutionStatusSchema>;
 export type EvaluationExecutionCreateRequest = z.infer<typeof evaluationExecutionCreateRequestSchema>;
 export type EvaluationExecutionCounters = z.infer<typeof evaluationExecutionCountersSchema>;
+export type EvaluationExecutionResourceUsage = z.infer<typeof evaluationExecutionResourceUsageSchema>;
+export type EvaluationExecutionBudget = z.infer<typeof evaluationExecutionBudgetSchema>;
 export type EvaluationExecutionRecord = z.infer<typeof evaluationExecutionRecordSchema>;
 export type EvaluationExecutionStepStatus = z.infer<typeof evaluationExecutionStepStatusSchema>;
 export type EvaluationExecutionSucceededStep = z.infer<typeof evaluationExecutionSucceededStepSchema>;
@@ -862,12 +936,15 @@ export type ListingDetail = z.infer<typeof listingDetailSchema>;
 export type RunDetail = z.infer<typeof runDetailSchema>;
 export type ListingsQuery = z.infer<typeof listingsQuerySchema>;
 export type RunsQuery = z.infer<typeof runsQuerySchema>;
+export type RunListingsQuery = z.infer<typeof runListingsQuerySchema>;
 export type EvaluationExecutionsQuery = z.infer<typeof evaluationExecutionsQuerySchema>;
 export type ListingsPage = z.infer<typeof listingsPageSchema>;
 export type RunsPage = z.infer<typeof runsPageSchema>;
+export type RunListingsPage = z.infer<typeof runListingsPageSchema>;
 export type EvaluationExecutionsPage = z.infer<typeof evaluationExecutionsPageSchema>;
 export type RecipesResponse = z.infer<typeof recipesResponseSchema>;
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
+export type HealthDetailsResponse = z.infer<typeof healthDetailsResponseSchema>;
 export type FilterLocale = Locale;
 
 interface IdentifiedValue {

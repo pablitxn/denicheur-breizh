@@ -1,24 +1,65 @@
 import { KeyRound, Save, Trash2 } from "lucide-react";
-import { FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useState } from "react";
 import { Button, Chip, SectionLabel } from "@denicheur-breizh/design-system";
 import {
   clearRuntimeApiConfig,
   DEFAULT_API_BASE_URL,
   loadRuntimeApiConfig,
+  normalizeAllowedApiBaseUrl,
   PRODUCTION_API_BASE_URL,
   RUNTIME_API_STORAGE_KEYS,
   saveRuntimeApiConfig,
+  type RuntimeApiConfig,
+  type RuntimeApiConfigInput,
 } from "../api/runtimeConfig";
 import { useExtensionI18n } from "../i18n";
+
+interface RuntimeApiSettingsSaveDraft {
+  baseUrl: string;
+  tokenDraft: string;
+  currentConfig: RuntimeApiConfig;
+}
+
+export function prepareRuntimeApiSettingsSave({
+  baseUrl,
+  tokenDraft,
+  currentConfig,
+}: RuntimeApiSettingsSaveDraft): RuntimeApiConfigInput {
+  const normalizedBaseUrl = normalizeAllowedApiBaseUrl(baseUrl);
+  const replacementToken = tokenDraft.trim();
+  if (replacementToken) {
+    return { baseUrl: normalizedBaseUrl, operatorToken: replacementToken };
+  }
+
+  const currentCredential = currentConfig.credential;
+  return currentCredential?.endpoint === normalizedBaseUrl
+    ? { baseUrl: normalizedBaseUrl, operatorToken: currentCredential.token }
+    : { baseUrl: normalizedBaseUrl };
+}
+
+export function runtimeApiCredentialAppliesToDraft(
+  config: RuntimeApiConfig,
+  baseUrl: string,
+): boolean {
+  try {
+    return config.credential?.endpoint === normalizeAllowedApiBaseUrl(baseUrl);
+  } catch {
+    return false;
+  }
+}
 
 export function RuntimeApiSettings() {
   const { t } = useExtensionI18n();
   const [baseUrl, setBaseUrl] = useState(DEFAULT_API_BASE_URL);
   const [tokenDraft, setTokenDraft] = useState("");
-  const [hasToken, setHasToken] = useState(false);
+  const [currentConfig, setCurrentConfig] = useState<RuntimeApiConfig>({
+    baseUrl: DEFAULT_API_BASE_URL,
+  });
   const [pending, setPending] = useState(false);
   const [feedback, setFeedback] = useState<"saved" | "cleared">();
   const [error, setError] = useState(false);
+  const savedCredentialApplies = runtimeApiCredentialAppliesToDraft(currentConfig, baseUrl);
+  const hasToken = savedCredentialApplies;
 
   useEffect(() => {
     let mounted = true;
@@ -27,8 +68,9 @@ export function RuntimeApiSettings() {
       void loadRuntimeApiConfig()
         .then((config) => {
           if (!mounted) return;
+          setCurrentConfig(config);
           setBaseUrl(config.baseUrl);
-          setHasToken(Boolean(config.operatorToken));
+          setTokenDraft("");
           setError(false);
         })
         .catch(() => {
@@ -56,13 +98,14 @@ export function RuntimeApiSettings() {
     setError(false);
     try {
       const current = await loadRuntimeApiConfig();
-      const saved = await saveRuntimeApiConfig({
+      const saved = await saveRuntimeApiConfig(prepareRuntimeApiSettingsSave({
         baseUrl,
-        operatorToken: tokenDraft.trim() || current.operatorToken,
-      });
+        tokenDraft,
+        currentConfig: current,
+      }));
+      setCurrentConfig(saved);
       setBaseUrl(saved.baseUrl);
       setTokenDraft("");
-      setHasToken(Boolean(saved.operatorToken));
       setFeedback("saved");
     } catch {
       setError(true);
@@ -77,9 +120,9 @@ export function RuntimeApiSettings() {
     setError(false);
     try {
       await clearRuntimeApiConfig();
+      setCurrentConfig({ baseUrl: DEFAULT_API_BASE_URL });
       setBaseUrl(DEFAULT_API_BASE_URL);
       setTokenDraft("");
-      setHasToken(false);
       setFeedback("cleared");
     } catch {
       setError(true);
@@ -115,6 +158,7 @@ export function RuntimeApiSettings() {
             value={baseUrl}
             onChange={(event) => {
               setBaseUrl(event.target.value);
+              setTokenDraft("");
               setFeedback(undefined);
               setError(false);
             }}
@@ -135,7 +179,9 @@ export function RuntimeApiSettings() {
             spellCheck={false}
             autoComplete="new-password"
             value={tokenDraft}
-            placeholder={t(hasToken ? "apiConfig.tokenPlaceholderConfigured" : "apiConfig.tokenPlaceholderEmpty")}
+            placeholder={t(savedCredentialApplies
+              ? "apiConfig.tokenPlaceholderConfigured"
+              : "apiConfig.tokenPlaceholderEmpty")}
             onChange={(event) => {
               setTokenDraft(event.target.value);
               setFeedback(undefined);

@@ -119,7 +119,7 @@ export async function evaluateDetailedRecords(
     const config = await resolveRuntimeApiConfig(options.baseUrl);
     response = await fetcher(`${config.baseUrl}/v1/runs/${encodeURIComponent(runId)}/evaluations`, {
       method: "POST",
-      headers: withOperatorAuthorization({ "Content-Type": "application/json" }, config.operatorToken),
+      headers: withOperatorAuthorization({ "Content-Type": "application/json" }, config),
       body: JSON.stringify(request.data),
       signal: options.signal,
     });

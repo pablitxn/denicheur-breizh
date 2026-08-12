@@ -8,6 +8,13 @@ import type {
 } from "./contracts.js";
 import { MAX_LISTINGS_PER_REQUEST } from "./contracts.js";
 import { combineEvaluationExecutionListing } from "./evaluationCombiner.js";
+import {
+  calculateCostMicroUsd,
+  DEFAULT_EVALUATION_BUDGET_POLICY,
+  estimateProviderCallReservation,
+  type EvaluationBudgetPolicy,
+} from "./evaluationBudget.js";
+import type { ProviderCallBudget } from "./filterService.js";
 import type { StoredEvaluationService } from "./evaluationService.js";
 import type {
   DenicheurRepository,
@@ -21,12 +28,14 @@ export interface EvaluationExecutionWorkerOptions {
   readonly ownerId?: string;
   readonly leaseDurationMs?: number;
   readonly now?: () => Date;
+  readonly budgetPolicy?: EvaluationBudgetPolicy;
 }
 
 export class EvaluationExecutionWorker {
   private readonly ownerId: string;
   private readonly leaseDurationMs: number;
   private readonly now: () => Date;
+  private readonly budgetPolicy: EvaluationBudgetPolicy;
   private active: Promise<void> | undefined;
   private wakeRequested = false;
   private disposed = false;
@@ -39,6 +48,7 @@ export class EvaluationExecutionWorker {
     this.ownerId = options.ownerId ?? randomUUID();
     this.leaseDurationMs = options.leaseDurationMs ?? DEFAULT_LEASE_DURATION_MS;
     this.now = options.now ?? (() => new Date());
+    this.budgetPolicy = options.budgetPolicy ?? DEFAULT_EVALUATION_BUDGET_POLICY;
   }
 
   start(): void {
@@ -196,7 +206,7 @@ export class EvaluationExecutionWorker {
         recipeVersion: reference.recipeVersion,
         listingIds: batch.map((item) => item.listingId),
         ...((execution.force && batch.every((item) => !item.resumed)) ? { force: true } : {}),
-      }, { requestId });
+      }, { requestId, providerBudget: this.providerBudget(execution.id) });
       const outcomeByListingId = new Map(response.items.map((item) => [item.listingId, item]));
       return batch.map((item) => {
         const outcome = outcomeByListingId.get(item.listingId);
@@ -215,6 +225,34 @@ export class EvaluationExecutionWorker {
         };
       });
     }
+  }
+
+  private providerBudget(executionId: string): ProviderCallBudget {
+    const reservations = new Map<string, ReturnType<DenicheurRepository["reserveEvaluationProviderCall"]>>();
+    return {
+      reserve: (request) => {
+        const reserved = estimateProviderCallReservation(
+          request.serializedRequest,
+          request.imageCount,
+          request.maxOutputTokens,
+          this.budgetPolicy,
+        );
+        const reservation = this.repository.reserveEvaluationProviderCall(executionId, this.ownerId, reserved);
+        reservations.set(reservation.id, reservation);
+        return { id: reservation.id };
+      },
+      settle: (handle, usage) => {
+        const reservation = reservations.get(handle.id);
+        if (!reservation) return;
+        this.repository.settleEvaluationProviderCall(executionId, this.ownerId, reservation, {
+          providerCalls: 1,
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          costMicroUsd: calculateCostMicroUsd(usage.inputTokens, usage.outputTokens, this.budgetPolicy),
+        });
+        reservations.delete(handle.id);
+      },
+    };
   }
 }
 

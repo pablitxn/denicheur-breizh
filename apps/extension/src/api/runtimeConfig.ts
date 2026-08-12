@@ -1,14 +1,30 @@
-export const DEFAULT_API_BASE_URL = "http://127.0.0.1:4310";
 export const PRODUCTION_API_BASE_URL = "https://denicheur-breizh.orchid-labs.xyz/api";
+const LOCAL_DEFAULT_API_BASE_URL = "http://127.0.0.1:4310";
+const LOCAL_API_HOSTS = new Set(["127.0.0.1", "localhost"]);
+export const DEFAULT_API_BASE_URL = normalizeAllowedApiBaseUrl(
+  import.meta.env.VITE_API_BASE_URL || LOCAL_DEFAULT_API_BASE_URL,
+);
 
 export const RUNTIME_API_STORAGE_KEYS = {
   baseUrl: "denicheur:runtime-api-base-url",
-  operatorToken: "denicheur:runtime-operator-token",
+  credential: "denicheur:runtime-api-credential",
+  legacyOperatorToken: "denicheur:runtime-operator-token",
 } as const;
 
-const LOCAL_API_HOSTS = new Set(["127.0.0.1", "localhost"]);
+export interface RuntimeApiCredential {
+  endpoint: string;
+  token: string;
+}
 
-export interface RuntimeApiConfig {
+export type RuntimeApiConfig = {
+  baseUrl: string;
+  credential?: undefined;
+} | {
+  baseUrl: string;
+  credential: RuntimeApiCredential;
+};
+
+export interface RuntimeApiConfigInput {
   baseUrl: string;
   operatorToken?: string;
 }
@@ -55,13 +71,9 @@ export async function loadRuntimeApiConfig(
 
   const values = await getStorage(area, Object.values(RUNTIME_API_STORAGE_KEYS));
   const rawBaseUrl = values[RUNTIME_API_STORAGE_KEYS.baseUrl];
-  const rawToken = values[RUNTIME_API_STORAGE_KEYS.operatorToken];
   const storedBaseUrl = typeof rawBaseUrl === "string"
     ? rawBaseUrl
     : undefined;
-  const storedToken = typeof rawToken === "string"
-    ? rawToken.trim()
-    : "";
 
   let baseUrl = DEFAULT_API_BASE_URL;
   let storedBaseUrlIsAllowed = false;
@@ -74,9 +86,15 @@ export async function loadRuntimeApiConfig(
     }
   }
 
+  const credential = parseStoredCredential(values[RUNTIME_API_STORAGE_KEYS.credential]);
+  const rawLegacyToken = values[RUNTIME_API_STORAGE_KEYS.legacyOperatorToken];
+  if (rawLegacyToken !== undefined) {
+    await removeStorage(area, [RUNTIME_API_STORAGE_KEYS.legacyOperatorToken]);
+  }
+
   return {
     baseUrl,
-    ...(storedToken && storedBaseUrlIsAllowed ? { operatorToken: storedToken } : {}),
+    ...(storedBaseUrlIsAllowed && credential?.endpoint === baseUrl ? { credential } : {}),
   };
 }
 
@@ -85,34 +103,40 @@ export async function resolveRuntimeApiConfig(
   storage?: RuntimeConfigStorage,
 ): Promise<RuntimeApiConfig> {
   const config = await loadRuntimeApiConfig(storage);
-  return {
-    ...config,
-    baseUrl: explicitBaseUrl
-      ? normalizeAllowedApiBaseUrl(explicitBaseUrl)
-      : config.baseUrl,
-  };
+  if (!explicitBaseUrl) return config;
+
+  const baseUrl = normalizeAllowedApiBaseUrl(explicitBaseUrl);
+  return config.credential?.endpoint === baseUrl
+    ? { baseUrl, credential: config.credential }
+    : { baseUrl };
 }
 
 export async function saveRuntimeApiConfig(
-  config: RuntimeApiConfig,
+  config: RuntimeApiConfigInput,
   storage?: RuntimeConfigStorage,
 ): Promise<RuntimeApiConfig> {
   const area = requireStorage(storage);
   const baseUrl = normalizeAllowedApiBaseUrl(config.baseUrl);
   const operatorToken = config.operatorToken?.trim() ?? "";
+  const credential = operatorToken
+    ? { endpoint: baseUrl, token: operatorToken }
+    : undefined;
+
+  if (!credential) {
+    await removeStorage(area, [
+      RUNTIME_API_STORAGE_KEYS.credential,
+      RUNTIME_API_STORAGE_KEYS.legacyOperatorToken,
+    ]);
+    await setStorage(area, { [RUNTIME_API_STORAGE_KEYS.baseUrl]: baseUrl });
+    return { baseUrl };
+  }
 
   await setStorage(area, {
     [RUNTIME_API_STORAGE_KEYS.baseUrl]: baseUrl,
-    ...(operatorToken ? { [RUNTIME_API_STORAGE_KEYS.operatorToken]: operatorToken } : {}),
+    [RUNTIME_API_STORAGE_KEYS.credential]: credential,
   });
-  if (!operatorToken) {
-    await removeStorage(area, [RUNTIME_API_STORAGE_KEYS.operatorToken]);
-  }
-
-  return {
-    baseUrl,
-    ...(operatorToken ? { operatorToken } : {}),
-  };
+  await removeStorage(area, [RUNTIME_API_STORAGE_KEYS.legacyOperatorToken]);
+  return { baseUrl, credential };
 }
 
 export async function clearRuntimeApiConfig(storage?: RuntimeConfigStorage): Promise<void> {
@@ -121,12 +145,36 @@ export async function clearRuntimeApiConfig(storage?: RuntimeConfigStorage): Pro
 
 export function withOperatorAuthorization(
   headers: Record<string, string>,
-  operatorToken?: string,
+  config: RuntimeApiConfig,
 ): Record<string, string> {
+  const operatorToken = config.credential?.endpoint === config.baseUrl
+    ? config.credential.token
+    : undefined;
   return {
     ...headers,
     ...(operatorToken ? { Authorization: `Bearer ${operatorToken}` } : {}),
   };
+}
+
+function parseStoredCredential(value: unknown): RuntimeApiCredential | undefined {
+  if (!isRecord(value) || typeof value.endpoint !== "string" || typeof value.token !== "string") {
+    return undefined;
+  }
+
+  const token = value.token.trim();
+  if (!token) return undefined;
+  try {
+    return {
+      endpoint: normalizeAllowedApiBaseUrl(value.endpoint),
+      token,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function resolveStorage(storage?: RuntimeConfigStorage): RuntimeConfigStorage | undefined {

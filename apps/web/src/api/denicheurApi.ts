@@ -6,7 +6,7 @@ import {
   evaluationPlanDraftSchema,
   evaluationPlanVersionSchema,
   evaluationPlansResponseSchema,
-  healthResponseSchema,
+  healthDetailsResponseSchema,
   listingDetailSchema,
   listingsPageSchema,
   recipeDraftSchema,
@@ -14,12 +14,13 @@ import {
   recipesResponseSchema,
   resolvedEvaluationPlanVersionSchema,
   runDetailSchema,
+  runListingsPageSchema,
   runsPageSchema,
   type EvaluationExecutionRecord,
   type EvaluationExecutionResults,
   type EvaluationExecutionsPage,
   type EvaluationPlanVersion,
-  type HealthResponse,
+  type HealthDetailsResponse,
   type ListingImageAsset,
   type ListingDetail,
   type ListingEvaluationRecord,
@@ -27,6 +28,7 @@ import {
   type ListingsPage,
   type RecipeVersion,
   type RunDetail,
+  type RunListingsPage,
   type RunsPage,
 } from "@denicheur-breizh/contracts";
 import type {
@@ -42,8 +44,9 @@ import type {
   RecipeDraft,
   StartEvaluationExecutionInput,
 } from "../types";
+import { API_BASE_URL } from "../config/apiBaseUrl";
 
-export const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL?.trim() || "http://127.0.0.1:4310").replace(/\/$/, "");
+export { API_BASE_URL } from "../config/apiBaseUrl";
 
 export class DenicheurApiError extends Error {
   constructor(message: string, readonly status?: number, readonly code?: string) {
@@ -89,7 +92,12 @@ async function requestJson<T>(
 
 export const denicheurApi = {
   async health(signal?: AbortSignal): Promise<HealthStatus> {
-    const health: HealthResponse = await requestJson("/health", healthResponseSchema, undefined, signal);
+    const health: HealthDetailsResponse = await requestJson(
+      "/v1/health/details",
+      healthDetailsResponseSchema,
+      undefined,
+      signal,
+    );
     return {
       status: health.database.status === "ok" ? "ok" : "degraded",
       database: health.database.status === "ok" ? "ok" : "unavailable",
@@ -138,6 +146,23 @@ export const denicheurApi = {
 
   async getRun(runId: string, signal?: AbortSignal): Promise<RunDetail> {
     return requestJson(`/v1/runs/${encodeURIComponent(runId)}`, runDetailSchema, undefined, signal);
+  },
+
+  async listRunListings(
+    runId: string,
+    options: { cursor?: string; limit?: number } = {},
+    signal?: AbortSignal,
+  ): Promise<RunListingsPage> {
+    const params = new URLSearchParams();
+    if (options.cursor) params.set("cursor", options.cursor);
+    if (options.limit !== undefined) params.set("limit", String(options.limit));
+    const query = params.size > 0 ? `?${params}` : "";
+    return requestJson(
+      `/v1/runs/${encodeURIComponent(runId)}/listings${query}`,
+      runListingsPageSchema,
+      undefined,
+      signal,
+    );
   },
 
   async listRecipes(signal?: AbortSignal): Promise<IntelligenceRecipe[]> {

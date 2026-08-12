@@ -15,11 +15,13 @@ import {
   evaluationPlanDraftSchema,
   evaluationRequestSchema,
   filterListingsRequestSchema,
+  type HealthDetailsResponse,
   idempotencyKeySchema,
   ingestionRequestSchema,
   listingIdentitySchema,
   listingsQuerySchema,
   recipeDraftSchema,
+  runListingsQuerySchema,
   runsQuerySchema,
   setDefaultEvaluationPlanRequestSchema,
 } from "./contracts.js";
@@ -29,7 +31,7 @@ import { EvaluationExecutionWorker } from "./evaluationExecutionWorker.js";
 import { StoredEvaluationService } from "./evaluationService.js";
 import type { FilterListingsService } from "./filterService.js";
 import type { Logger } from "./logger.js";
-import { MediaService } from "./mediaService.js";
+import { MediaService, type MediaHealth } from "./mediaService.js";
 import { requireOperatorForPrivateMethods } from "./operatorAuth.js";
 import { RealtimeSessionService, type RealtimeFetch } from "./realtimeSessionService.js";
 import type { DenicheurRepository } from "./repository.js";
@@ -74,12 +76,15 @@ export function createApp({
     },
   });
   const realtimeSessionService = new RealtimeSessionService({
+    enabled: config.realtimeEnabled,
     apiKey: config.openAiApiKey,
     timeoutMs: config.openAiTimeoutMs,
     ...(fetchImpl ? { fetchImpl } : {}),
   });
-  const executionWorker = evaluationExecutionWorker ?? new EvaluationExecutionWorker(repository, evaluationService);
-  const executionService = new EvaluationExecutionService(repository, executionWorker);
+  const executionWorker = evaluationExecutionWorker ?? new EvaluationExecutionWorker(repository, evaluationService, {
+    budgetPolicy: config.evaluationBudget,
+  });
+  const executionService = new EvaluationExecutionService(repository, executionWorker, config.evaluationBudget);
   const media = mediaService ?? new MediaService({ repository, logger });
   app.locals.evaluationExecutionWorker = executionWorker;
   app.locals.mediaService = media;
@@ -106,29 +111,56 @@ export function createApp({
   app.use(requireOperatorForPrivateMethods(config.operatorToken));
   app.use(express.text({ limit: config.requestBodyLimit, type: "application/sdp" }));
   app.use(express.json({ limit: config.requestBodyLimit, type: ["application/json", "application/*+json"] }));
+
+  const readHealthDetails = (): HealthDetailsResponse => {
+    const ready = repository.isReady();
+    let mediaHealth: MediaHealth = {
+      status: "degraded",
+      pending: 0,
+      processing: 0,
+      ready: 0,
+      failed: 0,
+    };
+    if (ready) {
+      try {
+        mediaHealth = media.health();
+      } catch {
+        // Readiness must remain minimal and fail closed if health metadata cannot be read.
+      }
+    }
+    const mediaUnavailable = mediaHealth.status === "degraded"
+      || (config.media.mode === "minio" && mediaHealth.status !== "ok");
+    return {
+      status: !ready ? "error" : mediaUnavailable ? "degraded" : "ok",
+      service: "denicheur-api",
+      database: { status: ready ? "ok" : "error" },
+      media: mediaHealth,
+      openAiConfigured: Boolean(config.openAiApiKey),
+    };
+  };
+
+  app.get("/health", (_request, response) => {
+    const health = readHealthDetails();
+    response.status(health.status === "ok" ? 200 : 503).json({
+      status: health.status,
+      service: health.service,
+    });
+  });
+
+  app.get("/v1/health/details", (_request, response) => {
+    const health = readHealthDetails();
+    response.status(health.status === "ok" ? 200 : 503).json(health);
+  });
+
   app.use((request, _response, next) => {
     if (
       media.isMaintenanceActive() &&
-      request.path !== "/health" &&
       request.path !== "/v1/maintenance/collected-data/clear"
     ) {
       next(new ApiError(503, "MAINTENANCE_IN_PROGRESS", "Collected data cleanup is in progress."));
       return;
     }
     next();
-  });
-
-  app.get("/health", (_request, response) => {
-    const ready = repository.isReady();
-    const mediaHealth = media.health();
-    const status = !ready ? "error" : mediaHealth.status === "degraded" ? "degraded" : "ok";
-    response.status(ready ? 200 : 503).json({
-      status,
-      service: "denicheur-api",
-      database: { status: ready ? "ok" : "error" },
-      media: mediaHealth,
-      openAiConfigured: Boolean(config.openAiApiKey),
-    });
   });
 
   app.post("/v1/maintenance/collected-data/clear", async (request, response) => {
@@ -175,6 +207,16 @@ export function createApp({
     response.json(run);
   });
 
+  app.get("/v1/runs/:runId/listings", (request, response) => {
+    const runId = parseOrThrow(pathIdentifierSchema.safeParse(request.params.runId));
+    const page = repository.listRunListings(
+      runId,
+      parseOrThrow(runListingsQuerySchema.safeParse(request.query)),
+    );
+    if (!page) throw new ApiError(404, "RUN_NOT_FOUND", "The requested run does not exist.");
+    response.json(page);
+  });
+
   app.get("/v1/listings", (request, response) => {
     response.json(repository.listListings(parseOrThrow(listingsQuerySchema.safeParse(request.query))));
   });
@@ -189,15 +231,21 @@ export function createApp({
     response.json(listing);
   });
 
+  const mediaDeliveryRateLimit = requestRateLimit({
+    windowMs: config.rateLimitWindowMs,
+    limit: config.media.deliveryRateLimitMax,
+    code: "MEDIA_DELIVERY_RATE_LIMITED",
+    message: "Too many media delivery requests.",
+  });
   for (const variant of ["thumbnail", "gallery"] as const) {
-    app.get(`/v1/media/:assetId/${variant}.webp`, async (request, response) => {
+    app.get(`/v1/media/:assetId/${variant}.webp`, mediaDeliveryRateLimit, async (request, response) => {
       const assetId = parseOrThrow(z.string().regex(/^[a-f0-9]{64}$/).safeParse(request.params.assetId));
       const object = await media.getVariant(assetId, variant);
       if (etagMatches(request.get("If-None-Match"), object.etag)) {
         object.body.destroy();
         response.status(304).set({
           ETag: object.etag,
-          "Cache-Control": "public, max-age=31536000, immutable",
+          "Cache-Control": "private, max-age=31536000, immutable",
         }).end();
         return;
       }
@@ -205,7 +253,7 @@ export function createApp({
         ETag: object.etag,
         "Content-Type": object.contentType,
         "Content-Length": String(object.contentLength),
-        "Cache-Control": "public, max-age=31536000, immutable",
+        "Cache-Control": "private, max-age=31536000, immutable",
       });
       await pipeline(object.body, response);
     });
@@ -385,13 +433,27 @@ function etagMatches(ifNoneMatch: string | undefined, etag: string): boolean {
 }
 
 function filterRateLimit(config: ApiConfig, message: string): RequestHandler {
-  return rateLimit({
+  return requestRateLimit({
     windowMs: config.rateLimitWindowMs,
     limit: config.rateLimitMax,
+    code: "RATE_LIMITED",
+    message,
+  });
+}
+
+function requestRateLimit(options: {
+  readonly windowMs: number;
+  readonly limit: number;
+  readonly code: string;
+  readonly message: string;
+}): RequestHandler {
+  return rateLimit({
+    windowMs: options.windowMs,
+    limit: options.limit,
     standardHeaders: "draft-8",
     legacyHeaders: false,
     handler(_request, response) {
-      sendError(response, new ApiError(429, "RATE_LIMITED", message));
+      sendError(response, new ApiError(429, options.code, options.message));
     },
   });
 }

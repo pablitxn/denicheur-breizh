@@ -8,6 +8,7 @@ const REALTIME_INSTRUCTIONS =
 export type RealtimeFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
 export interface RealtimeSessionServiceOptions {
+  readonly enabled: boolean;
   readonly apiKey: string | undefined;
   readonly timeoutMs: number;
   readonly fetchImpl?: RealtimeFetch;
@@ -20,17 +21,22 @@ export interface RealtimeSessionAnswer {
 }
 
 export class RealtimeSessionService {
+  private readonly enabled: boolean;
   private readonly apiKey: string | undefined;
   private readonly fetchImpl: RealtimeFetch;
   private readonly timeoutMs: number;
 
   constructor(options: RealtimeSessionServiceOptions) {
+    this.enabled = options.enabled;
     this.apiKey = options.apiKey;
     this.fetchImpl = options.fetchImpl ?? globalThis.fetch;
     this.timeoutMs = options.timeoutMs;
   }
 
   async createSession(sdp: string): Promise<RealtimeSessionAnswer> {
+    if (!this.enabled) {
+      throw new ApiError(503, "OPENAI_REALTIME_DISABLED", "Realtime is disabled by server policy.");
+    }
     if (!this.apiKey) {
       throw new ApiError(503, "OPENAI_NOT_CONFIGURED", "Realtime is not configured.");
     }

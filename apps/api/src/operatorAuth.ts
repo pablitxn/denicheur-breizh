@@ -4,17 +4,17 @@ import type { RequestHandler } from "express";
 
 import { ApiError } from "./errors.js";
 
-const PUBLIC_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+const HEALTH_METHODS = new Set(["GET", "HEAD"]);
+const PUBLIC_HEALTH_PATHS = new Set(["/health", "/health/"]);
 
 /**
- * Production keeps reads public, while every state-changing or provider-backed
- * request is authenticated. Keeping this method-based and deny-by-default also
- * protects future POST/PUT/PATCH/DELETE routes until they are explicitly
- * redesigned as public operations.
+ * Local mode stays unauthenticated when no token is configured. Once a token is
+ * configured, only CORS preflight and the minimal health endpoint remain public;
+ * every API read and mutation is authenticated deny-by-default.
  */
 export function requireOperatorForPrivateMethods(operatorToken: string | undefined): RequestHandler {
   return (request, _response, next) => {
-    if (PUBLIC_METHODS.has(request.method) || !operatorToken) {
+    if (!operatorToken || isPublicRequest(request.method, request.path)) {
       next();
       return;
     }
@@ -27,6 +27,10 @@ export function requireOperatorForPrivateMethods(operatorToken: string | undefin
 
     next();
   };
+}
+
+function isPublicRequest(method: string, path: string): boolean {
+  return method === "OPTIONS" || (HEALTH_METHODS.has(method) && PUBLIC_HEALTH_PATHS.has(path));
 }
 
 function readBearerToken(header: string | undefined): string | undefined {

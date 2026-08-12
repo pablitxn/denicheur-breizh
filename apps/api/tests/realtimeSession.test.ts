@@ -10,6 +10,27 @@ const OFFER_SDP = "v=0\r\no=- 1 1 IN IP4 127.0.0.1\r\n";
 const ANSWER_SDP = "v=0\r\no=- 2 2 IN IP4 127.0.0.1\r\n";
 
 describe("POST /v1/realtime/session", () => {
+  it("fails before contacting OpenAI when Realtime is disabled by default", async () => {
+    const fetchImpl = vi.fn<RealtimeFetch>();
+    const repository = new DenicheurRepository({ path: ":memory:" });
+    const app = createApp({
+      config: loadConfig({ OPENAI_API_KEY: "test-realtime-credential", DENICHEUR_DB_PATH: ":memory:" }),
+      filterService: { filter: vi.fn() },
+      repository,
+      logger: { info: vi.fn(), error: vi.fn() },
+      fetchImpl,
+    });
+
+    const response = await request(app)
+      .post("/v1/realtime/session")
+      .set("Content-Type", "application/sdp")
+      .send(OFFER_SDP)
+      .expect(503);
+
+    expect(response.body.error).toMatchObject({ code: "OPENAI_REALTIME_DISABLED" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("proxies SDP through the API without returning its server credential", async () => {
     const fetchImpl = vi.fn<RealtimeFetch>().mockResolvedValue(new Response(ANSWER_SDP, {
       status: 200,
@@ -107,7 +128,9 @@ describe("POST /v1/realtime/session", () => {
 function createTestApp(options: { apiKey?: string; fetchImpl: RealtimeFetch }) {
   const repository = new DenicheurRepository({ path: ":memory:" });
   return createApp({
-    config: loadConfig(options.apiKey ? { OPENAI_API_KEY: options.apiKey, DENICHEUR_DB_PATH: ":memory:" } : {
+    config: loadConfig({
+      OPENAI_REALTIME_ENABLED: "true",
+      ...(options.apiKey ? { OPENAI_API_KEY: options.apiKey } : {}),
       DENICHEUR_DB_PATH: ":memory:",
     }),
     filterService: { filter: vi.fn() },

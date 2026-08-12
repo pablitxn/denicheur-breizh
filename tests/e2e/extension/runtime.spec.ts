@@ -763,9 +763,9 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     expect(context.pages().some((candidate) => candidate.url().startsWith("https://www.leboncoin.fr/"))).toBe(false);
     const pageCountBeforeRun = context.pages().length;
 
-    const start = page.locator('button[type="submit"]');
+    const start = page.getByRole("button", { name: "Start collection", exact: true });
     await start.click();
-    await expect(start).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Starting…", exact: true })).toBeDisabled();
 
     await expect(page.getByText("completed", { exact: true })).toBeVisible({ timeout: 55_000 });
     await expect(page.getByText(
@@ -896,9 +896,9 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     expect(tracker.searchRequests).toBe(0);
     expect(tracker.detailRequests).toEqual([]);
 
-    const start = page.locator('button[type="submit"]');
+    const start = page.getByRole("button", { name: "Start collection", exact: true });
     await start.click();
-    await expect(start).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Starting…", exact: true })).toBeDisabled();
 
     await expect(page.getByText("completed", { exact: true })).toBeVisible({ timeout: 55_000 });
     await expect(page.getByText("Collected 1 detailed listing.", { exact: true })).toBeVisible();
@@ -1085,9 +1085,9 @@ test.describe("Denicheur MV3 native-search runtime", () => {
 
     const dashboardTab = await page.evaluate(async () => chrome.tabs.getCurrent());
     const pageCountBeforeRun = context.pages().length;
-    const start = page.locator('button[type="submit"]');
+    const start = page.getByRole("button", { name: "Start collection", exact: true });
     await start.click();
-    await expect(start).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Starting…", exact: true })).toBeDisabled();
 
     await expect(page.getByText("completed", { exact: true })).toBeVisible({ timeout: 85_000 });
     await expect(page.getByText(
@@ -1174,9 +1174,9 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     await openCleanDashboard(page, extensionId);
     await configureNativeSearch(page, { details: true });
 
-    const start = page.locator('button[type="submit"]');
+    const start = page.getByRole("button", { name: "Start collection", exact: true });
     await start.click();
-    await expect(start).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Starting…", exact: true })).toBeDisabled();
 
     await expect(page.getByText("completed", { exact: true })).toBeVisible({ timeout: 55_000 });
     await expect(page.getByText("Collected 0 detailed listings.", { exact: true })).toBeVisible();
@@ -1312,9 +1312,9 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     await foreign.evaluate(() => { document.body.dataset.foreignMarker = "untouched"; });
     const foreignUrl = foreign.url();
     const searchRequestsBeforeRun = tracker.searchRequests;
-    const start = page.locator('button[type="submit"]');
+    const start = page.getByRole("button", { name: "Start collection", exact: true });
     await start.click();
-    await expect(start).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Starting…", exact: true })).toBeDisabled();
     await expect(page.getByText("configuring search", { exact: true })).toBeVisible({ timeout: 10_000 });
     await page.getByRole("button", { name: "Cancel" }).click();
 

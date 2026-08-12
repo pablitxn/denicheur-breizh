@@ -226,6 +226,11 @@ function createExecution(seeded: SeededRepository, id: string, force = false): v
     listingIds: seeded.listingIds,
     idempotencyKey: `${id}-key`,
     requestFingerprint: `${id}-fingerprint`,
+    budget: {
+      limit: { providerCalls: 100, inputTokens: 1_000_000, outputTokens: 1_000_000, costMicroUsd: 3_000_000 },
+      estimate: { providerCalls: 1, inputTokens: 1_000, outputTokens: 1_000, costMicroUsd: 0 },
+      consumed: { providerCalls: 0, inputTokens: 0, outputTokens: 0, costMicroUsd: 0 },
+    },
   });
 }
 

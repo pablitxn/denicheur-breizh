@@ -18,6 +18,28 @@ export type FilterListingsServiceResponse = FilterListingsResponse & {
 
 export interface EvaluationContext {
   readonly requestId: string;
+  readonly providerBudget?: ProviderCallBudget;
+}
+
+export interface ProviderCallReservationRequest {
+  readonly serializedRequest: unknown;
+  readonly imageCount: number;
+  readonly maxOutputTokens: number;
+}
+
+export interface ProviderCallReservationHandle {
+  readonly id: string;
+}
+
+export interface ProviderCallUsage {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+}
+
+export interface ProviderCallBudget {
+  reserve(request: ProviderCallReservationRequest): ProviderCallReservationHandle;
+  settle(reservation: ProviderCallReservationHandle, usage: ProviderCallUsage): void;
+  release?(reservation: ProviderCallReservationHandle): void;
 }
 
 export interface ModelEvaluationProvider {

@@ -44,7 +44,7 @@ function installApiFixture() {
   const timestamp = "2026-07-18T10:00:00.000Z";
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input);
-    if (url.endsWith("/health")) {
+    if (url.endsWith("/v1/health/details")) {
       return new Response(JSON.stringify({
         status: "ok",
         service: "denicheur-api",

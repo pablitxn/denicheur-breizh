@@ -553,6 +553,7 @@ function escapeRegExp(value: string): string {
 
 async function expectLoadedImage(image: Locator, expectedSrc: string): Promise<void> {
   await expect(image).toBeVisible();
+  await expect(async () => image.scrollIntoViewIfNeeded()).toPass({ timeout: 8_000 });
   await expect(image).toHaveAttribute("src", expectedSrc);
   await expect.poll(() => image.evaluate((element) => (element as HTMLImageElement).naturalWidth))
     .toBeGreaterThan(0);

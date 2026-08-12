@@ -14,7 +14,13 @@ import type {
 
 import type { FilterListingsRequest } from "./contracts.js";
 import { ApiError, invalidModelOutput } from "./errors.js";
-import type { EvaluationContext, ModelEvaluationProvider } from "./filterService.js";
+import { maxOutputTokensForShape } from "./evaluationBudget.js";
+import type {
+  EvaluationContext,
+  ModelEvaluationProvider,
+  ProviderCallBudget,
+  ProviderCallReservationHandle,
+} from "./filterService.js";
 import type { Logger } from "./logger.js";
 import {
   buildEvidenceCatalog,
@@ -84,13 +90,15 @@ export type CreateOpenAiResponse = (
   request: ResponseCreateParamsNonStreaming,
 ) => Promise<OpenAiResponseLike>;
 
+export const OPENAI_SDK_MAX_RETRIES = 0;
+
 export interface OpenAiListingEvaluatorOptions {
   readonly apiKey?: string;
   readonly model: string;
   readonly version: string;
   readonly timeoutMs: number;
-  readonly maxRetries: number;
   readonly logger: Logger;
+  readonly globalProviderBudget?: ProviderCallBudget;
   readonly createResponse?: CreateOpenAiResponse;
 }
 
@@ -99,12 +107,14 @@ export class OpenAiListingEvaluator implements ModelEvaluationProvider {
   readonly version: string;
 
   private readonly createResponse: CreateOpenAiResponse | undefined;
+  private readonly globalProviderBudget: ProviderCallBudget | undefined;
   private readonly logger: Logger;
 
   constructor(options: OpenAiListingEvaluatorOptions) {
     this.model = options.model;
     this.version = options.version;
     this.logger = options.logger;
+    this.globalProviderBudget = options.globalProviderBudget;
 
     if (options.createResponse) {
       this.createResponse = options.createResponse;
@@ -112,7 +122,8 @@ export class OpenAiListingEvaluator implements ModelEvaluationProvider {
       const client = new OpenAI({
         apiKey: options.apiKey,
         timeout: options.timeoutMs,
-        maxRetries: options.maxRetries,
+        // Each outbound provider request must have its own durable budget reservation.
+        maxRetries: OPENAI_SDK_MAX_RETRIES,
       });
       this.createResponse = (request) => client.responses.create(request);
     }
@@ -130,7 +141,42 @@ export class OpenAiListingEvaluator implements ModelEvaluationProvider {
 
     while (true) {
       try {
-        const response = await this.createResponse(buildOpenAiRequest(effectiveRequest, this.model));
+        const providerRequest = buildOpenAiRequest(effectiveRequest, this.model);
+        const maxOutputTokens = providerRequest.max_output_tokens;
+        if (typeof maxOutputTokens !== "number") throw new Error("The provider output budget is missing.");
+        const reservationRequest = {
+          serializedRequest: providerRequest,
+          imageCount: countImageInputs(effectiveRequest),
+          maxOutputTokens,
+        };
+        const reservations: Array<{
+          readonly budget: ProviderCallBudget;
+          readonly handle: ProviderCallReservationHandle;
+        }> = [];
+        try {
+          for (const budget of new Set([this.globalProviderBudget, context.providerBudget].filter(
+            (candidate): candidate is ProviderCallBudget => candidate !== undefined,
+          ))) {
+            reservations.push({ budget, handle: budget.reserve(reservationRequest) });
+          }
+        } catch (error) {
+          for (const reservation of reservations.reverse()) {
+            try {
+              reservation.budget.release?.(reservation.handle);
+            } catch {
+              // Preserve the original admission failure; a failed release remains conservative.
+            }
+          }
+          throw error;
+        }
+        const response = await this.createResponse(providerRequest);
+        if (response.usage && isSafeProviderUsage(response.usage)) {
+          const usage = {
+            inputTokens: response.usage.input_tokens,
+            outputTokens: response.usage.output_tokens,
+          };
+          for (const reservation of reservations) reservation.budget.settle(reservation.handle, usage);
+        }
         const durationMs = Math.round(performance.now() - startedAt);
 
         this.logger.info({
@@ -210,6 +256,11 @@ export class OpenAiListingEvaluator implements ModelEvaluationProvider {
   }
 }
 
+function isSafeProviderUsage(usage: OpenAiUsageLike): boolean {
+  return [usage.input_tokens, usage.output_tokens]
+    .every((value) => Number.isSafeInteger(value) && value >= 0);
+}
+
 export function buildOpenAiRequest(
   request: FilterListingsRequest,
   model: string,
@@ -227,7 +278,7 @@ export function buildOpenAiRequest(
         schema: buildModelOutputJsonSchema(request),
       },
     },
-    max_output_tokens: 20_000,
+    max_output_tokens: maxOutputTokensForShape(request.listings.length, request.recipe.criteria.length),
     store: false,
   };
 }

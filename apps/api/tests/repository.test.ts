@@ -443,8 +443,10 @@ describe("DenicheurRepository", () => {
 
     expect(afterLocality?.coordinates?.locationKind).toBe("source-locality");
     expect(canonical?.coordinates).toEqual(propertyCoordinates);
-    expect(repository.getRun("run-locality")?.listings[0]?.coordinates?.locationKind).toBe("source-locality");
-    expect(repository.getRun("run-without-coordinates")?.listings[0]).not.toHaveProperty("coordinates");
+    expect(repository.listRunListings("run-locality", { limit: 20 })?.items[0]?.coordinates?.locationKind)
+      .toBe("source-locality");
+    expect(repository.listRunListings("run-without-coordinates", { limit: 20 })?.items[0])
+      .not.toHaveProperty("coordinates");
   });
 
   it("prefers the newest verification at equal quality and replays it idempotently", () => {
@@ -510,10 +512,10 @@ describe("DenicheurRepository", () => {
     }], "run-repeated-observation"));
 
     const canonical = repository.getListing({ source: "leboncoin", externalId: "2876543210" });
-    const repeatedRun = repository.getRun("run-repeated-observation");
+    const repeatedRun = repository.listRunListings("run-repeated-observation", { limit: 20 });
 
     expect(canonical?.coordinates).toEqual(coordinates);
-    expect(repeatedRun?.listings[0]?.coordinates?.verifiedAt).toBe("2026-07-18T11:00:00.000Z");
+    expect(repeatedRun?.items[0]?.coordinates?.verifiedAt).toBe("2026-07-18T11:00:00.000Z");
   });
 
   it("keeps per-run observation history while retaining one canonical listing", () => {
@@ -543,8 +545,8 @@ describe("DenicheurRepository", () => {
       scrapedAt: "2026-07-18T11:00:00.000Z",
     }], "run-new"));
 
-    const oldSnapshot = repository.getRun("run-old")?.listings[0];
-    const newSnapshot = repository.getRun("run-new")?.listings[0];
+    const oldSnapshot = repository.listRunListings("run-old", { limit: 20 })?.items[0];
+    const newSnapshot = repository.listRunListings("run-new", { limit: 20 })?.items[0];
     const canonical = repository.getListing({ source: "leboncoin", externalId: "2876543210" });
 
     expect(oldSnapshot).toMatchObject({
@@ -624,7 +626,7 @@ describe("DenicheurRepository", () => {
       scrapedAt: "2026-07-18T08:00:00.000Z",
     }], "run-1"));
 
-    const snapshot = repository.getRun("run-1")?.listings[0];
+    const snapshot = repository.listRunListings("run-1", { limit: 20 })?.items[0];
     const canonical = repository.getListing({ source: "leboncoin", externalId: "2876543210" });
 
     expect(replay).toMatchObject({ inserted: 0, updated: 1, unchanged: 0 });
@@ -670,7 +672,7 @@ describe("DenicheurRepository", () => {
       scrapedAt: "2026-07-18T08:00:00.000Z",
     }], "run-1"));
 
-    const snapshot = repository.getRun("run-1")?.listings[0];
+    const snapshot = repository.listRunListings("run-1", { limit: 20 })?.items[0];
 
     expect(snapshot).toMatchObject({
       title: "Titre t12",

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   createListingKey,
   evaluationBatchResponseSchema,
+  evaluationExecutionBudgetSchema,
   evaluationExecutionListingResultSchema,
   evaluationPlanDraftSchema,
   evaluationRequestSchema,
@@ -11,12 +12,15 @@ import {
   intelligenceRecipeSchema,
   MAX_CRITERIA_PER_RECIPE,
   MAX_EVALUATION_IMAGE_URLS,
+  MAX_MEDIA_ASSETS_PER_INGESTION,
   MAX_LISTING_IMAGE_URLS,
   listingCoordinatesSchema,
   listingIngestionSchema,
   parseListingKey,
   recipeDraftSchema,
   recipeVersionSchema,
+  runDetailSchema,
+  runListingsPageSchema,
 } from "./index.js";
 
 describe("shared contracts", () => {
@@ -83,6 +87,81 @@ describe("shared contracts", () => {
     expect(ingestionRequestSchema.safeParse({
       run: { id: "run-1", source: "leboncoin", status: "collecting-search" },
       listings: [listing, listing],
+    }).success).toBe(false);
+  });
+
+  it(`enforces an aggregate ingestion budget of ${MAX_MEDIA_ASSETS_PER_INGESTION} unique media assets`, () => {
+    const listing = (index: number, imageCount: number) => ({
+      source: "leboncoin" as const,
+      externalId: `listing-${index}`,
+      url: `https://www.leboncoin.fr/ad/ventes_immobilieres/listing-${index}`,
+      imageUrls: Array.from(
+        { length: imageCount },
+        (_, imageIndex) => `https://img.leboncoin.fr/${index}-${imageIndex}.jpg`,
+      ),
+      status: "detailed" as const,
+      scrapedAt: "2026-07-18T09:00:00.000Z",
+    });
+    const request = {
+      run: { id: "run-media-budget", source: "leboncoin", status: "completed" },
+      listings: [listing(0, 34), listing(1, 33), listing(2, 33)],
+    };
+
+    expect(ingestionRequestSchema.safeParse(request).success).toBe(true);
+    expect(ingestionRequestSchema.safeParse({
+      ...request,
+      listings: [listing(0, 34), listing(1, 34), listing(2, 33)],
+    }).success).toBe(false);
+  });
+
+  it("keeps run summaries bounded and validates one cursor page separately", () => {
+    const run = {
+      id: "run-1",
+      source: "leboncoin",
+      status: "completed",
+      updatedAt: "2026-07-18T09:00:00.000Z",
+      listingCount: 101,
+      detailedListingCount: 100,
+    };
+
+    expect(runDetailSchema.safeParse(run).success).toBe(true);
+    expect(runDetailSchema.safeParse({ ...run, listings: [] }).success).toBe(false);
+    expect(runListingsPageSchema.safeParse({ items: [], nextCursor: null, total: 101 }).success).toBe(true);
+    const listing = {
+      id: "leboncoin:listing-1",
+      source: "leboncoin",
+      externalId: "listing-1",
+      lastRunId: "run-1",
+      url: "https://www.leboncoin.fr/ad/ventes_immobilieres/listing-1",
+      status: "listing",
+      scrapedAt: "2026-07-18T09:00:00.000Z",
+      firstSeenAt: "2026-07-18T09:00:00.000Z",
+      lastSeenAt: "2026-07-18T09:00:00.000Z",
+      updatedAt: "2026-07-18T09:00:00.000Z",
+    };
+    expect(runListingsPageSchema.safeParse({
+      items: Array.from({ length: 101 }, () => listing),
+      nextCursor: null,
+      total: 101,
+    }).success).toBe(false);
+  });
+
+  it("rejects over-budget estimates while preserving actual usage overages", () => {
+    const usage = { providerCalls: 1, inputTokens: 1_000, outputTokens: 500, costMicroUsd: 1_000 };
+    const budget = {
+      limit: usage,
+      estimate: usage,
+      consumed: { providerCalls: 0, inputTokens: 0, outputTokens: 0, costMicroUsd: 0 },
+    };
+
+    expect(evaluationExecutionBudgetSchema.safeParse(budget).success).toBe(true);
+    expect(evaluationExecutionBudgetSchema.safeParse({
+      ...budget,
+      consumed: { ...usage, providerCalls: 2 },
+    }).success).toBe(true);
+    expect(evaluationExecutionBudgetSchema.safeParse({
+      ...budget,
+      estimate: { ...usage, outputTokens: 501 },
     }).success).toBe(false);
   });
 

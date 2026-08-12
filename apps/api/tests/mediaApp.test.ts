@@ -49,11 +49,13 @@ describe("media HTTP API", () => {
       const asset = repository.getListing({ source: "leboncoin", externalId: "listing-media" })?.imageAssets?.[0];
       expect(asset?.status).toBe("ready");
       const health = await request(app).get("/health").expect(200);
-      expect(health.body.media).toEqual({ status: "ok", pending: 0, processing: 0, ready: 1, failed: 0 });
+      expect(health.body).toEqual({ status: "ok", service: "denicheur-api" });
+      const healthDetails = await request(app).get("/v1/health/details").expect(200);
+      expect(healthDetails.body.media).toEqual({ status: "ok", pending: 0, processing: 0, ready: 1, failed: 0 });
 
       const response = await request(app).get(asset!.thumbnailPath!).expect(200);
       expect(response.headers["content-type"]).toMatch(/^image\/webp/);
-      expect(response.headers["cache-control"]).toBe("public, max-age=31536000, immutable");
+      expect(response.headers["cache-control"]).toBe("private, max-age=31536000, immutable");
       expect(response.headers.etag).toMatch(/^"[a-f0-9]{64}"$/);
       const etag = response.headers.etag as string;
       expect(Number(response.headers["content-length"])).toBeGreaterThan(0);
@@ -65,7 +67,7 @@ describe("media HTTP API", () => {
         .set("If-None-Match", `W/${etag}`)
         .expect(304)
         .expect("ETag", etag);
-      expect(notModified.headers["cache-control"]).toBe("public, max-age=31536000, immutable");
+      expect(notModified.headers["cache-control"]).toBe("private, max-age=31536000, immutable");
 
       await request(app)
         .post("/v1/maintenance/collected-data/clear")
@@ -107,7 +109,7 @@ describe("media HTTP API", () => {
     }
   });
 
-  it("keeps health HTTP 200 while reporting unavailable media storage as degraded", async () => {
+  it("returns non-ready health when media storage is degraded", async () => {
     const repository = new DenicheurRepository({ path: ":memory:" });
     const storage = new MemoryObjectStorage();
     vi.spyOn(storage, "checkHealth").mockResolvedValue(false);
@@ -121,8 +123,10 @@ describe("media HTTP API", () => {
       mediaService,
     });
     try {
-      const health = await request(app).get("/health").expect(200);
-      expect(health.body).toMatchObject({
+      const health = await request(app).get("/health").expect(503);
+      expect(health.body).toEqual({ status: "degraded", service: "denicheur-api" });
+      const healthDetails = await request(app).get("/v1/health/details").expect(503);
+      expect(healthDetails.body).toMatchObject({
         status: "degraded",
         database: { status: "ok" },
         media: { status: "degraded" },

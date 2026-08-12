@@ -1,8 +1,16 @@
 import { randomUUID } from "node:crypto";
 
-import type { ClearCollectedDataOptions, CollectedDataCounts, DenicheurRepository, MediaHealthCounts, MediaJob } from "./repository.js";
+import type {
+  ClearCollectedDataOptions,
+  CollectedDataCounts,
+  DenicheurRepository,
+  MediaGarbageCollectionJob,
+  MediaHealthCounts,
+  MediaJob,
+} from "./repository.js";
 import { ApiError } from "./errors.js";
 import type { Logger } from "./logger.js";
+import { MediaDeliveryBudget, type MediaDeliveryBudgetOptions } from "./mediaDeliveryBudget.js";
 import { MediaProcessingError, processMediaSource, type MediaFetch } from "./mediaProcessor.js";
 import type { ObjectStorage, StoredObject } from "./objectStorage.js";
 
@@ -19,6 +27,8 @@ export interface MediaServiceOptions {
   readonly fetchImpl?: MediaFetch;
   readonly concurrency?: number;
   readonly pollIntervalMs?: number;
+  readonly deliveryBudget?: MediaDeliveryBudget;
+  readonly deliveryBudgetOptions?: MediaDeliveryBudgetOptions;
 }
 
 export interface MediaHealth extends MediaHealthCounts {
@@ -34,6 +44,7 @@ export class MediaService {
   private readonly fetchImpl: MediaFetch | undefined;
   private readonly concurrency: number;
   private readonly pollIntervalMs: number;
+  private readonly deliveryBudget: MediaDeliveryBudget;
   private readonly workerId = `media-worker-${randomUUID()}`;
   private readonly activeTasks = new Set<Promise<void>>();
   private readonly activeControllers = new Map<string, AbortController>();
@@ -52,6 +63,7 @@ export class MediaService {
     this.fetchImpl = options.fetchImpl;
     this.concurrency = options.concurrency ?? 2;
     this.pollIntervalMs = options.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS;
+    this.deliveryBudget = options.deliveryBudget ?? new MediaDeliveryBudget(options.deliveryBudgetOptions);
   }
 
   async start(): Promise<void> {
@@ -90,7 +102,7 @@ export class MediaService {
   }
 
   isMaintenanceActive(): boolean {
-    return this.maintenanceActive;
+    return this.maintenanceActive || this.repository.isCollectedDataCleanupActive();
   }
 
   async getVariant(assetId: string, variant: MediaVariant): Promise<StoredObject> {
@@ -103,18 +115,34 @@ export class MediaService {
       throw new ApiError(503, "MEDIA_STORAGE_DISABLED", "Media storage is not enabled.");
     }
     const objectKey = variant === "thumbnail" ? asset.thumbnailObjectKey : asset.galleryObjectKey;
+    const expectedSize = variant === "thumbnail" ? asset.thumbnailSizeBytes : asset.gallerySizeBytes;
     if (!objectKey) {
       throw new ApiError(503, "MEDIA_OBJECT_UNAVAILABLE", "The requested media variant is unavailable.");
     }
+    if (expectedSize === undefined) {
+      throw new ApiError(503, "MEDIA_OBJECT_UNAVAILABLE", "The requested media variant metadata is unavailable.");
+    }
+    const releaseDelivery = this.deliveryBudget.acquire(expectedSize);
     try {
       const object = await this.storage.getObject(objectKey);
       if (!object) {
+        releaseDelivery();
         this.storageHealthy = false;
         throw new ApiError(503, "MEDIA_OBJECT_UNAVAILABLE", "The requested media variant is unavailable.");
       }
+      if (object.contentLength !== expectedSize) {
+        object.body.destroy();
+        releaseDelivery();
+        this.storageHealthy = false;
+        throw new ApiError(503, "MEDIA_OBJECT_UNAVAILABLE", "The requested media variant metadata is inconsistent.");
+      }
+      object.body.once("end", releaseDelivery);
+      object.body.once("close", releaseDelivery);
+      object.body.once("error", releaseDelivery);
       this.storageHealthy = true;
       return object;
     } catch (error) {
+      releaseDelivery();
       if (error instanceof ApiError) throw error;
       this.storageHealthy = false;
       throw new ApiError(503, "MEDIA_STORAGE_UNAVAILABLE", "Media storage is temporarily unavailable.", { cause: error });
@@ -127,10 +155,11 @@ export class MediaService {
     }
     this.maintenanceActive = true;
     const shouldResume = this.running && !this.paused;
+    let cleanupLeaseOwner: string | undefined;
     try {
       await this.pause();
-      this.repository.assertCollectedDataCanBeCleared(options);
-      const objectKeys = this.repository.listMediaObjectKeys();
+      const cleanup = this.repository.beginCollectedDataCleanup(options);
+      cleanupLeaseOwner = cleanup.leaseOwner;
       if (this.storage && !(await this.storage.checkHealth())) {
         this.storageHealthy = false;
         throw new ApiError(
@@ -139,12 +168,12 @@ export class MediaService {
           "Media storage is unavailable; SQLite was preserved for an idempotent retry.",
         );
       }
-      if (objectKeys.length) {
+      if (cleanup.objectKeys.length) {
         if (!this.storage) {
           throw new ApiError(503, "MEDIA_STORAGE_UNAVAILABLE", "Media storage must be available before collected data can be cleared.");
         }
         try {
-          await this.storage.deleteObjects(objectKeys);
+          await this.storage.deleteObjects(cleanup.objectKeys);
           this.storageHealthy = true;
         } catch (error) {
           this.storageHealthy = false;
@@ -156,8 +185,10 @@ export class MediaService {
           );
         }
       }
-      return this.repository.clearCollectedData(options);
+      this.repository.renewCollectedDataCleanup(cleanup.leaseOwner);
+      return this.repository.clearCollectedData(options, cleanup.leaseOwner);
     } finally {
+      if (cleanupLeaseOwner) this.repository.releaseCollectedDataCleanup(cleanupLeaseOwner);
       this.maintenanceActive = false;
       if (shouldResume) this.resume();
     }
@@ -178,6 +209,16 @@ export class MediaService {
     let foundWork = false;
     try {
       while (this.running && !this.paused && this.activeTasks.size < this.concurrency) {
+        const garbage = this.repository.claimMediaGarbage(this.workerId);
+        if (garbage) {
+          foundWork = true;
+          const task = this.processGarbage(garbage).finally(() => {
+            this.activeTasks.delete(task);
+            this.schedulePump(0);
+          });
+          this.activeTasks.add(task);
+          continue;
+        }
         const job = this.repository.claimMediaJob(this.workerId, MEDIA_LEASE_DURATION_MS);
         if (!job) break;
         foundWork = true;
@@ -208,16 +249,16 @@ export class MediaService {
         ...(this.fetchImpl ? { fetchImpl: this.fetchImpl } : {}),
         signal,
       });
-      this.repository.stageMediaJobObjects(job.assetId, job.leaseOwner, processed.completed);
+      const completed = this.repository.stageMediaJobObjects(job.assetId, job.leaseOwner, processed.completed);
       try {
         const uploads = await Promise.allSettled([
           this.storage!.putObject(
-            processed.completed.originalObjectKey,
+            completed.originalObjectKey,
             processed.original,
-            processed.completed.sourceMimeType,
+            completed.sourceMimeType,
           ),
-          this.storage!.putObject(processed.completed.thumbnailObjectKey, processed.thumbnail, "image/webp"),
-          this.storage!.putObject(processed.completed.galleryObjectKey, processed.gallery, "image/webp"),
+          this.storage!.putObject(completed.thumbnailObjectKey, processed.thumbnail, "image/webp"),
+          this.storage!.putObject(completed.galleryObjectKey, processed.gallery, "image/webp"),
         ]);
         const failures = uploads.flatMap((upload) => upload.status === "rejected" ? [upload.reason] : []);
         if (failures.length) {
@@ -233,11 +274,13 @@ export class MediaService {
           { cause: error },
         );
       }
-      this.repository.completeMediaJob(job.assetId, job.leaseOwner, processed.completed);
+      this.repository.completeMediaJob(job.assetId, job.leaseOwner, completed);
       this.logger.info({ event: "media_asset_ready", assetId: job.assetId, attempt: job.attempt });
     } catch (error) {
       const failure = error instanceof MediaProcessingError
         ? error
+        : error instanceof ApiError && error.retryable !== undefined
+          ? new MediaProcessingError(error.code, error.message, error.retryable, { cause: error })
         : new MediaProcessingError("MEDIA_PROCESSING_FAILED", "The media job failed.", true, { cause: error });
       const retryDelay = failure.retryable && job.attempt <= MEDIA_RETRY_DELAYS_MS.length
         ? MEDIA_RETRY_DELAYS_MS[job.attempt - 1]
@@ -257,6 +300,34 @@ export class MediaService {
         attempt: job.attempt,
         code: failure.code,
         ...(retryDelay === undefined ? {} : { retryDelayMs: retryDelay }),
+      });
+    }
+  }
+
+  private async processGarbage(job: MediaGarbageCollectionJob): Promise<void> {
+    try {
+      if (job.objectKeys.length > 0) {
+        if (!this.storage) throw new Error("Media storage is unavailable for garbage collection.");
+        await this.storage.deleteObjects(job.objectKeys);
+      }
+      this.repository.completeMediaGarbage(job.assetId, job.leaseOwner);
+      this.storageHealthy = true;
+      this.logger.info({ event: "media_orphan_deleted", assetId: job.assetId, attempt: job.attempt });
+    } catch {
+      this.storageHealthy = false;
+      const retryDelay = MEDIA_RETRY_DELAYS_MS[Math.min(job.attempt - 1, MEDIA_RETRY_DELAYS_MS.length - 1)]
+        ?? 21_600_000;
+      try {
+        this.repository.failMediaGarbage(job.assetId, job.leaseOwner, retryDelay);
+      } catch {
+        this.logger.error({ event: "media_gc_lease_lost", assetId: job.assetId, attempt: job.attempt });
+        return;
+      }
+      this.logger.error({
+        event: "media_orphan_delete_retry_scheduled",
+        assetId: job.assetId,
+        attempt: job.attempt,
+        retryDelayMs: retryDelay,
       });
     }
   }

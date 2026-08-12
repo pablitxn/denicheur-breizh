@@ -72,7 +72,7 @@ export function ScoringsView() {
   const [runId, setRunId] = useUrlState("srun", "", stringUrlCodec);
   const selectedRun = completedRuns.find((run) => run.id === runId) ?? completedRuns[0];
   const runDetailQuery = useRun(selectedRun?.id);
-  const hasDetailedSnapshots = Boolean(runDetailQuery.data?.listings.some((listing) => listing.status === "detailed"));
+  const hasDetailedSnapshots = (runDetailQuery.data?.detailedListingCount ?? 0) > 0;
   const listingsQuery = useListings(execution ? { runId: execution.runId, limit: 100 } : undefined);
   const listingNames = useMemo(() => new Map(
     (listingsQuery.data?.items ?? []).map((listing) => [listing.key, listing.title ?? listing.externalId]),

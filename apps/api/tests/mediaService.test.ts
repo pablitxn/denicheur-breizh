@@ -7,7 +7,7 @@ import type { IngestionRequest } from "../src/contracts.js";
 import type { Logger } from "../src/logger.js";
 import { MEDIA_RETRY_DELAYS_MS, MediaService } from "../src/mediaService.js";
 import { MemoryObjectStorage } from "../src/objectStorage.js";
-import { DenicheurRepository } from "../src/repository.js";
+import { DenicheurRepository, type MediaAdmissionPolicy } from "../src/repository.js";
 import type { MediaFetch } from "../src/mediaProcessor.js";
 
 const INITIAL_NOW = new Date("2026-07-19T12:00:00.000Z");
@@ -69,6 +69,37 @@ describe("MediaService worker", () => {
       width: 480,
       height: 270,
     });
+  });
+
+  it("fails an over-budget processed asset once without uploading or retrying it", async () => {
+    const fetchMock = vi.fn<MediaFetch>(async () => imageResponse(imageFixture));
+    const storage = new MemoryObjectStorage();
+    const logger = recordingLogger();
+    const { repository } = await startService({
+      sourceUrls: ["https://img.leboncoin.fr/over-budget.jpg"],
+      storage,
+      fetchImpl: fetchMock,
+      logger,
+      mediaAdmission: {
+        maxAssetsPerRun: 10,
+        maxPendingJobs: 10,
+        maxReservedBytes: 1,
+        reservedBytesPerAsset: 1,
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(repository.mediaHealthCounts()).toEqual({ pending: 0, processing: 0, ready: 0, failed: 1 });
+    }, { timeout: 2_000, interval: 5 });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(storage.keys()).toEqual([]);
+    expect(logger.error).toHaveBeenCalledWith(expect.objectContaining({
+      event: "media_asset_failed",
+      code: "MEDIA_STORAGE_BUDGET_EXCEEDED",
+      attempt: 1,
+    }));
   });
 
   it("uses all five retry delays before making a retryable CDN failure terminal", async () => {
@@ -215,6 +246,7 @@ interface StartServiceOptions {
   readonly fetchImpl: MediaFetch;
   readonly logger?: ReturnType<typeof recordingLogger>;
   readonly now?: () => Date;
+  readonly mediaAdmission?: MediaAdmissionPolicy;
 }
 
 async function startService(options: StartServiceOptions): Promise<{
@@ -224,6 +256,7 @@ async function startService(options: StartServiceOptions): Promise<{
   const repository = new DenicheurRepository({
     path: ":memory:",
     ...(options.now ? { now: options.now } : { now: () => INITIAL_NOW }),
+    ...(options.mediaAdmission ? { mediaAdmission: options.mediaAdmission } : {}),
   });
   seedListing(repository, options.sourceUrls);
   const service = new MediaService({

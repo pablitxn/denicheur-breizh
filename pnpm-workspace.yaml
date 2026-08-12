@@ -2,6 +2,8 @@ packages:
   - "apps/*"
   - "packages/*"
 
+enableGlobalVirtualStore: false
+
 supportedArchitectures:
   os:
     - darwin
@@ -20,6 +22,7 @@ trustPolicyExclude:
 
 overrides:
   "@webext-core/isolated-element": "1.1.4"
+  "ip-address": "10.3.1"
   "node-notifier>uuid": "11.1.1"
   "web-ext-run>tmp": "0.2.7"
   "fx-runner>shell-quote": "1.8.4"

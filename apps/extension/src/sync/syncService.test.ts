@@ -469,6 +469,13 @@ function executionRecord(status: "queued" | "completed" | "failed") {
     createdAt: NOW.toISOString(),
     ...(terminal ? { completedAt: new Date(NOW.getTime() + 2_000).toISOString() } : {}),
     ...(status === "failed" ? { error: "Every recipe step failed." } : {}),
+    budget: {
+      limit: { providerCalls: 10, inputTokens: 100_000, outputTokens: 20_000, costMicroUsd: 1_000_000 },
+      estimate: { providerCalls: 2, inputTokens: 2_000, outputTokens: 1_000, costMicroUsd: 10_000 },
+      consumed: terminal
+        ? { providerCalls: 1, inputTokens: 1_000, outputTokens: 500, costMicroUsd: 5_000 }
+        : { providerCalls: 0, inputTokens: 0, outputTokens: 0, costMicroUsd: 0 },
+    },
     counters: {
       total: 1,
       processed: terminal ? 1 : 0,

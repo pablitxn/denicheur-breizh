@@ -76,7 +76,9 @@ test("@live crawls search and detail pages, calls the local API and stores OpenA
   await page.getByRole("button", { name: "Refresh default plan" }).click();
   await expect(page.getByText("Default plan refreshed from the API.", { exact: true })).toBeVisible();
   await expect(page.getByText("Live extension plan", { exact: true })).toBeVisible();
-  await expect(page.getByText("Live extension integration", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Live extension integration v1 · Surface minimale", { exact: true }),
+  ).toBeVisible();
   await expect.poll(async () => {
     const storage = await readExtensionStorage(page);
     const state = storage["denicheur:sync:state"] as {

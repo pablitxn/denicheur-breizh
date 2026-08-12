@@ -46,7 +46,8 @@ describeMinio("S3ObjectStorage with local MinIO", () => {
 
   it("recovers a leased job, serves ETag/304, and removes MinIO objects before SQLite", async () => {
     const storage = new S3ObjectStorage(localMinioConfig());
-    const repository = new DenicheurRepository({ path: ":memory:" });
+    let now = new Date("2026-08-11T12:00:00.000Z");
+    const repository = new DenicheurRepository({ path: ":memory:", now: () => now });
     const logger = recordingLogger();
     const sourceUrl = `https://img.leboncoin.fr/minio-integration-${randomUUID()}.jpg`;
     const jpeg = await uniqueJpeg();
@@ -55,6 +56,7 @@ describeMinio("S3ObjectStorage with local MinIO", () => {
     const abandonedLease = repository.claimMediaJob("abandoned-integration-worker", 60_000);
     expect(abandonedLease).toMatchObject({ sourceUrl, attempt: 1 });
     expect(repository.mediaHealthCounts()).toEqual({ pending: 0, processing: 1, ready: 0, failed: 0 });
+    now = new Date(now.getTime() + 60_001);
 
     const fetchMock = vi.fn(async () => new Response(new Uint8Array(jpeg), {
       headers: {
@@ -100,7 +102,7 @@ describeMinio("S3ObjectStorage with local MinIO", () => {
 
       const first = await request(app).get(asset!.thumbnailPath!).expect(200);
       expect(first.headers["content-type"]).toMatch(/^image\/webp/);
-      expect(first.headers["cache-control"]).toBe("public, max-age=31536000, immutable");
+      expect(first.headers["cache-control"]).toBe("private, max-age=31536000, immutable");
       expect(first.headers.etag).toMatch(/^"[a-f0-9]+"$/);
       expect(Number(first.headers["content-length"])).toBe(first.body.length);
       await expect(sharp(first.body).metadata()).resolves.toMatchObject({ format: "webp", width: 480 });
@@ -110,7 +112,7 @@ describeMinio("S3ObjectStorage with local MinIO", () => {
         .set("If-None-Match", `W/${first.headers.etag as string}`)
         .expect(304)
         .expect("ETag", first.headers.etag as string)
-        .expect("Cache-Control", "public, max-age=31536000, immutable");
+        .expect("Cache-Control", "private, max-age=31536000, immutable");
 
       await request(app)
         .post("/v1/maintenance/collected-data/clear")

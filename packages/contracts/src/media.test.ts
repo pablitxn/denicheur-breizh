@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { healthResponseSchema, listingRecordSchema } from "./index.js";
+import { healthDetailsResponseSchema, healthResponseSchema, listingRecordSchema } from "./index.js";
 
 const timestamp = "2026-07-19T10:00:00.000Z";
 const assetId = "a".repeat(64);
@@ -56,8 +56,20 @@ describe("media contracts", () => {
     }).success).toBe(false);
   });
 
-  it("reports degraded media independently from database readiness", () => {
+  it("keeps the public health contract minimal", () => {
     expect(healthResponseSchema.parse({
+      status: "ok",
+      service: "denicheur-api",
+    })).toEqual({ status: "ok", service: "denicheur-api" });
+    expect(healthResponseSchema.safeParse({
+      status: "ok",
+      service: "denicheur-api",
+      openAiConfigured: false,
+    }).success).toBe(false);
+  });
+
+  it("reports degraded media independently from database readiness in authenticated details", () => {
+    expect(healthDetailsResponseSchema.parse({
       status: "degraded",
       service: "denicheur-api",
       database: { status: "ok" },

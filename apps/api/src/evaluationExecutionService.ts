@@ -5,6 +5,12 @@ import type {
   EvaluationExecutionRecord,
 } from "./contracts.js";
 import { ApiError } from "./errors.js";
+import {
+  createEvaluationExecutionBudget,
+  DEFAULT_EVALUATION_BUDGET_POLICY,
+  exceedsUsage,
+  type EvaluationBudgetPolicy,
+} from "./evaluationBudget.js";
 import type {
   CreateEvaluationExecutionResult,
   DenicheurRepository,
@@ -15,28 +21,38 @@ export interface EvaluationExecutionQueue {
 }
 
 export class EvaluationExecutionService {
+  private readonly budgetPolicy: EvaluationBudgetPolicy;
+
   constructor(
     private readonly repository: DenicheurRepository,
     private readonly queue: EvaluationExecutionQueue,
-  ) {}
+    budgetPolicy: EvaluationBudgetPolicy = DEFAULT_EVALUATION_BUDGET_POLICY,
+  ) {
+    this.budgetPolicy = budgetPolicy;
+  }
 
   create(
     runId: string,
     request: EvaluationExecutionCreateRequest,
     idempotencyKey: string,
   ): CreateEvaluationExecutionResult {
-    const listingIds = request.listingIds ?? this.repository.getRunListingIds(runId) ?? [];
     const normalizedRequest = {
       ...request,
       force: request.force === true,
     };
+    const requestFingerprint = fingerprint({ action: "create", runId, request: normalizedRequest });
+    const replay = this.repository.replayEvaluationExecution(idempotencyKey, requestFingerprint);
+    if (replay) return replay;
+    const listingIds = request.listingIds ?? this.repository.getRunListingIds(runId) ?? [];
+    const budget = this.prepareBudget(runId, request, listingIds);
     const result = this.repository.createEvaluationExecution({
       id: randomUUID(),
       runId,
       request,
       listingIds,
       idempotencyKey,
-      requestFingerprint: fingerprint({ action: "create", runId, request: normalizedRequest }),
+      requestFingerprint,
+      budget,
     });
     if (result.created) this.queue.kick();
     return result;
@@ -60,14 +76,25 @@ export class EvaluationExecutionService {
       locale: original.locale,
       listingIds: original.listingIds,
       force: false,
+      budget: {
+        maxProviderCalls: original.budget.limit.providerCalls,
+        maxInputTokens: original.budget.limit.inputTokens,
+        maxOutputTokens: original.budget.limit.outputTokens,
+        maxCostMicroUsd: original.budget.limit.costMicroUsd,
+      },
     };
+    const requestFingerprint = fingerprint({ action: "retry", executionId, request });
+    const replay = this.repository.replayEvaluationExecution(idempotencyKey, requestFingerprint);
+    if (replay) return replay;
+    const budget = this.prepareBudget(original.runId, request, original.listingIds);
     const result = this.repository.createEvaluationExecution({
       id: randomUUID(),
       runId: original.runId,
       request,
       listingIds: original.listingIds,
       idempotencyKey,
-      requestFingerprint: fingerprint({ action: "retry", executionId, request }),
+      requestFingerprint,
+      budget,
       retryOfExecutionId: original.id,
     });
     if (result.created) this.queue.kick();
@@ -80,6 +107,33 @@ export class EvaluationExecutionService {
       throw new ApiError(404, "EVALUATION_EXECUTION_NOT_FOUND", "The requested evaluation execution does not exist.");
     }
     return execution;
+  }
+
+  private prepareBudget(
+    runId: string,
+    request: EvaluationExecutionCreateRequest,
+    listingIds: readonly string[],
+  ) {
+    const plan = this.repository.getResolvedEvaluationPlan(request.planId, request.planVersion);
+    if (!plan) {
+      throw new ApiError(404, "EVALUATION_PLAN_NOT_FOUND", "The requested evaluation plan version does not exist.");
+    }
+    if (listingIds.length === 0) {
+      throw new ApiError(409, "RUN_HAS_NO_LISTINGS", "The requested run has no listings to evaluate.");
+    }
+    const listings = this.repository.getListingsForEvaluation(runId, listingIds);
+    if (!listings) {
+      throw new ApiError(404, "LISTING_NOT_FOUND", "One or more listings do not belong to the requested run.");
+    }
+    const budget = createEvaluationExecutionBudget(request, listings, plan, this.budgetPolicy);
+    if (exceedsUsage(budget.estimate, budget.limit)) {
+      throw new ApiError(
+        422,
+        "EVALUATION_EXECUTION_BUDGET_EXCEEDED",
+        "The requested evaluation execution exceeds the configured provider budget; reduce its listings or recipes.",
+      );
+    }
+    return budget;
   }
 }
 

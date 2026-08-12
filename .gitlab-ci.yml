@@ -1,6 +1,9 @@
 stages:
   - validate
   - build
+  - attest
+  - verify
+  - provenance
 
 default:
   interruptible: true
@@ -12,10 +15,18 @@ default:
     - k8s
     - shared
 
+# Required external project/group CI/CD variables. Configure every secret as
+# protected and restrict image publication to protected refs (see rules below):
+# - COSIGN_PRIVATE_KEY_FILE (File): encrypted, externally provisioned Cosign key.
+# - COSIGN_PUBLIC_KEY_FILE (File): public half of the same Cosign key pair.
+# - COSIGN_PASSWORD (masked/hidden variable): private-key decryption password.
+# Optional: REGISTRY_INTERNAL_CA_FILE (File) adds a PEM CA bundle without ever
+# disabling TLS verification. The canonical registry currently uses public PKI.
 variables:
   PNPM_STORE_DIR: .pnpm-store
-  REGISTRY_PUSH_HOST: gitlab-registry.gitlab.svc.cluster.local:32443
+  REGISTRY_PUSH_HOST: registry.orchid-labs.xyz:32443
   REGISTRY_PULL_HOST: registry.orchid-labs.xyz:32443
+  EXPECTED_CI_SERVER_URL: https://gitlab.orchid-labs.xyz
   EXPECTED_PROJECT_PATH: research-and-development/denicheur-breizh
   KUBERNETES_CPU_REQUEST: "100m"
   KUBERNETES_CPU_LIMIT: "2"
@@ -37,7 +48,6 @@ workflow:
   - .gitlab-ci.yml
   - Dockerfile.api
   - Dockerfile.web
-  - nginx.conf
   - package.json
   - pnpm-lock.yaml
   - pnpm-workspace.yaml
@@ -55,9 +65,17 @@ workflow:
   - if: $CI_COMMIT_BRANCH
     changes: *app-changes
 
+.image-build-rules: &image-build-rules
+  - if: $CI_COMMIT_TAG && $CI_COMMIT_REF_PROTECTED == "true"
+  - if: $CI_COMMIT_BRANCH && $CI_COMMIT_REF_PROTECTED == "true" && $CI_PIPELINE_SOURCE != "merge_request_event"
+    changes: *app-changes
+
 check-workspace:
   stage: validate
-  image: node:24-bookworm-slim
+  # The shared runner namespace has a 2500m CPU quota while each job reserves
+  # 2100m including its helper. Every real job uses this project-wide lock.
+  resource_group: denicheur-breizh-ci
+  image: node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
   rules: *validation-rules
   cache:
     key:
@@ -66,27 +84,46 @@ check-workspace:
     paths:
       - .pnpm-store
   before_script:
+    - test -z "${COSIGN_PRIVATE_KEY_FILE:-}" && test -z "${COSIGN_PASSWORD:-}"
     - corepack enable
-    - corepack prepare pnpm@11.1.3 --activate
+    - corepack prepare pnpm@11.17.0 --activate
     - pnpm config set store-dir "${CI_PROJECT_DIR}/${PNPM_STORE_DIR}"
     - pnpm install --frozen-lockfile
   script:
+    - node scripts/ci/check-image-provenance-ci.mjs --self-test
+    - node scripts/ci/test-provision-gitlab-cosign.mjs
     - pnpm check
 
 .build-image:
   stage: build
-  resource_group: denicheur-breizh-image-publish
+  resource_group: denicheur-breizh-ci
   image:
-    name: gcr.io/kaniko-project/executor:v1.23.2-debug
+    name: gcr.io/kaniko-project/executor:v1.23.2-debug@sha256:c3109d5926a997b100c4343944e06c6b30a6804b2f9abe0994d3de6ef92b028e
     entrypoint: [""]
   needs:
     - check-workspace
-  rules:
-    - if: $CI_COMMIT_TAG
-    - if: $CI_COMMIT_BRANCH && $CI_PIPELINE_SOURCE != "merge_request_event"
-      changes: *app-changes
+  rules: *image-build-rules
   script:
+    - test -z "${COSIGN_PRIVATE_KEY_FILE:-}" && test -z "${COSIGN_PASSWORD:-}"
     - test "${CI_PROJECT_PATH}" = "${EXPECTED_PROJECT_PATH}"
+    - |
+      if [ -n "${REGISTRY_INTERNAL_CA_FILE:-}" ]; then
+        if [ ! -f "${REGISTRY_INTERNAL_CA_FILE}" ] || [ ! -s "${REGISTRY_INTERNAL_CA_FILE}" ]; then
+          echo "REGISTRY_INTERNAL_CA_FILE must point to a non-empty CA bundle when configured" >&2
+          exit 1
+        fi
+        if ! grep -q -- '-----BEGIN CERTIFICATE-----' "${REGISTRY_INTERNAL_CA_FILE}" \
+          || ! grep -q -- '-----END CERTIFICATE-----' "${REGISTRY_INTERNAL_CA_FILE}"; then
+          echo "REGISTRY_INTERNAL_CA_FILE must contain at least one PEM certificate" >&2
+          exit 1
+        fi
+        if [ ! -f /kaniko/ssl/certs/ca-certificates.crt ]; then
+          echo "Kaniko system CA bundle was not found" >&2
+          exit 1
+        fi
+        printf '\n' >> /kaniko/ssl/certs/ca-certificates.crt
+        sed -n 'p' "${REGISTRY_INTERNAL_CA_FILE}" >> /kaniko/ssl/certs/ca-certificates.crt
+      fi
     - mkdir -p /kaniko/.docker
     - |
       gitlab_auth="$(printf '%s:%s' "${CI_REGISTRY_USER}" "${CI_REGISTRY_PASSWORD}" | base64 | tr -d '\n')"
@@ -110,7 +147,6 @@ check-workspace:
         --cleanup \
         --snapshot-mode=redo \
         --reproducible \
-        --skip-tls-verify-registry="${REGISTRY_PUSH_HOST}" \
         --destination="${image_repository}:sha-${CI_COMMIT_SHA}" \
         --destination="${image_repository}:ci-${CI_PIPELINE_ID}" \
         --digest-file="${CI_PROJECT_DIR}/${IMAGE_NAME}.digest" \
@@ -125,14 +161,41 @@ check-workspace:
       case "${digest#sha256:}" in
         *[!0-9a-f]*|'') echo "Kaniko emitted an invalid digest for ${IMAGE_NAME}" >&2; exit 1 ;;
       esac
-      printf '%s/%s/%s:sha-%s@%s\n' \
-        "${REGISTRY_PULL_HOST}" "${CI_PROJECT_PATH}" "${IMAGE_NAME}" "${CI_COMMIT_SHA}" "${digest}" \
-        > "${CI_PROJECT_DIR}/${IMAGE_NAME}.image"
+      case "${CI_COMMIT_SHA}" in
+        *[!0-9a-f]*|'') echo "CI_COMMIT_SHA is not a lowercase hexadecimal revision" >&2; exit 1 ;;
+      esac
+      case "${#CI_COMMIT_SHA}" in
+        40|64) ;;
+        *) echo "CI_COMMIT_SHA has an unexpected length" >&2; exit 1 ;;
+      esac
+      case "${CI_PIPELINE_ID}" in
+        *[!0-9]*|'') echo "CI_PIPELINE_ID is not numeric" >&2; exit 1 ;;
+      esac
+      case "${CI_JOB_ID}" in
+        *[!0-9]*|'') echo "CI_JOB_ID is not numeric" >&2; exit 1 ;;
+      esac
+      case "${IMAGE_NAME}" in
+        api|web) ;;
+        *) echo "Unexpected image name: ${IMAGE_NAME}" >&2; exit 1 ;;
+      esac
+      case "${REGISTRY_PULL_HOST}" in
+        *[!a-zA-Z0-9._:-]*|'') echo "REGISTRY_PULL_HOST cannot be encoded safely in build metadata" >&2; exit 1 ;;
+      esac
+
+      immutable_image="${REGISTRY_PULL_HOST}/${CI_PROJECT_PATH}/${IMAGE_NAME}@${digest}"
+      printf '%s\n' "${digest}" > "${CI_PROJECT_DIR}/${IMAGE_NAME}.digest"
+      printf '%s\n' "${immutable_image}" > "${CI_PROJECT_DIR}/${IMAGE_NAME}.image"
+      printf '%s\n' "${CI_JOB_ID}" > "${CI_PROJECT_DIR}/${IMAGE_NAME}.build-job-id"
+
+      test "$(tr -d '\r\n' < "${CI_PROJECT_DIR}/${IMAGE_NAME}.digest")" = "${digest}"
+      test "$(tr -d '\r\n' < "${CI_PROJECT_DIR}/${IMAGE_NAME}.image")" = "${immutable_image}"
+      test "$(tr -d '\r\n' < "${CI_PROJECT_DIR}/${IMAGE_NAME}.build-job-id")" = "${CI_JOB_ID}"
   artifacts:
     name: "${CI_JOB_NAME}-${CI_COMMIT_SHA}"
     paths:
       - "${IMAGE_NAME}.digest"
       - "${IMAGE_NAME}.image"
+      - "${IMAGE_NAME}.build-job-id"
     expire_in: 30 days
 
 build-api-image:
@@ -150,3 +213,92 @@ build-web-image:
     EXTRA_BUILD_ARGS: >-
       --build-arg VITE_API_BASE_URL=/api
       --build-arg VITE_ENABLE_REALTIME=false
+
+.cosign-job:
+  resource_group: denicheur-breizh-ci
+  image:
+    name: cgr.dev/chainguard/cosign:latest-dev@sha256:41d066f46a66ce6292c343560e9688cc51e4330052f10d5d139cd1679b1dda7b
+    entrypoint: [""]
+  rules: *image-build-rules
+
+sign-image-provenance:
+  extends: .cosign-job
+  stage: attest
+  environment:
+    name: cosign-signing
+    action: prepare
+  needs:
+    - job: build-api-image
+      artifacts: true
+    - job: build-web-image
+      artifacts: true
+  script:
+    - sh scripts/ci/sign-image-provenance.sh
+  artifacts:
+    name: "signed-image-provenance-${CI_COMMIT_SHA}"
+    paths:
+      - api.digest
+      - api.image
+      - api.build-job-id
+      - api.provenance.json
+      - web.digest
+      - web.image
+      - web.build-job-id
+      - web.provenance.json
+    expire_in: 30 days
+
+verify-image-cryptography:
+  extends: .cosign-job
+  stage: verify
+  needs:
+    - job: sign-image-provenance
+      artifacts: true
+  script:
+    - sh scripts/ci/verify-image-cryptography.sh
+  artifacts:
+    name: "cryptographically-verified-images-${CI_COMMIT_SHA}"
+    paths:
+      - api.digest
+      - api.image
+      - api.build-job-id
+      - api.provenance.json
+      - api.signature-verification.json
+      - api.attestation-verification.json
+      - web.digest
+      - web.image
+      - web.build-job-id
+      - web.provenance.json
+      - web.signature-verification.json
+      - web.attestation-verification.json
+    expire_in: 30 days
+
+verify-image-provenance:
+  stage: provenance
+  resource_group: denicheur-breizh-ci
+  image: node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
+  needs:
+    - job: verify-image-cryptography
+      artifacts: true
+  rules: *image-build-rules
+  script:
+    - test -z "${COSIGN_PRIVATE_KEY_FILE:-}" && test -z "${COSIGN_PASSWORD:-}"
+    - node scripts/ci/verify-image-provenance.mjs
+  artifacts:
+    name: "verified-image-provenance-${CI_COMMIT_SHA}"
+    paths:
+      - api.digest
+      - api.image
+      - api.build-job-id
+      - api.provenance.json
+      - api.signature-verification.json
+      - api.attestation-verification.json
+      - web.digest
+      - web.image
+      - web.build-job-id
+      - web.provenance.json
+      - web.signature-verification.json
+      - web.attestation-verification.json
+      - verified-images.env
+    reports:
+      dotenv: verified-images.env
+    expire_in: 30 days

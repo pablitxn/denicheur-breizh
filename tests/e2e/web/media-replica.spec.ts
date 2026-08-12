@@ -83,6 +83,7 @@ test("uses ready API media, falls back per photo, and clears the rendered datase
   const readyImage = readyCard.getByRole("img", { name: `Photo 1 sur 1 : ${title}`, exact: true });
   const thumbnailUrl = `${E2E_API_URL}/v1/media/${pendingAsset!.id}/thumbnail.webp`;
   const galleryUrl = `${E2E_API_URL}/v1/media/${pendingAsset!.id}/gallery.webp`;
+  await readyImage.scrollIntoViewIfNeeded();
   await expect(readyImage).toHaveAttribute("src", galleryUrl);
   await expect(readyImage).toHaveAttribute("srcset", `${thumbnailUrl} 480w, ${galleryUrl} 1280w`);
   await expect.poll(() => readyImage.evaluate((element) => (element as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
@@ -101,16 +102,31 @@ test("uses ready API media, falls back per photo, and clears the rendered datase
   expect(replicaRequests.length).toBeGreaterThan(0);
   expect(sourceRequests).toBeGreaterThan(0);
 
-  const clearResponse = await request.post(`${E2E_API_URL}/v1/maintenance/collected-data/clear`, {
-    data: { confirm: "clear-collected-data" },
-  });
-  expect(clearResponse.ok()).toBe(true);
+  // The suite intentionally shares one API process. The previous flow can leave
+  // its durable evaluator in the final worker tick for a few milliseconds; wait
+  // through that explicit safety rejection instead of weakening cleanup fencing.
+  await expect.poll(async () => {
+    const response = await request.post(`${E2E_API_URL}/v1/maintenance/collected-data/clear`, {
+      data: { confirm: "clear-collected-data" },
+    });
+    if (response.ok()) return "cleared";
+
+    const body = await response.json() as { error?: { code?: string; message?: string } };
+    if (response.status() === 409 && body.error?.code === "ACTIVE_EVALUATION_EXECUTION") {
+      return body.error.code;
+    }
+    throw new Error(`Cleanup failed with HTTP ${response.status()}: ${body.error?.code ?? "UNKNOWN"} ${body.error?.message ?? ""}`);
+  }, {
+    timeout: 15_000,
+    intervals: [100, 250, 500, 1_000],
+  }).toBe("cleared");
   await page.reload();
   await expect(page.getByText("Aucun bien dans cette vue.", { exact: true })).toBeVisible();
 });
 
 async function expectLoadedImage(image: Locator, expectedSrc: string): Promise<void> {
   await expect(image).toBeVisible();
+  await expect(async () => image.scrollIntoViewIfNeeded()).toPass({ timeout: 8_000 });
   await expect(image).toHaveAttribute("src", expectedSrc);
   await expect.poll(() => image.evaluate((element) => (element as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
 }

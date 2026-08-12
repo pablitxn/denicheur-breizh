@@ -71,7 +71,7 @@ export async function ingestRunBatch(
     `${config.baseUrl}/v1/ingestion/runs/${encodeURIComponent(runId)}`,
     {
       method: "PUT",
-      headers: withOperatorAuthorization({ "Content-Type": "application/json" }, config.operatorToken),
+      headers: withOperatorAuthorization({ "Content-Type": "application/json" }, config),
       body: JSON.stringify(payload),
       signal: options.signal,
     },
@@ -89,7 +89,11 @@ export async function fetchActiveRecipe(
   const config = await resolveRuntimeApiConfig(options.baseUrl);
   const response = await request(
     `${config.baseUrl}/v1/recipes/active`,
-    { method: "GET", signal: options.signal },
+    {
+      method: "GET",
+      headers: withOperatorAuthorization({}, config),
+      signal: options.signal,
+    },
     options.fetcher,
   );
   const payload = await readSuccessJson(response);
@@ -106,7 +110,11 @@ export async function fetchDefaultEvaluationPlan(
   const config = await resolveRuntimeApiConfig(options.baseUrl);
   const response = await request(
     `${config.baseUrl}/v1/evaluation-plans/default`,
-    { method: "GET", signal: options.signal },
+    {
+      method: "GET",
+      headers: withOperatorAuthorization({}, config),
+      signal: options.signal,
+    },
     options.fetcher,
   );
   if (response.status === 404) return undefined;
@@ -137,7 +145,7 @@ export async function createEvaluationExecution(
       headers: withOperatorAuthorization({
         "Content-Type": "application/json",
         "Idempotency-Key": idempotencyKey,
-      }, config.operatorToken),
+      }, config),
       body: JSON.stringify(requestPayload.data),
       signal: options.signal,
     },
@@ -161,7 +169,11 @@ export async function fetchEvaluationExecution(
   const config = await resolveRuntimeApiConfig(options.baseUrl);
   const response = await request(
     `${config.baseUrl}/v1/evaluation-executions/${encodeURIComponent(executionId)}`,
-    { method: "GET", signal: options.signal },
+    {
+      method: "GET",
+      headers: withOperatorAuthorization({}, config),
+      signal: options.signal,
+    },
     options.fetcher,
   );
   return parseExecutionDetail(await readSuccessJson(response), executionId, response.status);
@@ -175,7 +187,11 @@ export async function fetchEvaluationExecutionResults(
   const config = await resolveRuntimeApiConfig(options.baseUrl);
   const response = await request(
     `${config.baseUrl}/v1/evaluation-executions/${encodeURIComponent(executionId)}/results`,
-    { method: "GET", signal: options.signal },
+    {
+      method: "GET",
+      headers: withOperatorAuthorization({}, config),
+      signal: options.signal,
+    },
     options.fetcher,
   );
   const payload = await readSuccessJson(response);
@@ -201,7 +217,7 @@ export async function clearApiCollectedData(
     `${config.baseUrl}/v1/maintenance/collected-data/clear`,
     {
       method: "POST",
-      headers: withOperatorAuthorization({ "Content-Type": "application/json" }, config.operatorToken),
+      headers: withOperatorAuthorization({ "Content-Type": "application/json" }, config),
       body: JSON.stringify({ confirm: "clear-collected-data", runnerLease: "held" }),
       signal: options.signal,
     },

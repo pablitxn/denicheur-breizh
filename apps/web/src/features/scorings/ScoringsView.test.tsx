@@ -53,7 +53,18 @@ describe("ScoringsView", () => {
     await waitFor(() => expect(new URL(window.location.href).searchParams.get("seid")).toBe("execution-new"));
     expect(fetcher.mock.calls.some(([input, init]) =>
       String(input).endsWith("/v1/runs/run-1/evaluation-executions") && init?.method === "POST")).toBe(true);
+    expect(fetcher.mock.calls.some(([input]) => String(input).endsWith("/v1/runs/run-1/listings"))).toBe(false);
     expect(await screen.findByText("execution-new")).toBeInTheDocument();
+  });
+
+  it("disables launch when the run summary reports no detailed listings", async () => {
+    vi.stubGlobal("fetch", scoringFetch({ detailedListingCount: 0 }));
+    renderScorings();
+
+    const start = await screen.findByRole("button", { name: "Lancer l’évaluation" });
+
+    await waitFor(() => expect(start).toBeDisabled());
+    expect(await screen.findByText("Ce run terminé ne contient aucun snapshot détaillé à évaluer.")).toBeInTheDocument();
   });
 
   it("renders aggregate provenance with namespaced recipe criteria and evaluator version", async () => {
@@ -74,7 +85,7 @@ function renderScorings() {
   render(<QueryClientProvider client={client}><AppIntlProvider><ScoringsView /></AppIntlProvider></QueryClientProvider>);
 }
 
-function scoringFetch() {
+function scoringFetch({ detailedListingCount = 1 }: { detailedListingCount?: number } = {}) {
   return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith("/v1/evaluation-plans")) return json({ items: [plan] });
@@ -83,7 +94,9 @@ function scoringFetch() {
     }
     if (url.endsWith("/v1/recipes")) return json({ items: [recipe] });
     if (url.includes("/v1/runs?")) return json({ items: [runRecord()], nextCursor: null, total: 1 });
-    if (url.endsWith("/v1/runs/run-1")) return json({ ...runRecord(), listings: [listing()] });
+    if (url.endsWith("/v1/runs/run-1")) {
+      return json({ ...runRecord(), listingCount: 1, detailedListingCount });
+    }
     if (url.includes("/v1/listings?")) return json({ items: [listing()], nextCursor: null, total: 1 });
     if (url.includes("/v1/evaluation-executions?") && (!init?.method || init.method === "GET")) {
       return json({ items: [oldExecution], nextCursor: null, total: 1 });
@@ -144,6 +157,11 @@ function execution(id: string, status: "queued" | "running" | "completed" | "par
     createdAt: now,
     ...(status === "completed" ? { startedAt: now, completedAt: now } : {}),
     counters,
+    budget: {
+      limit: { providerCalls: 10, inputTokens: 100_000, outputTokens: 20_000, costMicroUsd: 1_000_000 },
+      estimate: { providerCalls: 1, inputTokens: 2_000, outputTokens: 1_000, costMicroUsd: 10_000 },
+      consumed: { providerCalls: 0, inputTokens: 0, outputTokens: 0, costMicroUsd: 0 },
+    },
   };
 }
 
