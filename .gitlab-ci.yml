@@ -29,7 +29,9 @@ variables:
   EXPECTED_CI_SERVER_URL: https://gitlab.orchid-labs.xyz
   EXPECTED_PROJECT_PATH: research-and-development/denicheur-breizh
   KUBERNETES_CPU_REQUEST: "100m"
-  KUBERNETES_CPU_LIMIT: "2"
+  # Keep one running job plus its terminating predecessor below the shared
+  # namespace's 2500m CPU quota: 2 * (1000m build + 100m helper) = 2200m.
+  KUBERNETES_CPU_LIMIT: "1"
   KUBERNETES_MEMORY_REQUEST: "256Mi"
   KUBERNETES_MEMORY_LIMIT: "2Gi"
   KUBERNETES_HELPER_CPU_REQUEST: "50m"
@@ -72,8 +74,8 @@ workflow:
 
 check-workspace:
   stage: validate
-  # The shared runner namespace has a 2500m CPU quota while each job reserves
-  # 2100m including its helper. Every real job uses this project-wide lock.
+  # Every real job uses this project-wide lock. The 1100m CPU cap including
+  # helper also leaves teardown headroom for one terminating predecessor pod.
   resource_group: denicheur-breizh-ci
   image: node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
   rules: *validation-rules
