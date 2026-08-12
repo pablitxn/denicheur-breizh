@@ -105,6 +105,11 @@ check-workspace:
 .build-image:
   stage: build
   resource_group: denicheur-breizh-ci
+  variables:
+    # Kaniko and the in-image pnpm install need more than the 1Gi validation
+    # profile. 1280Mi + the 128Mi helper still leaves 128Mi below the observed
+    # 5Gi quota when a 3584Mi predecessor is terminating.
+    KUBERNETES_MEMORY_LIMIT: "1280Mi"
   image:
     name: gcr.io/kaniko-project/executor:v1.23.2-debug@sha256:c3109d5926a997b100c4343944e06c6b30a6804b2f9abe0994d3de6ef92b028e
     entrypoint: [""]
@@ -146,9 +151,9 @@ check-workspace:
         --context "${CI_PROJECT_DIR}" \
         --dockerfile "${CI_PROJECT_DIR}/${DOCKERFILE_PATH}" \
         --build-arg OCI_REVISION="${CI_COMMIT_SHA}" \
+        --build-arg PNPM_LOCKFILE_PREVERIFIED=true \
         --cache=true \
         --cache-repo "${cache_repository}" \
-        --cache-copy-layers=true \
         --cache-run-layers=true \
         --compressed-caching=false \
         --cache-ttl=168h \

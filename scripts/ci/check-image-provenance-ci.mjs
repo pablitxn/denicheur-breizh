@@ -73,7 +73,15 @@ function declaredStages(blocks) {
   return stages;
 }
 
-export function validateCiSupplyChain({ ci, common, sign, cryptography, semantic }) {
+export function validateCiSupplyChain({
+  ci,
+  common,
+  sign,
+  cryptography,
+  semantic,
+  dockerApi,
+  dockerWeb,
+}) {
   const allSources = [ci, common, sign, cryptography, semantic].join("\n");
   const blocks = topLevelBlocks(ci);
   requireAbsent(
@@ -91,6 +99,30 @@ export function validateCiSupplyChain({ ci, common, sign, cryptography, semantic
     /cosign\s+generate-key-pair|^-----BEGIN ENCRYPTED SIGSTORE PRIVATE KEY-----$[\s\S]+^-----END ENCRYPTED SIGSTORE PRIVATE KEY-----$/m,
     "the repository must never generate or embed a signing private key",
   );
+  for (const [name, dockerfile] of [["API", dockerApi], ["web", dockerWeb]]) {
+    requireMatch(
+      dockerfile,
+      /pnpm config set network-concurrency 4/,
+      `${name} image install must retain its memory-safe pnpm network concurrency`,
+    );
+    requireMatch(
+      dockerfile,
+      /pnpm config set child-concurrency 1/,
+      `${name} image install must retain its memory-safe pnpm child concurrency`,
+    );
+    requireMatch(
+      dockerfile,
+      /ARG PNPM_LOCKFILE_PREVERIFIED=false[\s\S]+--config\.trust-lockfile=\$\{PNPM_LOCKFILE_PREVERIFIED\}/,
+      `${name} image must verify its lockfile unless the caller explicitly proves a prior gate`,
+    );
+    for (const platformFlag of ["--os=linux", "--cpu=x64", "--libc=glibc"]) {
+      requireMatch(
+        dockerfile,
+        new RegExp(platformFlag.replace("-", "\\-")),
+        `${name} image install must retain its explicit Linux x64 glibc target`,
+      );
+    }
+  }
 
   let pinnedJobImageCount = 0;
   for (const [name, block] of blocks) {
@@ -283,9 +315,29 @@ export function validateCiSupplyChain({ ci, common, sign, cryptography, semantic
   );
 
   const buildBlock = requiredBlock(blocks, ".build-image");
+  requireMatch(
+    buildBlock,
+    /^    KUBERNETES_MEMORY_LIMIT: "1280Mi"$/m,
+    "image builders must retain their quota-safe Kaniko memory profile",
+  );
   requireMatch(buildBlock, /test -z "\$\{COSIGN_PRIVATE_KEY_FILE:-\}" && test -z "\$\{COSIGN_PASSWORD:-\}"/, "image builders must reject mis-scoped private signing variables");
+  requireMatch(
+    buildBlock,
+    /needs:\s*\n\s*- check-workspace/,
+    "image builders may trust the lockfile only after the workspace verification gate",
+  );
+  requireMatch(
+    buildBlock,
+    /--build-arg PNPM_LOCKFILE_PREVERIFIED=true/,
+    "CI image builders must declare that the required workspace gate preverified the lockfile",
+  );
   requireMatch(buildBlock, /if \[ -n "\$\{REGISTRY_INTERNAL_CA_FILE:-\}" \]; then/, "the registry CA extension must be optional");
   requireMatch(buildBlock, /ca-certificates\.crt[\s\S]+REGISTRY_INTERNAL_CA_FILE/, "Kaniko must append a configured CA without disabling system trust");
+  requireAbsent(
+    buildBlock,
+    /--cache-copy-layers(?:=true)?(?:\s|\\|$)/,
+    "Kaniko must not publish copy-layer caches concurrently with dependency installation",
+  );
   const cosignBlock = requiredBlock(blocks, ".cosign-job");
   requireMatch(cosignBlock, /entrypoint:\s*\[""\]/, "Cosign job must expose a GitLab-compatible shell entrypoint");
   requireMatch(cosignBlock, /rules:\s*\*image-build-rules/, "Cosign jobs must inherit protected-ref rules");
@@ -573,6 +625,18 @@ function runSelfTest(sources) {
   expectRejected("runner memory cap raised", () => validateCiSupplyChain(mutate({
     ci: sources.ci.replace('  KUBERNETES_MEMORY_LIMIT: "1Gi"', '  KUBERNETES_MEMORY_LIMIT: "2Gi"'),
   })));
+  expectRejected("builder memory profile raised to quota edge", () => validateCiSupplyChain(mutate({
+    ci: sources.ci.replace('    KUBERNETES_MEMORY_LIMIT: "1280Mi"', '    KUBERNETES_MEMORY_LIMIT: "1408Mi"'),
+  })));
+  expectRejected("API image install concurrency raised", () => validateCiSupplyChain(mutate({
+    dockerApi: sources.dockerApi.replace("pnpm config set network-concurrency 4", "pnpm config set network-concurrency 16"),
+  })));
+  expectRejected("local API image trusts an unverified lockfile", () => validateCiSupplyChain(mutate({
+    dockerApi: sources.dockerApi.replace("ARG PNPM_LOCKFILE_PREVERIFIED=false", "ARG PNPM_LOCKFILE_PREVERIFIED=true"),
+  })));
+  expectRejected("CI builder drops its lockfile verification dependency", () => validateCiSupplyChain(mutate({
+    ci: sources.ci.replace("  needs:\n    - check-workspace\n", "  needs: []\n"),
+  })));
   expectRejected("workspace task serialization removed", () => validateCiSupplyChain(mutate({
     ci: sources.ci.replace('    TURBO_CONCURRENCY: "1"', '    TURBO_CONCURRENCY: "10"'),
   })));
@@ -639,6 +703,8 @@ const sources = {
   sign: readFileSync("scripts/ci/sign-image-provenance.sh", "utf8"),
   cryptography: readFileSync("scripts/ci/verify-image-cryptography.sh", "utf8"),
   semantic: readFileSync("scripts/ci/verify-image-provenance.mjs", "utf8"),
+  dockerApi: readFileSync("Dockerfile.api", "utf8"),
+  dockerWeb: readFileSync("Dockerfile.web", "utf8"),
 };
 
 try {

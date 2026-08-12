@@ -11,7 +11,9 @@ RUN corepack enable \
   && corepack prepare pnpm@11.17.0 --activate \
   && pnpm config set store-dir /pnpm/store \
   && pnpm config set fetch-timeout 600000 \
-  && pnpm config set fetch-retries 5
+  && pnpm config set fetch-retries 5 \
+  && pnpm config set network-concurrency 4 \
+  && pnpm config set child-concurrency 1
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json ./
 COPY apps/api/package.json ./apps/api/package.json
@@ -21,7 +23,13 @@ COPY packages/contracts/package.json ./packages/contracts/package.json
 COPY packages/design-system/package.json ./packages/design-system/package.json
 COPY packages/i18n/package.json ./packages/i18n/package.json
 
-RUN pnpm install --frozen-lockfile --filter @denicheur-breizh/web...
+ARG PNPM_LOCKFILE_PREVERIFIED=false
+RUN pnpm install --frozen-lockfile \
+  --config.trust-lockfile=${PNPM_LOCKFILE_PREVERIFIED} \
+  --filter @denicheur-breizh/web... \
+  --os=linux \
+  --cpu=x64 \
+  --libc=glibc
 
 COPY . .
 
