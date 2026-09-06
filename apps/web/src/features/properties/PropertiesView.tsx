@@ -42,7 +42,7 @@ export function PropertiesView() {
     const direction = sortDirection === "asc" ? 1 : -1;
     return listings
       .filter((listing) => activeSources.length === 0 || activeSources.includes(listing.source))
-      .sort((left, right) => compareListings(left, right, sortKey, locale) * direction);
+      .sort((left, right) => compareListings(left, right, sortKey, locale, direction));
   }, [activeSources, listings, locale, sortDirection, sortKey]);
 
   const selectedSummary = sortedListings.find((listing) => listing.key === selectedKey) ?? sortedListings[0];
@@ -101,10 +101,12 @@ export function PropertiesView() {
 
       <div className={styles.body}>
         <div className={styles.results}>
-          {listingsQuery.error && <LoadState kind="error" onRetry={() => void listingsQuery.refetch()} />}
+          {listingsQuery.error && (listingsQuery.data ? (
+            <RetryNotice message={t("properties.refreshError")} retrying={listingsQuery.isFetching} onRetry={() => void listingsQuery.refetch()} />
+          ) : <LoadState kind="error" retrying={listingsQuery.isFetching} onRetry={() => void listingsQuery.refetch()} />)}
           {!listingsQuery.error && listingsQuery.isLoading && <EmptyState role="status">{t("properties.loading")}</EmptyState>}
           {!listingsQuery.error && !listingsQuery.isLoading && sortedListings.length === 0 && <EmptyState>{t("properties.empty")}</EmptyState>}
-          {!listingsQuery.error && sortedListings.length > 0 && viewMode === "table" && (
+          {sortedListings.length > 0 && viewMode === "table" && (
             <ListingTable
               listings={sortedListings}
               selectedKey={selected?.key}
@@ -115,7 +117,7 @@ export function PropertiesView() {
               onSelect={selectListing}
             />
           )}
-          {!listingsQuery.error && sortedListings.length > 0 && viewMode === "cards" && (
+          {sortedListings.length > 0 && viewMode === "cards" && (
             <div className={styles.cardGrid}>
               {sortedListings.map((listing) => (
                 <article
@@ -148,21 +150,31 @@ export function PropertiesView() {
             </div>
           )}
         </div>
-        {selected && <ListingDetail detailRef={detailRef} listing={selected} loading={detailQuery.isFetching} />}
+        {selected && <ListingDetail detailRef={detailRef} listing={selected} loading={detailQuery.isFetching} error={Boolean(detailQuery.error)} onRetry={() => void detailQuery.refetch()} />}
       </div>
     </section>
   );
 }
 
-function LoadState({ kind, onRetry }: { kind: "error"; onRetry: () => void }) {
+function LoadState({ kind, retrying, onRetry }: { kind: "error"; retrying: boolean; onRetry: () => void }) {
   const { t } = useAppIntl();
   return (
     <EmptyState role="alert" data-kind={kind}>
       <div className={styles.stateContent}>
         <strong>{t("properties.error")}</strong>
-        <Button onClick={onRetry}>{t("common.retry")}</Button>
+        <Button disabled={retrying} onClick={onRetry}>{t("common.retry")}</Button>
       </div>
     </EmptyState>
+  );
+}
+
+function RetryNotice({ message, retrying, onRetry }: { message: string; retrying: boolean; onRetry: () => void }) {
+  const { t } = useAppIntl();
+  return (
+    <div className={styles.retryNotice} role="alert">
+      <p>{message}</p>
+      <Button size="sm" disabled={retrying} onClick={onRetry}>{t("common.retry")}</Button>
+    </div>
   );
 }
 
@@ -218,13 +230,14 @@ function ListingTable({ listings, selectedKey, locale, sortKey, sortDirection, o
   );
 }
 
-function ListingDetail({ listing, loading, detailRef }: { listing: PropertyListing; loading: boolean; detailRef: RefObject<HTMLElement | null> }) {
+function ListingDetail({ listing, loading, error, onRetry, detailRef }: { listing: PropertyListing; loading: boolean; error: boolean; onRetry: () => void; detailRef: RefObject<HTMLElement | null> }) {
   const { locale, t } = useAppIntl();
   const evaluation = listing.evaluation;
   return (
     <aside ref={detailRef} className={styles.detail} aria-busy={loading}>
       <PropertyVisual key={listing.key} property={listing} size="lg" navigation />
       <div className={styles.detailBody}>
+        {error && <RetryNotice message={t("properties.detailError")} retrying={loading} onRetry={onRetry} />}
         <div className={styles.detailHeader}>
           <div>
             <strong>{formatOptionalPrice(listing.priceEuros, locale, t("common.unavailable"))}</strong>
@@ -310,11 +323,11 @@ function DecisionChip({ decision }: { decision: ListingDecision | "pass" | "fail
   return <Chip active tone={tone}>{t(key)}</Chip>;
 }
 
-function compareListings(left: PropertyListing, right: PropertyListing, key: SortKey, locale: LocaleCode): number {
+function compareListings(left: PropertyListing, right: PropertyListing, key: SortKey, locale: LocaleCode, direction: number): number {
   const unavailableLast = (a: string | number | undefined | null, b: string | number | undefined | null) => {
     if (a === undefined || a === null) return b === undefined || b === null ? 0 : 1;
     if (b === undefined || b === null) return -1;
-    return typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b), locale);
+    return (typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b), locale)) * direction;
   };
   if (key === "title") return unavailableLast(left.title, right.title);
   if (key === "price") return unavailableLast(left.priceEuros, right.priceEuros);

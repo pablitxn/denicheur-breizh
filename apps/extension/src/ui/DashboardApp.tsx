@@ -55,6 +55,7 @@ import {
   CRAWLER_STORAGE_KEYS,
   IDLE_RUN,
   loadCrawlerState,
+  loadCrawlerStateFields,
   loadEvaluationPlan,
   reconcileInterruptedRun,
   saveFilters,
@@ -76,6 +77,7 @@ import {
   type ThemePreference,
 } from "./theme";
 import { RuntimeApiSettings } from "./RuntimeApiSettings";
+import { updateStorageRefreshErrors } from "./storageRefresh";
 
 type NumericFilterKey =
   | "priceMin"
@@ -156,6 +158,8 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
   const [draftConflict, setDraftConflict] = useState(false);
   const [actionFeedback, setActionFeedback] = useState<string>();
   const [error, setError] = useState<unknown>();
+  const [refreshErrors, setRefreshErrors] = useState<Partial<Record<"filters" | "run" | "records" | "plan", string>>>({});
+  const visibleError = error ?? Object.values(refreshErrors)[0];
   const { preference: themePreference, setPreference: setThemePreference } =
     useThemePreference(initialThemePreference);
   const runnerRef = useRef<ScrapeRunner | undefined>(undefined);
@@ -170,12 +174,12 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
   const formPending = savingFilters || refreshingRecipe || reevaluationPending || startPending;
   const durableEvaluationPending = syncState.evaluationQueue.some((entry) =>
     entry.status === "queued" || entry.status === "creating" || entry.status === "polling");
-  const evaluationFailures = records.flatMap((record) => (
+  const evaluationFailures = useMemo(() => records.flatMap((record) => (
     record.evaluationFailure ? [record.evaluationFailure] : []
-  ));
-  const successfulEvaluationCount = records.filter((record) => (
+  )), [records]);
+  const successfulEvaluationCount = useMemo(() => records.filter((record) => (
     record.status === "detailed" && (record.planEvaluation || (record.evaluation && !record.evaluationFailure))
-  )).length;
+  )).length, [records]);
   const filterIssues = useMemo(() => validateSearchFilters(filters), [filters]);
   const filterIssueMessages = useMemo(
     () => new Map(filterIssues.map((issue) => [
@@ -204,8 +208,10 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
   }, [currentResultsPage, filteredRecords, recordsPageSize]);
   useEffect(() => {
     let mounted = true;
+    const refreshVersions = { filters: 0, run: 0, records: 0, plan: 0 };
     setHydrationState("loading");
     setLoadError(undefined);
+    setRefreshErrors({});
 
     void Promise.all([loadCrawlerState(), loadExtensionSyncState(), loadEvaluationPlan()])
       .then(async ([snapshot, restoredSyncState, restoredPlan]) => {
@@ -213,23 +219,25 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
           Boolean(runnerRef.current),
         );
         const recoveredRun = reconcileDashboardRun(snapshot.run, hasLiveRunner);
-        if (recoveredRun !== snapshot.run) await saveRun(recoveredRun);
+        if (refreshVersions.run === 0 && recoveredRun !== snapshot.run) await saveRun(recoveredRun);
         if (!mounted) return;
 
-        setFilters(snapshot.filters);
-        setRun(recoveredRun);
-        setRecords(snapshot.records);
+        if (refreshVersions.filters === 0) setFilters(snapshot.filters);
+        if (refreshVersions.run === 0) setRun(recoveredRun);
+        if (refreshVersions.records === 0) setRecords(snapshot.records);
         const activePlan = restoredSyncState.activePlan.status === "cached" &&
           restoredPlan !== undefined &&
           restoredPlan.id === restoredSyncState.activePlan.planId &&
           restoredPlan.version === restoredSyncState.activePlan.planVersion
           ? restoredPlan
           : undefined;
-        setSyncState(restoredSyncState);
-        setPlan(activePlan);
+        if (refreshVersions.plan === 0) {
+          setSyncState(restoredSyncState);
+          setPlan(activePlan);
+          setIntelligenceExpanded(Boolean(activePlan));
+        }
         setFiltersDirtyState(false);
         setDraftConflict(false);
-        setIntelligenceExpanded(Boolean(activePlan));
         setHydrationState("ready");
       })
       .catch((caught) => {
@@ -250,17 +258,42 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
         return;
       }
 
-      void Promise.all([loadCrawlerState(), loadExtensionSyncState(), loadEvaluationPlan()])
-        .then(([snapshot, restoredSyncState, restoredPlan]) => {
+      const changedFields = (["filters", "run", "records"] as const)
+        .filter((field) => CRAWLER_STORAGE_KEYS[field] in changes);
+      const planChanged = CRAWLER_STORAGE_KEYS.recipe in changes ||
+        CRAWLER_STORAGE_KEYS.plan in changes || SYNC_STORAGE_KEY in changes;
+      for (const field of changedFields) refreshVersions[field] += 1;
+      if (planChanged) refreshVersions.plan += 1;
+      const requestVersions = { ...refreshVersions };
+
+      void Promise.allSettled([
+        loadCrawlerStateFields(changedFields),
+        planChanged ? Promise.all([loadExtensionSyncState(), loadEvaluationPlan()]) : undefined,
+      ])
+        .then(([crawlerResult, planResult]) => {
           if (!mounted) return;
-          if (CRAWLER_STORAGE_KEYS.filters in changes) {
-            if (filtersDirtyRef.current) {
-              setDraftConflict(true);
-            } else {
-              setFilters(snapshot.filters);
+          setRefreshErrors((current) => updateStorageRefreshErrors(
+            current, changedFields, requestVersions, refreshVersions,
+            crawlerResult.status === "rejected" ? crawlerResult.reason : undefined,
+          ));
+          if (crawlerResult.status === "fulfilled") {
+            const snapshot = crawlerResult.value;
+            if (changedFields.includes("filters") && requestVersions.filters === refreshVersions.filters) {
+              if (filtersDirtyRef.current) {
+                setDraftConflict(true);
+              } else {
+                setFilters(snapshot.filters);
+              }
             }
+            if (changedFields.includes("run") && requestVersions.run === refreshVersions.run) setRun(snapshot.run);
+            if (changedFields.includes("records") && requestVersions.records === refreshVersions.records) setRecords(snapshot.records);
           }
-          if (CRAWLER_STORAGE_KEYS.recipe in changes || CRAWLER_STORAGE_KEYS.plan in changes || SYNC_STORAGE_KEY in changes) {
+          if (planChanged) setRefreshErrors((current) => updateStorageRefreshErrors(
+            current, ["plan"], requestVersions, refreshVersions,
+            planResult.status === "rejected" ? planResult.reason : undefined,
+          ));
+          if (planResult.status === "fulfilled" && planResult.value && requestVersions.plan === refreshVersions.plan) {
+            const [restoredSyncState, restoredPlan] = planResult.value;
             const activePlan = restoredSyncState.activePlan.status === "cached" &&
               restoredPlan !== undefined &&
               restoredPlan.id === restoredSyncState.activePlan.planId &&
@@ -270,11 +303,6 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
             setSyncState(restoredSyncState);
             setPlan(activePlan);
           }
-          if (CRAWLER_STORAGE_KEYS.run in changes) setRun(snapshot.run);
-          if (CRAWLER_STORAGE_KEYS.records in changes) setRecords(snapshot.records);
-        })
-        .catch((caught) => {
-          if (mounted) setError(caught instanceof Error ? caught.message : String(caught));
         });
     };
 
@@ -940,10 +968,10 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
             </div>
           )}
 
-          {error !== undefined && error !== null && (
+          {visibleError !== undefined && visibleError !== null && (
             <div className="inline-alert danger" role="alert">
               <AlertTriangle size={16} />
-              <LocalizedMessageView value={error} />
+              <LocalizedMessageView value={visibleError} />
             </div>
           )}
 

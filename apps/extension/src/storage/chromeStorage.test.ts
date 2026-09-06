@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDefaultIntelligenceRecipe } from "../intelligence/recipe";
 import type { ScrapedPropertyRecord } from "../lib/types";
 import { loadExtensionSyncState } from "../sync/storage";
@@ -9,6 +9,7 @@ import {
   clearRecordsAndSyncQueue,
   isCrawlerStorageKey,
   loadCrawlerState,
+  loadCrawlerStateFields,
   migrateStoredRecords,
   reconcileInterruptedRun,
   saveRecipe,
@@ -38,6 +39,37 @@ beforeEach(() => {
 });
 
 describe("crawler run recovery", () => {
+  it("refreshes progress without reading or migrating the listing collection", async () => {
+    const get = vi.spyOn(chrome.storage.local, "get");
+    storage["denicheur:crawler:run"] = { id: "progress-run", collected: 12 };
+    Object.defineProperty(storage, "denicheur:crawler:records", {
+      get() { throw new Error("Listing collection should not be read for a progress refresh"); },
+    });
+
+    await expect(loadCrawlerStateFields(["run"])).resolves.toEqual({
+      run: expect.objectContaining({ id: "progress-run", collected: 12, status: "idle" }),
+    });
+    expect(get).toHaveBeenCalledWith(["denicheur:crawler:run"], expect.any(Function));
+  });
+
+  it("preserves legacy migrations for a selective filter refresh", async () => {
+    storage["denicheur:crawler:filters"] = { locationToken: "Finistère__48.2_-4.0_50000" };
+
+    const state = await loadCrawlerStateFields(["filters"]);
+
+    expect(state.filters.locationQuery).toBe("Finistère");
+    expect(storage["denicheur:crawler:filters"]).toEqual(state.filters);
+    expect(state).not.toHaveProperty("records");
+  });
+
+  it("skips storage entirely when only unrelated state changed", async () => {
+    const get = vi.spyOn(chrome.storage.local, "get");
+
+    await expect(loadCrawlerStateFields([])).resolves.toEqual({});
+
+    expect(get).not.toHaveBeenCalled();
+  });
+
   it("cancels a persisted active run when the dashboard closed", () => {
     const run = reconcileInterruptedRun(
       { ...IDLE_RUN, id: "run-1", status: "collecting-details", startedAt: "2026-07-11T10:00:00.000Z" },

@@ -27,6 +27,39 @@ const UNRELATED_URL = "https://fixtures.invalid/unrelated";
 const API_BASE_URL = "http://127.0.0.1:14310";
 const WEB_BASE_URL = "http://127.0.0.1:14173";
 test.describe("Denicheur MV3 native-search runtime", () => {
+  test.afterEach(async ({ context, page }, testInfo) => {
+    if (testInfo.status !== testInfo.expectedStatus) return;
+    // Opening the dashboard closes the action popup that may own `page`.
+    const storagePage = [page, ...context.pages()].find((candidate) =>
+      !candidate.isClosed() && candidate.url().startsWith(`chrome-extension://${EXPECTED_EXTENSION_ID}/`),
+    );
+    if (!storagePage) throw new Error("No open extension page is available to verify the final crawler snapshot.");
+    const run = await readStoredRun(storagePage);
+    const runId = run.id;
+    if (typeof runId !== "string" || runId === "idle") return;
+
+    // A local terminal label precedes the background's final ingestion PUT.
+    // Keep its browser context alive until the real API observes that snapshot;
+    // otherwise another test inherits an active run that can no longer sync.
+    // Do not force synchronization here: a broken automatic sync must fail the
+    // owning runtime test instead of being repaired or hidden by its cleanup.
+    await test.step("Wait for the terminal crawler snapshot in the API", async () => {
+      expect(["completed", "cancelled", "failed", "blocked-activity"]).toContain(run.status);
+      await expect.poll(async () => {
+        const response = await context.request.get(
+          `${API_BASE_URL}/v1/runs/${encodeURIComponent(runId)}`,
+        );
+        if (response.status() === 404) return { status: "not-ingested" };
+        expect(response.ok()).toBe(true);
+        return response.json();
+      }, {
+        message: `Run ${runId} must persist its terminal snapshot before closing the extension`,
+        timeout: 10_000,
+        intervals: [100, 250, 500],
+      }).toMatchObject({ id: runId, status: run.status, collected: run.collected });
+    });
+  });
+
   async function runFunctionalProductFlow({
     context,
     page,

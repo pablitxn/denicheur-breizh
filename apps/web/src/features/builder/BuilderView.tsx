@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -240,6 +240,7 @@ export function BuilderView() {
         {tab === "recipes" ? (
           recipeDraft && activeRecipeDraftKey ? (
             <RecipeDraftEditor
+              key={activeRecipeDraftKey}
               working={recipeDraft}
               error={validateRecipeDraft(recipeDraft.value)}
               saving={saveRecipe.isPending}
@@ -365,7 +366,18 @@ interface RecipeDraftEditorProps {
 function RecipeDraftEditor({ working, error, saving, saveError, onChange, onDiscard, onPublish }: RecipeDraftEditorProps) {
   const { t } = useAppIntl();
   const draft = working.value;
+  const [criterionKeys, setCriterionKeys] = useState(() => draft.criteria.map((_, index) => index));
+  const nextCriterionKey = useRef(draft.criteria.length);
   const totalWeight = draft.criteria.reduce((total, criterion) => total + criterion.weight, 0);
+  const addCriterion = () => {
+    const key = nextCriterionKey.current++;
+    setCriterionKeys((current) => [...current, key]);
+    onChange((current) => ({ ...current, criteria: [...current.criteria, blankCriterion(nextCriterionId(current.criteria))] }));
+  };
+  const deleteCriterion = (index: number) => {
+    setCriterionKeys((current) => current.filter((_, candidate) => candidate !== index));
+    onChange((current) => ({ ...current, criteria: current.criteria.filter((_, candidate) => candidate !== index) }));
+  };
   const updateCriterion = (index: number, update: Partial<IntelligenceCriterion>) => onChange((current) => ({
     ...current,
     criteria: current.criteria.map((criterion, candidate) => candidate === index ? { ...criterion, ...update } : criterion),
@@ -382,9 +394,9 @@ function RecipeDraftEditor({ working, error, saving, saveError, onChange, onDisc
         <label><SectionLabel>{t("builder.recipeName")}</SectionLabel><input value={draft.name} onChange={(event) => onChange((current) => ({ ...current, name: event.target.value }))} /></label>
         <label><SectionLabel>{t("builder.threshold")}</SectionLabel><input type="number" min={0} max={100} value={draft.threshold} onChange={(event) => onChange((current) => ({ ...current, threshold: Number(event.target.value) }))} /></label>
       </div>
-      <SectionHeading title={t("builder.criteriaEditor")} meta={t("builder.weightTotal", { value: totalWeight })} action={<Button size="sm" onClick={() => onChange((current) => ({ ...current, criteria: [...current.criteria, blankCriterion(nextCriterionId(current.criteria))] }))} disabled={draft.criteria.length >= 12}><Plus size={14} aria-hidden="true" />{t("builder.addCriterion")}</Button>} />
+      <SectionHeading title={t("builder.criteriaEditor")} meta={t("builder.weightTotal", { value: totalWeight })} action={<Button size="sm" onClick={addCriterion} disabled={draft.criteria.length >= 12}><Plus size={14} aria-hidden="true" />{t("builder.addCriterion")}</Button>} />
       <div className={styles.cardStack}>
-        {draft.criteria.map((criterion, index) => <article key={`${index}-${criterion.id}`} className={styles.card}>
+        {draft.criteria.map((criterion, index) => <article key={criterionKeys[index]} className={styles.card}>
           <div className={styles.formGrid}>
             <label><SectionLabel>{t("builder.criterionId")}</SectionLabel><input value={criterion.id} onChange={(event) => updateCriterion(index, { id: event.target.value })} /></label>
             <label><SectionLabel>{t("builder.criterionName")}</SectionLabel><input value={criterion.name} onChange={(event) => updateCriterion(index, { name: event.target.value })} /></label>
@@ -394,7 +406,7 @@ function RecipeDraftEditor({ working, error, saving, saveError, onChange, onDisc
           <div className={styles.cardActions}>
             <label><input type="checkbox" checked={criterion.required} onChange={(event) => updateCriterion(index, { required: event.target.checked })} />{t("builder.required")}</label>
             <label><input type="checkbox" checked={criterion.evidenceRequired !== false} onChange={(event) => updateCriterion(index, { evidenceRequired: event.target.checked })} />{t("builder.evidenceRequired")}</label>
-            <Button variant="ghost" iconOnly aria-label={t("builder.deleteCriterion", { name: criterion.name || criterion.id })} onClick={() => onChange((current) => ({ ...current, criteria: current.criteria.filter((_, candidate) => candidate !== index) }))} disabled={draft.criteria.length === 1}><Trash2 size={14} aria-hidden="true" /></Button>
+            <Button variant="ghost" iconOnly aria-label={t("builder.deleteCriterion", { name: criterion.name || criterion.id })} onClick={() => deleteCriterion(index)} disabled={draft.criteria.length === 1}><Trash2 size={14} aria-hidden="true" /></Button>
           </div>
         </article>)}
       </div>

@@ -65,35 +65,48 @@ export const IDLE_RUN: ScrapeRun = {
 };
 
 export async function loadCrawlerState(): Promise<StoredCrawlerState> {
+  return loadCrawlerStateFields(["filters", "run", "records", "recipe"]);
+}
+
+/** Read and migrate only the fields a surface needs to refresh. */
+export async function loadCrawlerStateFields<K extends keyof StoredCrawlerState>(
+  fields: readonly K[],
+): Promise<Pick<StoredCrawlerState, K>> {
+  if (fields.length === 0) return {} as Pick<StoredCrawlerState, K>;
+  const requestedFields = new Set<keyof StoredCrawlerState>(fields);
   const values = await getStorage<{
     [FILTERS_KEY]?: unknown;
     [RUN_KEY]?: ScrapeRun;
     [RECORDS_KEY]?: ScrapedPropertyRecord[];
     [RECIPE_KEY]?: IntelligenceRecipe;
-  }>([FILTERS_KEY, RUN_KEY, RECORDS_KEY, RECIPE_KEY]);
-
-  const storedFilters = values[FILTERS_KEY];
-  const filters = storedFilters === undefined
-    ? createDefaultSearchFilters()
-    : migrateStoredSearchFilters(storedFilters);
-
-  const storedRecords = values[RECORDS_KEY] ?? [];
-  const records = migrateStoredRecords(storedRecords);
+  }>(fields.map((field) => CRAWLER_STORAGE_KEYS[field]));
+  const state: Partial<StoredCrawlerState> = {};
   const migrationPatch: Record<string, unknown> = {};
-  if (storedFilters !== undefined && needsStoredFilterMigration(storedFilters)) {
-    migrationPatch[FILTERS_KEY] = filters;
+
+  if (requestedFields.has("filters")) {
+    const storedFilters = values[FILTERS_KEY];
+    state.filters = storedFilters === undefined
+      ? createDefaultSearchFilters()
+      : migrateStoredSearchFilters(storedFilters);
+    if (storedFilters !== undefined && needsStoredFilterMigration(storedFilters)) {
+      migrationPatch[FILTERS_KEY] = state.filters;
+    }
   }
-  if (JSON.stringify(storedRecords) !== JSON.stringify(records)) {
-    migrationPatch[RECORDS_KEY] = records;
+  if (requestedFields.has("records")) {
+    const storedRecords = values[RECORDS_KEY] ?? [];
+    state.records = migrateStoredRecords(storedRecords);
+    if (JSON.stringify(storedRecords) !== JSON.stringify(state.records)) {
+      migrationPatch[RECORDS_KEY] = state.records;
+    }
+  }
+  if (requestedFields.has("recipe")) {
+    state.recipe = normalizeIntelligenceRecipe(values[RECIPE_KEY] ?? createDefaultIntelligenceRecipe());
+  }
+  if (requestedFields.has("run")) {
+    state.run = normalizeRun(values[RUN_KEY]);
   }
   if (Object.keys(migrationPatch).length > 0) await setStorage(migrationPatch);
-
-  return {
-    filters,
-    recipe: normalizeIntelligenceRecipe(values[RECIPE_KEY] ?? createDefaultIntelligenceRecipe()),
-    run: normalizeRun(values[RUN_KEY]),
-    records,
-  };
+  return state as Pick<StoredCrawlerState, K>;
 }
 
 export async function saveFilters(filters: SearchFilters): Promise<void> {

@@ -17,7 +17,7 @@ export function Shell({ children }: { children: ReactNode }) {
   const theme = useWorkspaceStore((state) => state.theme);
   const toggleTheme = useWorkspaceStore((state) => state.toggleTheme);
   const health = useHealth();
-  const apiConnected = health.data?.status === "ok";
+  const apiConnected = !health.isError && health.data?.status === "ok";
   const apiStatusLabel = health.isLoading
     ? t("shell.apiChecking")
     : apiConnected

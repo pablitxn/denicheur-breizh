@@ -76,6 +76,24 @@ describe("ScoringsView", () => {
     expect(screen.getByText("Le jardin est mentionné.")).toBeInTheDocument();
     expect(screen.getByText("Résultat agrégé pertinent.")).toBeInTheDocument();
   });
+
+  it("offers retry for unavailable run details without claiming the run is empty", async () => {
+    const fetcher = scoringFetch();
+    let unavailable = true;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) =>
+      unavailable && String(input).endsWith("/v1/runs/run-1")
+        ? Promise.resolve(json({ error: { message: "Temporarily unavailable" } }, 503))
+        : fetcher(input, init)));
+    renderScorings();
+
+    const retry = await screen.findByRole("button", { name: "Réessayer" });
+    expect(screen.queryByText("Ce run terminé ne contient aucun snapshot détaillé à évaluer.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Lancer l’évaluation" })).toBeDisabled();
+    unavailable = false;
+    fireEvent.click(retry);
+    await waitFor(() => expect(screen.getByRole("button", { name: "Lancer l’évaluation" })).toBeEnabled());
+    expect(screen.queryByRole("button", { name: "Réessayer" })).not.toBeInTheDocument();
+  });
 });
 
 function renderScorings() {

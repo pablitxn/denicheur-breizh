@@ -152,8 +152,8 @@ export function ScoringsView() {
           <label><SectionLabel>{t("scorings.completedRun")}</SectionLabel><select value={selectedRun?.id ?? ""} onChange={(event) => setRunId(event.target.value)} disabled={completedRuns.length === 0}><option value="">{t("scorings.noCompletedRuns")}</option>{completedRuns.map((run) => <option key={run.id} value={run.id}>{run.id} · {formatDate(run.finishedAt ?? run.updatedAt, locale)}</option>)}</select></label>
           <label className={styles.forceToggle}><input type="checkbox" checked={force} onChange={(event) => setForce(event.target.checked)} />{t("scorings.force")}</label>
           <Button variant="primary" onClick={launch} disabled={!selectedPlan || !selectedRun || !hasDetailedSnapshots || runDetailQuery.isLoading || startExecution.isPending}><Play size={14} aria-hidden="true" />{startExecution.isPending ? t("scorings.starting") : t("scorings.start")}</Button>
-          {selectedRun && !runDetailQuery.isLoading && !hasDetailedSnapshots && <p className={styles.error} role="alert">{t("scorings.noDetailedSnapshots")}</p>}
-          {runDetailQuery.isError && <p className={styles.error} role="alert">{t("scorings.runDetailError")}</p>}
+          {selectedRun && runDetailQuery.isSuccess && !hasDetailedSnapshots && <p className={styles.error} role="alert">{t("scorings.noDetailedSnapshots")}</p>}
+          {runDetailQuery.isError && <div className={styles.error} role="alert"><p>{t("scorings.runDetailError")}</p><Button size="sm" disabled={runDetailQuery.isFetching} onClick={() => void runDetailQuery.refetch()}>{t("common.retry")}</Button></div>}
           {startExecution.isError && <p className={styles.error} role="alert">{t("scorings.startError")}</p>}
         </section>
 

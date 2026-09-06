@@ -38,12 +38,14 @@ export function MapView() {
   const { locale, t } = useAppIntl();
   const listingsQuery = useListings({ limit: 100 });
   const listings = listingsQuery.data?.items ?? emptyListings;
-  const [activeSource, setActiveSource] = useState("all");
-  const [activeType, setActiveType] = useState("all");
+  const [activeSource, setActiveSource] = useUrlState("msource", "all", stringUrlCodec);
+  const [activeType, setActiveType] = useUrlState("mtype", "all", stringUrlCodec);
   const [selectedKey, setSelectedKey] = useUrlState("pid", "", stringUrlCodec);
   const [selectedInterestId, setSelectedInterestId] = useState<string | null>(null);
   const [viewportBounds, setViewportBounds] = useState<MapBounds | null>(null);
   const [mapReady, setMapReady] = useState(false);
+  const [mapFailed, setMapFailed] = useState(false);
+  const [mapAttempt, setMapAttempt] = useState(0);
   const mapEl = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const markerConstructorRef = useRef<typeof import("maplibre-gl").Marker | null>(null);
@@ -135,6 +137,7 @@ export function MapView() {
   useEffect(() => {
     let disposed = false;
     setMapReady(false);
+    setMapFailed(false);
 
     async function initialiseMap() {
       if (!mapEl.current || mapRef.current) return;
@@ -169,8 +172,8 @@ export function MapView() {
           "AttributionControl.ToggleAttribution": t("map.control.toggleAttribution"),
         },
       });
-      map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
       mapRef.current = map;
+      map.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
       markerConstructorRef.current = maplibregl.Marker;
       syncViewportBounds(map);
       map.on("moveend", () => syncViewportBounds(map));
@@ -277,7 +280,9 @@ export function MapView() {
       });
     }
 
-    void initialiseMap();
+    void initialiseMap().catch(() => {
+      if (!disposed) setMapFailed(true);
+    });
     return () => {
       disposed = true;
       selectedMarkerRef.current?.remove();
@@ -288,7 +293,7 @@ export function MapView() {
       mapRef.current = null;
       markerConstructorRef.current = null;
     };
-  }, [selectInterest, selectListing, syncViewportBounds, t]);
+  }, [mapAttempt, selectInterest, selectListing, syncViewportBounds, t]);
 
   useEffect(() => {
     const source = mapRef.current?.getSource("properties") as GeoJSONSource | undefined;
@@ -449,7 +454,7 @@ export function MapView() {
       </aside>
 
       <div className={styles.mapStage}>
-        <div ref={mapEl} className={styles.mapCanvas} role="region" aria-label={t("map.canvasAria")} />
+        <div key={`${locale}-${mapAttempt}`} ref={mapEl} className={styles.mapCanvas} role="region" aria-label={t("map.canvasAria")} aria-busy={!mapReady && !mapFailed} />
         <div className={styles.mapNotice} role="status" aria-live="polite">
           {listingsQuery.error
             ? t("map.errorProperties")
@@ -513,10 +518,18 @@ export function MapView() {
             </div>
           </aside>
         )}
-        {listingsQuery.isLoading && (
+        {mapFailed && (
+          <EmptyState className={styles.statusOverlay} role="alert">
+            <div className={styles.stateContent}>
+              <strong>{t("map.errorMap")}</strong>
+              <Button onClick={() => setMapAttempt((attempt) => attempt + 1)}>{t("common.retry")}</Button>
+            </div>
+          </EmptyState>
+        )}
+        {!mapFailed && (listingsQuery.isLoading || !mapReady) && !listingsQuery.error && (
           <EmptyState className={styles.statusOverlay} role="status">{t("map.loading")}</EmptyState>
         )}
-        {listingsQuery.error && (
+        {listingsQuery.error && !mapFailed && (
           <EmptyState className={styles.statusOverlay} role="alert">
             <div className={styles.stateContent}>
               <strong>{t("map.errorProperties")}</strong>

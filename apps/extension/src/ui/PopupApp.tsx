@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 import { Button, Chip } from "@denicheur-breizh/design-system";
 import { LocaleSelector, useExtensionI18n } from "../i18n";
 import type { ScrapeRun } from "../lib/types";
-import { IDLE_RUN, isCrawlerStorageKey, loadCrawlerState } from "../storage/chromeStorage";
+import { CRAWLER_STORAGE_KEYS, IDLE_RUN, loadCrawlerStateFields } from "../storage/chromeStorage";
 import { requestImmediateSync } from "../sync/runtime";
 import {
   EMPTY_SYNC_STATE,
@@ -12,6 +12,7 @@ import {
 } from "../sync/storage";
 import type { ExtensionSyncState } from "../sync/types";
 import { useThemePreference, type ThemePreference } from "./theme";
+import { updateStorageRefreshErrors } from "./storageRefresh";
 
 interface PopupAppProps {
   initialThemePreference?: ThemePreference;
@@ -23,22 +24,28 @@ export function PopupApp({ initialThemePreference = "system" }: PopupAppProps) {
   const [recordCount, setRecordCount] = useState(0);
   const [syncState, setSyncState] = useState<ExtensionSyncState>(EMPTY_SYNC_STATE);
   const [syncPending, setSyncPending] = useState(false);
+  const [syncError, setSyncError] = useState<unknown>();
+  const [openingDashboard, setOpeningDashboard] = useState(false);
+  const [dashboardError, setDashboardError] = useState(false);
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [loadError, setLoadError] = useState<unknown>();
+  const [refreshErrors, setRefreshErrors] = useState<Partial<Record<"run" | "records" | "sync", string>>>({});
   const [retryToken, setRetryToken] = useState(0);
   useThemePreference(initialThemePreference);
 
   useEffect(() => {
     let mounted = true;
+    const refreshVersions = { run: 0, records: 0, sync: 0 };
     setLoadState("loading");
     setLoadError(undefined);
+    setRefreshErrors({});
 
-    void Promise.all([loadCrawlerState(), loadExtensionSyncState()])
+    void Promise.all([loadCrawlerStateFields(["run", "records"]), loadExtensionSyncState()])
       .then(([snapshot, storedSyncState]) => {
         if (!mounted) return;
-        setRun(snapshot.run);
-        setRecordCount(snapshot.records.length);
-        setSyncState(storedSyncState);
+        if (refreshVersions.run === 0) setRun(snapshot.run);
+        if (refreshVersions.records === 0) setRecordCount(snapshot.records.length);
+        if (refreshVersions.sync === 0) setSyncState(storedSyncState);
         setLoadState("ready");
       })
       .catch((caught) => {
@@ -48,24 +55,41 @@ export function PopupApp({ initialThemePreference = "system" }: PopupAppProps) {
       });
 
     const listener = (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => {
-      if (areaName !== "local" || !Object.keys(changes).some(
-        (key) => isCrawlerStorageKey(key) || key === SYNC_STORAGE_KEY,
-      )) {
-        return;
-      }
+      if (areaName !== "local") return;
+      const changedFields = (["run", "records"] as const)
+        .filter((field) => CRAWLER_STORAGE_KEYS[field] in changes);
+      const syncChanged = SYNC_STORAGE_KEY in changes;
+      if (changedFields.length === 0 && !syncChanged) return;
+      for (const field of changedFields) refreshVersions[field] += 1;
+      if (syncChanged) refreshVersions.sync += 1;
+      const requestVersions = { ...refreshVersions };
 
-      void Promise.all([loadCrawlerState(), loadExtensionSyncState()])
-        .then(([snapshot, storedSyncState]) => {
+      void Promise.allSettled([
+        loadCrawlerStateFields(changedFields),
+        syncChanged ? loadExtensionSyncState() : undefined,
+      ])
+        .then(([crawlerResult, syncResult]) => {
           if (!mounted) return;
-          setRun(snapshot.run);
-          setRecordCount(snapshot.records.length);
-          setSyncState(storedSyncState);
-          setLoadState("ready");
-        })
-        .catch((caught) => {
-          if (!mounted) return;
-          setLoadError(caught instanceof Error ? caught.message : String(caught));
-          setLoadState("error");
+          setRefreshErrors((current) => updateStorageRefreshErrors(
+            current, changedFields, requestVersions, refreshVersions,
+            crawlerResult.status === "rejected" ? crawlerResult.reason : undefined,
+          ));
+          if (crawlerResult.status === "fulfilled") {
+            const snapshot = crawlerResult.value;
+            if (changedFields.includes("run") && requestVersions.run === refreshVersions.run) setRun(snapshot.run);
+            if (changedFields.includes("records") && requestVersions.records === refreshVersions.records) {
+              setRecordCount(snapshot.records.length);
+            }
+          }
+          if (syncChanged) {
+            setRefreshErrors((current) => updateStorageRefreshErrors(
+              current, ["sync"], requestVersions, refreshVersions,
+              syncResult.status === "rejected" ? syncResult.reason : undefined,
+            ));
+            if (syncResult.status === "fulfilled" && syncResult.value && requestVersions.sync === refreshVersions.sync) {
+              setSyncState(syncResult.value);
+            }
+          }
         });
     };
 
@@ -78,26 +102,34 @@ export function PopupApp({ initialThemePreference = "system" }: PopupAppProps) {
   }, [retryToken]);
 
   async function openDashboard() {
-    const dashboardUrl = chrome.runtime.getURL("dashboard.html");
-    const existing = (await chrome.tabs.query({ url: `${dashboardUrl}*` }))[0];
-    if (existing?.id !== undefined) {
-      await chrome.tabs.update(existing.id, { active: true });
-      await chrome.windows.update(existing.windowId, { focused: true });
-    } else {
-      await chrome.tabs.create({ url: dashboardUrl, active: true });
+    setOpeningDashboard(true);
+    setDashboardError(false);
+    try {
+      const dashboardUrl = chrome.runtime.getURL("dashboard.html");
+      const existing = (await chrome.tabs.query({ url: `${dashboardUrl}*` }))[0];
+      if (existing?.id !== undefined) {
+        await chrome.tabs.update(existing.id, { active: true });
+        await chrome.windows.update(existing.windowId, { focused: true });
+      } else {
+        await chrome.tabs.create({ url: dashboardUrl, active: true });
+      }
+      window.close();
+    } catch {
+      setDashboardError(true);
+    } finally {
+      setOpeningDashboard(false);
     }
-    window.close();
   }
 
   async function syncNow() {
     setSyncPending(true);
-    setLoadError(undefined);
+    setSyncError(undefined);
     try {
       const response = await requestImmediateSync();
       setSyncState(response.state);
-      if (!response.ok) setLoadError(response.error ?? response.state.lastError);
+      if (!response.ok) setSyncError(response.error ?? response.state.lastError ?? "API");
     } catch (caught) {
-      setLoadError(caught instanceof Error ? caught.message : String(caught));
+      setSyncError(caught instanceof Error ? caught.message : String(caught));
     } finally {
       setSyncPending(false);
     }
@@ -110,6 +142,7 @@ export function PopupApp({ initialThemePreference = "system" }: PopupAppProps) {
     run.status === "collecting-details" ||
     run.status === "evaluating";
   const progressMessage = resolveText(run.message, "popup.ready");
+  const visibleLoadError = loadError ?? Object.values(refreshErrors)[0];
   const pendingSyncCount = syncState.queue.length + syncState.evaluationQueue.filter((entry) =>
     entry.status === "queued" || entry.status === "creating" || entry.status === "polling").length;
 
@@ -134,17 +167,31 @@ export function PopupApp({ initialThemePreference = "system" }: PopupAppProps) {
           </div>
         )}
 
-        {loadState === "error" && (
+        {loadState !== "loading" && visibleLoadError !== undefined && (
           <div className="inline-alert danger" role="alert">
             <AlertTriangle size={16} />
             <div>
               <p>{t("popup.loadFailed")}</p>
-              {loadError !== undefined && <small className="technical-detail">{String(loadError)}</small>}
+              <small className="technical-detail">{String(visibleLoadError)}</small>
               <Button type="button" size="sm" onClick={() => setRetryToken((current) => current + 1)}>
                 <RefreshCw size={14} />
                 {t("action.retry")}
               </Button>
             </div>
+          </div>
+        )}
+
+        {syncError !== undefined && (
+          <div className="inline-alert danger" role="alert">
+            <AlertTriangle aria-hidden="true" size={16} />
+            <p>{t("sync.failed", { detail: String(syncError) })}</p>
+          </div>
+        )}
+
+        {dashboardError && (
+          <div className="inline-alert danger" role="alert">
+            <AlertTriangle aria-hidden="true" size={16} />
+            <p>{t("popup.openFailed")}</p>
           </div>
         )}
 
@@ -201,12 +248,12 @@ export function PopupApp({ initialThemePreference = "system" }: PopupAppProps) {
       </div>
 
       <footer className="popup-actions">
-        <Button type="button" variant="ghost" onClick={() => void syncNow()} disabled={syncPending}>
+        <Button type="button" variant="ghost" onClick={() => void syncNow()} disabled={syncPending || loadState !== "ready"}>
           {syncPending ? <LoaderCircle className="spin" size={16} /> : <RefreshCw size={16} />}
           {syncPending ? t("sync.syncing") : t("sync.now")}
         </Button>
-        <Button type="button" variant="primary" onClick={openDashboard}>
-          <Play size={16} />
+        <Button type="button" variant="primary" onClick={openDashboard} disabled={openingDashboard}>
+          {openingDashboard ? <LoaderCircle className="spin" size={16} /> : <Play size={16} />}
           {t("popup.openCrawler")}
         </Button>
         {run.searchUrl && (

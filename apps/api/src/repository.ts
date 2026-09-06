@@ -86,6 +86,8 @@ interface Migration {
   readonly sql: string;
 }
 
+const LATEST_EVALUATION_ORDER = "e.evaluated_at DESC, e.run_id DESC, e.recipe_id ASC, e.recipe_version DESC, e.locale ASC";
+
 export const DATABASE_MIGRATIONS: readonly Migration[] = [
   {
     version: 1,
@@ -1343,7 +1345,7 @@ export class DenicheurRepository implements GlobalProviderBudgetStore {
       ORDER BY ${sortColumn} ${query.order.toUpperCase()}, l.source ASC, l.external_id ASC
       LIMIT ? OFFSET ?
     `).all(...parameters, query.limit, offset) as StoredListingRow[];
-    const items = rows.map((row) => this.rowToListing(row));
+    const items = this.rowsToListings(rows);
     const nextOffset = offset + items.length;
 
     return {
@@ -2633,16 +2635,20 @@ export class DenicheurRepository implements GlobalProviderBudgetStore {
 
   private listListingMedia(listing: ListingIngestion): ListingImageAsset[] {
     const sourceUrls = listingMediaSourceUrls(listing);
-    if (!sourceUrls.length) return [];
+    const bySourceUrl = this.mediaAssetsBySourceUrl(sourceUrls);
+    return sourceUrls.flatMap((sourceUrl) => {
+      const asset = bySourceUrl.get(sourceUrl);
+      return asset ? [asset] : [];
+    });
+  }
+
+  private mediaAssetsBySourceUrl(sourceUrls: readonly string[]): Map<string, ListingImageAsset> {
+    if (!sourceUrls.length) return new Map();
     const placeholders = sourceUrls.map(() => "?").join(", ");
     const rows = this.database.prepare(`
       SELECT * FROM media_assets WHERE source_url IN (${placeholders})
     `).all(...sourceUrls) as StoredMediaAssetRow[];
-    const bySourceUrl = new Map(rows.map((row) => [row.source_url, row]));
-    return sourceUrls.flatMap((sourceUrl) => {
-      const row = bySourceUrl.get(sourceUrl);
-      return row ? [toListingImageAsset(row)] : [];
-    });
+    return new Map(rows.map((row) => [row.source_url, toListingImageAsset(row)]));
   }
 
   private assertMediaJobLease(assetId: string, leaseOwner: string): void {
@@ -3076,9 +3082,47 @@ export class DenicheurRepository implements GlobalProviderBudgetStore {
     `).run(JSON.stringify(counters), this.now().toISOString(), id);
   }
 
-  private rowToListing(row: StoredListingRow): ListingRecord {
-    const data = parseListingData(row.data_json);
-    const latestEvaluation = this.latestEvaluation(data);
+  private rowsToListings(rows: readonly StoredListingRow[]): ListingRecord[] {
+    if (!rows.length) return [];
+    const listings = rows.map((row) => {
+      const data = parseListingData(row.data_json);
+      return { row, data, mediaSourceUrls: listingMediaSourceUrls(data) };
+    });
+    // Resolve only this bounded page. Indexed LIMIT 1 lookups avoid loading evaluation history.
+    const evaluationRows = this.database.prepare(`
+      WITH requested(source, external_id) AS (VALUES ${rows.map(() => "(?, ?)").join(", ")})
+      SELECT latest.* FROM requested
+      JOIN evaluations latest ON latest.rowid = (
+        SELECT e.rowid FROM evaluations e
+        WHERE e.source = requested.source AND e.external_id = requested.external_id
+        ORDER BY ${LATEST_EVALUATION_ORDER}
+        LIMIT 1
+      )
+    `).all(...listings.flatMap(({ data }) => [data.source, data.externalId])) as StoredEvaluationRow[];
+    const evaluationsByListingId = new Map(evaluationRows.map((row) => {
+      const evaluation = rowToEvaluation(row);
+      return [evaluation.listingId, evaluation];
+    }));
+    const mediaBySourceUrl = this.mediaAssetsBySourceUrl(uniqueStrings(
+      listings.flatMap(({ mediaSourceUrls }) => mediaSourceUrls),
+    ));
+    return listings.map(({ row, data, mediaSourceUrls }) => this.rowToListing(row, {
+      data,
+      latestEvaluation: evaluationsByListingId.get(createListingKey(data)),
+      imageAssets: mediaSourceUrls.flatMap((sourceUrl) => {
+        const asset = mediaBySourceUrl.get(sourceUrl);
+        return asset ? [asset] : [];
+      }),
+    }));
+  }
+
+  private rowToListing(row: StoredListingRow, related?: {
+    readonly data: ListingIngestion;
+    readonly latestEvaluation: ListingEvaluationRecord | undefined;
+    readonly imageAssets: ListingImageAsset[];
+  }): ListingRecord {
+    const data = related?.data ?? parseListingData(row.data_json);
+    const latestEvaluation = related ? related.latestEvaluation : this.latestEvaluation(data);
     return listingRecordSchema.parse({
       ...data,
       id: createListingKey(data),
@@ -3086,7 +3130,7 @@ export class DenicheurRepository implements GlobalProviderBudgetStore {
       firstSeenAt: row.first_seen_at,
       lastSeenAt: row.last_seen_at,
       updatedAt: row.updated_at,
-      imageAssets: this.listListingMedia(data),
+      imageAssets: related ? related.imageAssets : this.listListingMedia(data),
       ...(latestEvaluation ? { latestEvaluation } : {}),
     });
   }
@@ -3133,10 +3177,10 @@ export class DenicheurRepository implements GlobalProviderBudgetStore {
       ? [identity.source, identity.externalId, runId]
       : [identity.source, identity.externalId];
     const row = this.database.prepare(`
-      SELECT * FROM evaluations
+      SELECT * FROM evaluations e
       WHERE source = ? AND external_id = ?
       ${runClause}
-      ORDER BY evaluated_at DESC, run_id DESC, recipe_id ASC, recipe_version DESC, locale ASC
+      ORDER BY ${LATEST_EVALUATION_ORDER}
       LIMIT 1
     `).get(...parameters) as StoredEvaluationRow | undefined;
     return row ? rowToEvaluation(row) : undefined;
@@ -3144,9 +3188,9 @@ export class DenicheurRepository implements GlobalProviderBudgetStore {
 
   private listEvaluations(identity: ListingIdentity): ListingEvaluationRecord[] {
     const rows = this.database.prepare(`
-      SELECT * FROM evaluations
+      SELECT * FROM evaluations e
       WHERE source = ? AND external_id = ?
-      ORDER BY evaluated_at DESC, run_id DESC, recipe_id ASC, recipe_version DESC, locale ASC
+      ORDER BY ${LATEST_EVALUATION_ORDER}
     `).all(identity.source, identity.externalId) as StoredEvaluationRow[];
     return rows.map(rowToEvaluation);
   }
@@ -3461,7 +3505,7 @@ function listingWhere(query: ListingsQuery): { where: string; parameters: SQLInp
     add(`(
       SELECT e.decision FROM evaluations e
       WHERE e.source = l.source AND e.external_id = l.external_id
-      ORDER BY e.evaluated_at DESC LIMIT 1
+      ORDER BY ${LATEST_EVALUATION_ORDER} LIMIT 1
     ) = ?`, query.decision);
   }
   if (query.propertyType) add("l.property_type = ?", query.propertyType);

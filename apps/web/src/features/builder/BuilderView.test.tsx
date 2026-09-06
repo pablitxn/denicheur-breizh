@@ -66,6 +66,41 @@ describe("BuilderView", () => {
     expect(screen.getAllByRole("combobox", { name: /Receta en la posición/u })).toHaveLength(2);
     expect(screen.getAllByRole("button", { name: "Subir receta" })[1]).toBeEnabled();
   });
+
+  it("keeps criterion fields focused while editing their identifier", async () => {
+    vi.stubGlobal("fetch", builderFetch());
+    renderBuilder();
+    await screen.findByRole("heading", { name: "Maison famille" });
+    fireEvent.click(screen.getByRole("button", { name: "Créer une version" }));
+    const identifier = screen.getByRole("textbox", { name: "Identifiant" });
+    identifier.focus();
+
+    for (const value of ["garden-", "garden-m", "garden-ma", "garden-main"]) {
+      fireEvent.change(identifier, { target: { value } });
+      expect(screen.getByRole("textbox", { name: "Identifiant" })).toBe(identifier);
+      expect(identifier).toHaveFocus();
+      expect(identifier).toHaveValue(value);
+    }
+    expect(window.localStorage.getItem(recipeDraftStorageKey)).toContain("garden-main");
+  });
+
+  it("keeps surviving criterion editors intact after deleting and adding criteria", async () => {
+    vi.stubGlobal("fetch", builderFetch());
+    renderBuilder();
+    await screen.findByRole("heading", { name: "Maison famille" });
+    fireEvent.click(screen.getByRole("button", { name: "Créer une version" }));
+    fireEvent.click(screen.getByRole("button", { name: "Ajouter un critère" }));
+    const survivor = screen.getAllByRole("textbox", { name: "Identifiant" })[1]!;
+    fireEvent.change(survivor, { target: { value: "near-coast" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Supprimer le critère Jardin" }));
+    expect(screen.getByRole("textbox", { name: "Identifiant" })).toBe(survivor);
+    expect(survivor).toHaveValue("near-coast");
+
+    fireEvent.click(screen.getByRole("button", { name: "Ajouter un critère" }));
+    expect(screen.getAllByRole("textbox", { name: "Identifiant" })[0]).toBe(survivor);
+    expect(screen.getAllByRole("textbox", { name: "Identifiant" })).toHaveLength(2);
+  });
 });
 
 function renderBuilder(href = "/") {
