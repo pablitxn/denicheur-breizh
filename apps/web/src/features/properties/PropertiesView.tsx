@@ -1,13 +1,16 @@
-import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, type RefObject } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { ArrowDown, ArrowUp, ExternalLink, Grid2X2, List } from "lucide-react";
-import { Button, Chip, EmptyState, Meter, SectionLabel } from "@denicheur-breizh/design-system";
-import { useListing, useListings } from "../../api/hooks";
+import { Button, Chip, EmptyState, Meter, SectionLabel, Select } from "@denicheur-breizh/design-system";
+import { useListing, useListings, useListingsMetadata } from "../../api/hooks";
+import { isExpiredCursor } from "../../api/denicheurApi";
+import { queryKeys } from "../../api/queryKeys";
 import { PropertyVisual } from "../../components/PropertyVisual";
 import { useAppIntl } from "../../intl/IntlContext";
 import type { LocaleCode } from "../../intl/locales";
-import type { ListingDecision, PropertyListing } from "../../types";
+import type { ListingDecision, ListingFilters, PaginatedListings, PropertyListing } from "../../types";
 import { formatDecimal, formatInteger, formatPrice, formatRooms } from "../../utils/format";
-import { enumUrlCodec, stringUrlCodec, useUrlState } from "../../utils/useUrlState";
+import { enumUrlCodec, stringArrayUrlCodec, stringUrlCodec, useUrlState } from "../../utils/useUrlState";
 import { useMediaQuery } from "../shared/useMediaQuery";
 import styles from "./PropertiesView.module.css";
 
@@ -16,9 +19,15 @@ type SortKey = "title" | "price" | "surface" | "score" | "source" | "updated";
 
 const sortKeys = ["title", "price", "surface", "score", "source", "updated"] as const;
 const emptyListings: PropertyListing[] = [];
+const emptySources: string[] = [];
+const pageSize = 50;
+const serverSort: Record<SortKey, ListingFilters["sort"]> = {
+  title: "title", price: "priceEuros", surface: "surfaceM2", score: "score", source: "source", updated: "updatedAt",
+};
 
 export function PropertiesView() {
   const { locale, t } = useAppIntl();
+  const queryClient = useQueryClient();
   const isMobile = useMediaQuery("(max-width: 760px)");
   const shouldScrollToDetail = useMediaQuery("(max-width: 1120px)");
   const detailRef = useRef<HTMLElement | null>(null);
@@ -26,31 +35,45 @@ export function PropertiesView() {
   const [sortKey, setSortKey] = useUrlState<SortKey>("psort", "updated", enumUrlCodec(sortKeys));
   const [sortDirection, setSortDirection] = useUrlState<"asc" | "desc">("pdir", "desc", enumUrlCodec(["asc", "desc"] as const));
   const [selectedKey, setSelectedKey] = useUrlState("pid", "", stringUrlCodec);
-  const [activeSources, setActiveSources] = useState<string[]>([]);
-  const listingsQuery = useListings({ limit: 100 });
-  const listings = listingsQuery.data?.items ?? emptyListings;
-  const sources = useMemo(() => Array.from(new Set(listings.map((listing) => listing.source))).sort(), [listings]);
+  const [activeSources, setActiveSources] = useUrlState("psources", emptySources, stringArrayUrlCodec());
+  const signature = JSON.stringify([activeSources, sortKey, sortDirection]);
+  const [pagination, setPagination] = useState<{ signature: string; cursors: Array<string | undefined>; index: number; revision?: string }>({ signature, cursors: [undefined], index: 0 });
+  const currentPage = pagination.signature === signature ? pagination.index : 0;
+  const cursor = pagination.signature === signature ? pagination.cursors[currentPage] : undefined;
+  const metadataQuery = useListingsMetadata();
+  const listingFilters: ListingFilters = { limit: pageSize, sources: activeSources, sort: serverSort[sortKey], order: sortDirection, cursor };
+  const listingsQuery = useListings(listingFilters);
+  const lastPage = useRef<{ data: PaginatedListings; index: number } | undefined>(undefined);
+  useEffect(() => {
+    if (listingsQuery.data && !listingsQuery.isPlaceholderData) lastPage.current = { data: listingsQuery.data, index: currentPage };
+  }, [listingsQuery.data, listingsQuery.isPlaceholderData, currentPage]);
+  const pageData = listingsQuery.data ?? (listingsQuery.error ? lastPage.current?.data : undefined);
+  const displayedPage = listingsQuery.isPlaceholderData || !listingsQuery.data ? lastPage.current?.index ?? currentPage : currentPage;
+  const listings = pageData?.items ?? emptyListings;
+  const sources = metadataQuery.data?.sources ?? [];
+  const sortedListings = listings;
+  const observedRevision = useRef<string | undefined>(undefined);
+  const revision = metadataQuery.data?.revision;
+  const hasNewResults = currentPage > 0 && revision !== undefined && pagination.revision !== revision;
 
   useEffect(() => {
-    setActiveSources((current) => {
-      const next = current.filter((source) => sources.includes(source));
-      return next.length === current.length && next.every((source, index) => source === current[index]) ? current : next;
-    });
-  }, [sources]);
+    if (pagination.signature !== signature) setPagination({ signature, cursors: [undefined], index: 0 });
+  }, [pagination.signature, signature]);
 
-  const sortedListings = useMemo(() => {
-    const direction = sortDirection === "asc" ? 1 : -1;
-    return listings
-      .filter((listing) => activeSources.length === 0 || activeSources.includes(listing.source))
-      .sort((left, right) => compareListings(left, right, sortKey, locale, direction));
-  }, [activeSources, listings, locale, sortDirection, sortKey]);
+  useEffect(() => {
+    if (currentPage === 0 && revision !== undefined && observedRevision.current !== undefined && observedRevision.current !== revision) void listingsQuery.refetch();
+    observedRevision.current = revision;
+  }, [currentPage, revision, listingsQuery.refetch]);
 
-  const selectedSummary = sortedListings.find((listing) => listing.key === selectedKey) ?? sortedListings[0];
-  const detailQuery = useListing(selectedSummary?.source, selectedSummary?.externalId);
+  const selectedSummary = sortedListings.find((listing) => listing.key === selectedKey) ?? (selectedKey ? undefined : sortedListings[0]);
+  const separator = selectedKey.indexOf(":");
+  const detailSource = selectedSummary?.source ?? (separator > 0 ? selectedKey.slice(0, separator) : undefined);
+  const detailId = selectedSummary?.externalId ?? (separator > 0 ? selectedKey.slice(separator + 1) : undefined);
+  const detailQuery = useListing(detailSource, detailId);
   const selected = detailQuery.data ?? selectedSummary;
 
   useEffect(() => {
-    if (selectedSummary && selectedSummary.key !== selectedKey) setSelectedKey(selectedSummary.key);
+    if (selectedSummary && !selectedKey) setSelectedKey(selectedSummary.key);
   }, [selectedKey, selectedSummary, setSelectedKey]);
 
   const selectListing = (key: string) => {
@@ -75,21 +98,41 @@ export function PropertiesView() {
     setActiveSources((current) => current.includes(source) ? current.filter((item) => item !== source) : [...current, source]);
   };
 
+  const restart = () => {
+    void queryClient.invalidateQueries({ queryKey: queryKeys.listings.list({ ...listingFilters, cursor: undefined }), exact: true, refetchType: "all" });
+    setPagination({ signature, cursors: [undefined], index: 0, revision });
+    void metadataQuery.refetch();
+  };
+  const nextPage = () => {
+    if (!listingsQuery.data?.nextCursor || listingsQuery.isPlaceholderData) return;
+    const cursors = pagination.signature === signature ? pagination.cursors.slice(0, currentPage + 1) : [undefined];
+    setPagination({ signature, cursors: [...cursors, listingsQuery.data.nextCursor], index: currentPage + 1, revision: currentPage === 0 ? revision : pagination.revision });
+  };
+
   return (
     <section className={styles.view} aria-labelledby="properties-view-title">
       <header className={styles.toolbar}>
         <div className={styles.toolbarTitle}>
           <h1 id="properties-view-title">{t("properties.title")}</h1>
-          <span aria-live="polite">{t("properties.count", { count: sortedListings.length })}</span>
+          <span aria-live="polite">{t("properties.count", { count: pageData?.total ?? 0 })}</span>
         </div>
         <div className={styles.providerFilters} role="group" aria-label={t("properties.filters")}>
-          {sources.map((source) => (
-            <Chip key={source} active={activeSources.length === 0 || activeSources.includes(source)} onClick={() => toggleSource(source)}>
-              {source}
+          <Chip active={activeSources.length === 0} onClick={() => setActiveSources([])}>{t("catalog.allSources")}</Chip>
+          {sources.map(({ source, count }) => (
+            <Chip key={source} active={activeSources.includes(source)} onClick={() => toggleSource(source)}>
+              {source} <span className={styles.sourceCount}>{formatInteger(count, locale)}</span>
             </Chip>
           ))}
         </div>
         <div className={styles.toolbarRight} role="group" aria-label={t("properties.viewModes")}>
+          {viewMode === "cards" && <Select aria-label={t("catalog.sort")} value={`${sortKey}:${sortDirection}`} onChange={(event) => {
+            const [key, direction] = event.target.value.split(":");
+            setSortKey(key as SortKey); setSortDirection(direction as "asc" | "desc");
+          }}>
+            {sortKeys.flatMap((key) => (["asc", "desc"] as const).map((direction) => <option key={`${key}:${direction}`} value={`${key}:${direction}`}>
+              {t(`properties.column.${key === "price" ? "price" : key === "source" ? "provider" : key === "score" ? "evaluation" : key}`)} · {t(`catalog.${direction}`)}
+            </option>))}
+          </Select>}
           <Button size="sm" variant={viewMode === "table" ? "default" : "ghost"} iconOnly onClick={() => setViewMode("table")} aria-label={t("properties.table")} aria-pressed={viewMode === "table"}>
             <List size={14} aria-hidden="true" />
           </Button>
@@ -99,11 +142,21 @@ export function PropertiesView() {
         </div>
       </header>
 
+      <nav className={styles.pageBar} aria-label={t("catalog.pagination")}>
+        <span role="status">{listingsQuery.isPlaceholderData ? t("properties.loading") : t("catalog.range", { start: sortedListings.length ? displayedPage * pageSize + 1 : 0, end: displayedPage * pageSize + sortedListings.length, total: pageData?.total ?? 0 })}</span>
+        <div className={styles.pageActions}>
+          <Button size="sm" variant="ghost" disabled={listingsQuery.isFetching} onClick={restart}>{t(hasNewResults ? "catalog.newResults" : "catalog.refresh")}</Button>
+          <Button size="sm" disabled={currentPage === 0 || listingsQuery.isFetching} onClick={() => setPagination((page) => ({ ...page, index: Math.max(0, page.index - 1) }))}>{t("catalog.previous")}</Button>
+          <Button size="sm" disabled={!listingsQuery.data?.nextCursor || listingsQuery.isFetching} onClick={nextPage}>{t("catalog.next")}</Button>
+        </div>
+      </nav>
+
       <div className={styles.body}>
-        <div className={styles.results}>
-          {listingsQuery.error && (listingsQuery.data ? (
-            <RetryNotice message={t("properties.refreshError")} retrying={listingsQuery.isFetching} onRetry={() => void listingsQuery.refetch()} />
-          ) : <LoadState kind="error" retrying={listingsQuery.isFetching} onRetry={() => void listingsQuery.refetch()} />)}
+        <div className={styles.results} aria-busy={listingsQuery.isPlaceholderData}>
+          {metadataQuery.error && <RetryNotice message={t("catalog.metadataError")} retrying={metadataQuery.isFetching} onRetry={() => void metadataQuery.refetch()} />}
+          {listingsQuery.error && (pageData ? (
+            <RetryNotice message={t(isExpiredCursor(listingsQuery.error) ? "catalog.expired" : "properties.refreshError")} retrying={listingsQuery.isFetching} onRetry={isExpiredCursor(listingsQuery.error) ? restart : () => void listingsQuery.refetch()} />
+          ) : <LoadState kind="error" retrying={listingsQuery.isFetching} onRetry={isExpiredCursor(listingsQuery.error) ? restart : () => void listingsQuery.refetch()} />)}
           {!listingsQuery.error && listingsQuery.isLoading && <EmptyState role="status">{t("properties.loading")}</EmptyState>}
           {!listingsQuery.error && !listingsQuery.isLoading && sortedListings.length === 0 && <EmptyState>{t("properties.empty")}</EmptyState>}
           {sortedListings.length > 0 && viewMode === "table" && (
@@ -131,7 +184,7 @@ export function PropertiesView() {
                   <div className={styles.cardBody}>
                     <div className={styles.cardTitle}>
                       <strong>{display(listing.title, t("common.unavailable"))}</strong>
-                      <span>{formatOptionalPrice(listing.priceEuros, locale, t("common.unavailable"))}</span>
+                      <span className={listing.priceEuros === undefined ? styles.cardPriceUnavailable : undefined}>{formatOptionalPrice(listing.priceEuros, locale, t("common.unavailable"))}</span>
                     </div>
                     <p>{listing.location ?? t("common.unavailable")} · {formatOptionalSurface(listing.surfaceM2, locale, t("common.unavailable"))}</p>
                     <DecisionSummary evaluation={listing.evaluation} locale={locale} />
@@ -151,6 +204,11 @@ export function PropertiesView() {
           )}
         </div>
         {selected && <ListingDetail detailRef={detailRef} listing={selected} loading={detailQuery.isFetching} error={Boolean(detailQuery.error)} onRetry={() => void detailQuery.refetch()} />}
+        {!selected && detailSource && detailId && <aside ref={detailRef} className={styles.detail} aria-busy={detailQuery.isFetching}>
+          {detailQuery.error
+            ? <RetryNotice message={t("properties.detailError")} retrying={detailQuery.isFetching} onRetry={() => void detailQuery.refetch()} />
+            : <EmptyState role="status">{t("common.loading")}</EmptyState>}
+        </aside>}
       </div>
     </section>
   );
@@ -220,9 +278,9 @@ function ListingTable({ listings, selectedKey, locale, sortKey, sortDirection, o
             </td>
             <td className={styles.numeric}>{formatOptionalPrice(listing.priceEuros, locale, t("common.unavailable"))}</td>
             <td className={styles.numeric}>{formatOptionalSurface(listing.surfaceM2, locale, t("common.unavailable"))}</td>
-            <td className={styles.numeric}>{formatEvaluationScore(listing.evaluation?.score, locale, t("common.unavailable"))}</td>
+            <td className={styles.numeric}>{listing.evaluation ? formatEvaluationScore(listing.evaluation.score, locale, t("common.unavailable")) : t("properties.notEvaluated")}</td>
             <td><Chip>{listing.source}</Chip></td>
-            <td>{formatOptionalDate(listing.scrapedAt, locale, t("common.unavailable"))}</td>
+            <td>{formatOptionalDate(listing.updatedAt ?? listing.scrapedAt, locale, t("common.unavailable"))}</td>
           </tr>
         ))}</tbody>
       </table>
@@ -321,20 +379,6 @@ function DecisionChip({ decision }: { decision: ListingDecision | "pass" | "fail
   const tone = decision === "relevant" || decision === "pass" ? "good" : decision === "not-relevant" || decision === "fail" ? "danger" : "sunset";
   const key = `decision.${decision}` as Parameters<typeof t>[0];
   return <Chip active tone={tone}>{t(key)}</Chip>;
-}
-
-function compareListings(left: PropertyListing, right: PropertyListing, key: SortKey, locale: LocaleCode, direction: number): number {
-  const unavailableLast = (a: string | number | undefined | null, b: string | number | undefined | null) => {
-    if (a === undefined || a === null) return b === undefined || b === null ? 0 : 1;
-    if (b === undefined || b === null) return -1;
-    return (typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b), locale)) * direction;
-  };
-  if (key === "title") return unavailableLast(left.title, right.title);
-  if (key === "price") return unavailableLast(left.priceEuros, right.priceEuros);
-  if (key === "surface") return unavailableLast(left.surfaceM2, right.surfaceM2);
-  if (key === "score") return unavailableLast(left.evaluation?.score, right.evaluation?.score);
-  if (key === "source") return unavailableLast(left.source, right.source);
-  return unavailableLast(left.scrapedAt, right.scrapedAt);
 }
 
 function display(value: string | undefined, unavailable: string): string { return value?.trim() || unavailable; }

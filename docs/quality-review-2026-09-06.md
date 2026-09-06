@@ -55,7 +55,7 @@ This is one diagnostic pass with simple records and no property photos/evaluatio
 
 ## Next priorities
 
-These need a separately bounded implementation and validation pass before substantially increasing catalog or evaluation volume:
+These were the remaining priorities at commit `bb70a16`. All four are implemented in the [expanded audit and validation pass](quality-audit-2026-09-06.md); the list below preserves the original findings and acceptance scope.
 
 1. **Bound rendering and refresh work for large catalogs.** `apps/web/src/api/denicheurApi.ts:listAllProperties` fetches every page; Properties and map result lists render every matching item. The table profile above already shows 95,179 DOM elements at 5,000 records. Add windowing or explicit pagination while preserving complete filtering, sorting, selection and keyboard access; extend the profile to images, filter/sort interactions, memory and refresh payloads. Do not silently cap results at 100. Run/execution history currently reads only its first 100-item page and also needs explicit pagination.
 2. **Keep cursor traversal stable during writes.** Canonical listing, run and execution pagination uses `OFFSET`. Inserts or sort-field changes between pages can repeat or skip rows; client deduplication removes duplicates but cannot recover skipped rows. Define a snapshot/keyset contract and test concurrent insertion/update traversal before changing the shared API contract.

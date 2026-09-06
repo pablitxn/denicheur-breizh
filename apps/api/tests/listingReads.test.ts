@@ -54,8 +54,8 @@ describe("listing page reads", () => {
       let page;
       try {
         page = repository.listListings(PAGE_QUERY);
-        // A page must not issue one evaluation/media query per listing.
-        expect(prepare.mock.calls.length).toBeLessThanOrEqual(4);
+        // Snapshot admission has a fixed query cost; related payloads must not add per-listing reads.
+        expect(prepare.mock.calls.length).toBeLessThanOrEqual(14);
       } finally {
         prepare.mockRestore();
       }
@@ -118,7 +118,7 @@ describe("listing page reads", () => {
     const prepare = vi.spyOn(DatabaseSync.prototype, "prepare");
     try {
       expect(repository.listListings(PAGE_QUERY)).toEqual({ total: 0, items: [], nextCursor: null });
-      expect(prepare.mock.calls.length).toBeLessThanOrEqual(2);
+      expect(prepare.mock.calls.length).toBeLessThanOrEqual(7);
     } finally {
       prepare.mockRestore();
       repository.close();

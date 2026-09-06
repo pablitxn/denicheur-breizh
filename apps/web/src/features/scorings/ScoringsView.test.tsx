@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppIntlProvider } from "../../intl/IntlContext";
 import { ScoringsView } from "./ScoringsView";
@@ -94,11 +94,101 @@ describe("ScoringsView", () => {
     await waitFor(() => expect(screen.getByRole("button", { name: "Lancer l’évaluation" })).toBeEnabled());
     expect(screen.queryByRole("button", { name: "Réessayer" })).not.toBeInTheDocument();
   });
+
+  it("loads history beyond the first hundred entries without changing the current selection", async () => {
+    vi.stubGlobal("fetch", historyFetch());
+    renderScorings();
+    expect(await screen.findByText("Runs chargés : 100 sur 101")).toBeInTheDocument();
+    expect(screen.getByText("Exécutions chargées : 100 sur 101")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Charger des runs plus anciens" }));
+    expect(await screen.findByRole("option", { name: /run-older/u })).toBeInTheDocument();
+    expect(screen.getByText("Runs chargés : 101 sur 101")).toBeInTheDocument();
+    expect(new URL(window.location.href).searchParams.get("srun")).toBe("run-1");
+    fireEvent.click(screen.getByRole("button", { name: "Charger des exécutions plus anciennes" }));
+    expect(await screen.findByText("Exécutions chargées : 101 sur 101")).toBeInTheDocument();
+    expect(new URL(window.location.href).searchParams.get("seid")).toBe("execution-old");
+
+    fireEvent.click(screen.getByRole("button", { name: /2024/u }));
+    expect(await screen.findByText("execution-older")).toBeInTheDocument();
+    expect(new URL(window.location.href).searchParams.get("seid")).toBe("execution-older");
+    expect(screen.getByRole("button", { name: "Actualiser les exécutions" })).toBeEnabled();
+  });
+
+  it("retains loaded history and result details after a page failure, then refreshes and retries", async () => {
+    let unavailable = true;
+    vi.stubGlobal("fetch", historyFetch(() => unavailable));
+    renderScorings();
+    await screen.findByText("Runs chargés : 100 sur 101");
+    await screen.findByText("Résultat agrégé pertinent.");
+    fireEvent.click(screen.getByRole("button", { name: "Charger des runs plus anciens" }));
+
+    expect(await screen.findByText(/Impossible de charger l’historique/u)).toBeInTheDocument();
+    expect(screen.getByText("Runs chargés : 100 sur 101")).toBeInTheDocument();
+    expect(screen.getByText("Résultat agrégé pertinent.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Charger des runs plus anciens" })).toBeDisabled();
+    unavailable = false;
+    fireEvent.click(screen.getByRole("button", { name: "Actualiser les runs" }));
+    await waitFor(() => expect(screen.queryByText(/Impossible de charger l’historique/u)).not.toBeInTheDocument());
+    fireEvent.click(screen.getByRole("button", { name: "Charger des runs plus anciens" }));
+    expect(await screen.findByText("Runs chargés : 101 sur 101")).toBeInTheDocument();
+  });
+
+  it("preserves direct links to a run and execution outside the first history page", async () => {
+    vi.stubGlobal("fetch", historyFetch());
+    renderScorings("/?view=scorings&srun=run-older&seid=execution-older");
+    await screen.findByText("Résultat agrégé pertinent.");
+    expect(screen.getByRole("combobox", { name: "Run terminé" })).toHaveValue("run-older");
+    expect(new URL(window.location.href).searchParams.get("srun")).toBe("run-older");
+    expect(new URL(window.location.href).searchParams.get("seid")).toBe("execution-older");
+    expect(screen.getByRole("button", { name: "Lancer l’évaluation" })).toBeEnabled();
+  });
+
+  it("preserves the requested result while its execution results are still loading", async () => {
+    const fetcher = scoringFetch();
+    let finishResults: (() => void) | undefined;
+    const resultsReady = new Promise<void>((resolve) => { finishResults = resolve; });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith("/v1/evaluation-executions/execution-old/results")) {
+        await resultsReady;
+        const payload = executionResults("execution-old");
+        return json({ ...payload, items: [...payload.items, { ...payload.items[0], listingId: "leboncoin:requested" }] });
+      }
+      return fetcher(input, init);
+    }));
+    renderScorings("/?view=scorings&seid=execution-old&sid=leboncoin%3Arequested");
+    await waitFor(() => expect(screen.getAllByText("Chargement des résultats de l’exécution…").length).toBeGreaterThan(0));
+    expect(new URL(window.location.href).searchParams.get("sid")).toBe("leboncoin:requested");
+    await act(async () => { finishResults!(); });
+    expect(await screen.findByRole("heading", { name: "leboncoin:requested" })).toBeInTheDocument();
+  });
 });
 
-function renderScorings() {
+function historyFetch(unavailableNextRun = () => false) {
+  const fallback = scoringFetch();
+  const olderExecution = { ...oldExecution, id: "execution-older", createdAt: "2024-01-01T12:00:00.000Z" };
+  return vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = new URL(String(input));
+    if (url.pathname === "/v1/runs") {
+      if (url.searchParams.has("cursor")) return unavailableNextRun()
+        ? json({ error: { message: "Temporary history failure" } }, 503)
+        : json({ items: [{ ...runRecord(), id: "run-older" }], nextCursor: null, total: 101 });
+      return json({ items: Array.from({ length: 100 }, (_, index) => ({ ...runRecord(), id: `run-${index + 1}` })), nextCursor: "runs-next", total: 101 });
+    }
+    if (url.pathname === "/v1/evaluation-executions") {
+      if (url.searchParams.has("cursor")) return json({ items: [olderExecution], nextCursor: null, total: 101 });
+      return json({ items: [oldExecution, ...Array.from({ length: 99 }, (_, index) => ({ ...oldExecution, id: `execution-${index + 1}` }))], nextCursor: "executions-next", total: 101 });
+    }
+    if (url.pathname === "/v1/runs/run-older") return json({ ...runRecord(), id: "run-older", listingCount: 1, detailedListingCount: 1 });
+    if (url.pathname === "/v1/evaluation-executions/execution-older") return json(olderExecution);
+    if (url.pathname === "/v1/evaluation-executions/execution-older/results") return json(executionResults("execution-older"));
+    return fallback(input, init);
+  });
+}
+
+function renderScorings(href = "/?view=scorings") {
   window.localStorage.setItem("denicheur:locale", "fr");
-  window.history.replaceState({}, "", "/?view=scorings");
+  window.history.replaceState({}, "", href);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   render(<QueryClientProvider client={client}><AppIntlProvider><ScoringsView /></AppIntlProvider></QueryClientProvider>);
 }
@@ -115,7 +205,7 @@ function scoringFetch({ detailedListingCount = 1 }: { detailedListingCount?: num
     if (url.endsWith("/v1/runs/run-1")) {
       return json({ ...runRecord(), listingCount: 1, detailedListingCount });
     }
-    if (url.includes("/v1/listings?")) return json({ items: [listing()], nextCursor: null, total: 1 });
+    if (url.includes("/v1/listings/map?")) return json({ items: [listing()], nextCursor: null, total: 1 });
     if (url.includes("/v1/evaluation-executions?") && (!init?.method || init.method === "GET")) {
       return json({ items: [oldExecution], nextCursor: null, total: 1 });
     }

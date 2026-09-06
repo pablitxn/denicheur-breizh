@@ -14,7 +14,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, memo, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Chip, EmptyState, SectionLabel, Select } from "@denicheur-breizh/design-system";
 import { ScrapeRunner } from "../automation/scrapeRunner";
 import {
@@ -138,7 +138,7 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
   } = useExtensionI18n();
   const [filters, setFilters] = useState<SearchFilters>(createDefaultSearchFilters);
   const [run, setRun] = useState<ScrapeRun>(IDLE_RUN);
-  const [records, setRecords] = useState<ScrapedPropertyRecord[]>([]);
+  const [records, setRecords] = useState<readonly ScrapedPropertyRecord[]>([]);
   const [plan, setPlan] = useState<EvaluationPlan>();
   const [syncState, setSyncState] = useState<ExtensionSyncState>(EMPTY_SYNC_STATE);
   const [filtersDirty, setFiltersDirty] = useState(false);
@@ -155,6 +155,8 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
   const [refreshingRecipe, setRefreshingRecipe] = useState(false);
   const [reevaluationPending, setReevaluationPending] = useState(false);
   const [startPending, setStartPending] = useState(false);
+  const [cancelPending, setCancelPending] = useState(false);
+  const [resumePending, setResumePending] = useState(false);
   const [draftConflict, setDraftConflict] = useState(false);
   const [actionFeedback, setActionFeedback] = useState<string>();
   const [error, setError] = useState<unknown>();
@@ -214,16 +216,11 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
     setRefreshErrors({});
 
     void Promise.all([loadCrawlerState(), loadExtensionSyncState(), loadEvaluationPlan()])
-      .then(async ([snapshot, restoredSyncState, restoredPlan]) => {
-        const hasLiveRunner = await hasLiveDashboardRunner(
-          Boolean(runnerRef.current),
-        );
-        const recoveredRun = reconcileDashboardRun(snapshot.run, hasLiveRunner);
-        if (refreshVersions.run === 0 && recoveredRun !== snapshot.run) await saveRun(recoveredRun);
+      .then(([snapshot, restoredSyncState, restoredPlan]) => {
         if (!mounted) return;
 
         if (refreshVersions.filters === 0) setFilters(snapshot.filters);
-        if (refreshVersions.run === 0) setRun(recoveredRun);
+        if (refreshVersions.run === 0) setRun(snapshot.run);
         if (refreshVersions.records === 0) setRecords(snapshot.records);
         const activePlan = restoredSyncState.activePlan.status === "cached" &&
           restoredPlan !== undefined &&
@@ -316,21 +313,15 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
   }, [hydrationRetry]);
 
   useEffect(() => {
-    if (run.status !== "paused-captcha" || runnerRef.current) return;
+    if (hydrationState !== "ready" || !isRunActive || canControlActiveRun) return;
 
     const abortController = new AbortController();
     let mounted = true;
 
-    void waitForDashboardRunnerRelease(abortController.signal)
-      .then(async () => {
-        if (!mounted || runnerRef.current) return;
-
-        const snapshot = await loadCrawlerState();
-        const recoveredRun = reconcileDashboardRun(snapshot.run, false);
-        if (recoveredRun === snapshot.run) return;
-
-        await saveRun(recoveredRun);
-        if (mounted) setRun(recoveredRun);
+    void recoverDashboardRunAfterOwnerRelease(run.id, abortController.signal)
+      .then((recoveredRun) => {
+        if (!mounted || runnerRef.current || !recoveredRun) return;
+        setRun((current) => current.id === recoveredRun.id ? recoveredRun : current);
       })
       .catch((caught) => {
         if (mounted && !isAbortError(caught)) {
@@ -342,7 +333,7 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
       mounted = false;
       abortController.abort();
     };
-  }, [run.status]);
+  }, [canControlActiveRun, hydrationState, isRunActive, run.id]);
 
   useEffect(() => {
     if (hydrationState !== "ready" || !durableEvaluationPending) return;
@@ -521,6 +512,8 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
     }
     startPendingRef.current = true;
     setStartPending(true);
+    setCancelPending(false);
+    setResumePending(false);
     runnerRef.current?.cancel();
     setError(undefined);
     setActionFeedback(t("action.starting"));
@@ -537,13 +530,19 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
           await saveFilters(runnableFilters);
           setFilters(runnableFilters);
         }
+        let lastRunnerRecords: readonly ScrapedPropertyRecord[] | undefined;
         const runner = new ScrapeRunner((snapshot) => {
           setRun(snapshot.run);
-          setRecords(snapshot.records);
+          if (lastRunnerRecords !== snapshot.records) setRecords(snapshot.records);
+          lastRunnerRecords = snapshot.records;
+          setActionFeedback(undefined);
+          if (snapshot.run.status !== "paused-captcha") setResumePending(false);
         });
         runnerRef.current = runner;
         await runner.run(runnableFilters, undefined, locale);
         const completed = await loadCrawlerState();
+        setRun(completed.run);
+        setRecords(completed.records);
         if (planForRun && completed.run.status === "completed" &&
           completed.records.some((record) => record.searchRunId === completed.run.id && record.status === "detailed")) {
           const response = await requestPlanEvaluation({
@@ -556,20 +555,46 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
       });
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
+      // An optimistic observer update may precede a rejected storage write (for
+      // example, a collection cleared in another context). Restore authority.
+      const stored = await loadCrawlerStateFields(["run", "records"]).catch(() => undefined);
+      if (stored) {
+        setRun(stored.run);
+        setRecords(stored.records);
+      }
     } finally {
       runnerRef.current = undefined;
       startPendingRef.current = false;
       setStartPending(false);
+      setCancelPending(false);
+      setResumePending(false);
       setActionFeedback(undefined);
     }
   }
 
   function handleCancel() {
+    if (!runnerRef.current || cancelPending) return;
+    setCancelPending(true);
     runnerRef.current?.cancel();
   }
 
   function handleResume() {
+    if (!runnerRef.current || resumePending || cancelPending) return;
+    setResumePending(true);
     runnerRef.current?.resume();
+  }
+
+  async function handleOpenRunnerDashboard() {
+    if (run.dashboardTabId === undefined) return;
+    try {
+      const tab = await chrome.tabs.get(run.dashboardTabId);
+      const dashboardUrl = chrome.runtime.getURL("dashboard.html");
+      if (!tab.url || tab.url.split(/[?#]/, 1)[0] !== dashboardUrl) throw new Error("Owner tab unavailable");
+      await chrome.tabs.update(run.dashboardTabId, { active: true });
+      await chrome.windows.update(tab.windowId, { focused: true });
+    } catch {
+      setError(extensionMessage("feedback.ownerTabUnavailable"));
+    }
   }
 
   async function handleReevaluate(_pendingOnly = false) {
@@ -982,6 +1007,20 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
             </div>
           )}
 
+          {isRunActive && !canControlActiveRun && (
+            <div className="inline-alert" role="status">
+              <ExternalLink aria-hidden="true" size={16} />
+              <div>
+                <p>{t("feedback.runControlledElsewhere")}</p>
+                {run.dashboardTabId !== undefined && (
+                  <Button type="button" size="sm" variant="ghost" onClick={() => void handleOpenRunnerDashboard()}>
+                    {t("action.openActiveDashboard")}
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="action-row">
             <Button
               type="button"
@@ -998,22 +1037,24 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
               disabled={hydrationState !== "ready" || isRunActive || requiresReset || formPending}
             >
               {startPending ? <LoaderCircle className="spin" size={16} /> : <Play size={16} />}
-              {startPending ? t("action.starting") : t("action.start")}
+              {isRunActive
+                ? t(run.status === "paused-captcha" ? "status.paused-captcha" : "action.running")
+                : startPending ? t("action.starting") : t("action.start")}
             </Button>
             {run.status === "paused-captcha" && runnerRef.current && (
-              <Button type="button" variant="primary" onClick={handleResume}>
-                <Play size={16} />
-                {t("action.resume")}
+              <Button type="button" variant="primary" onClick={handleResume} disabled={resumePending || cancelPending}>
+                {resumePending ? <LoaderCircle className="spin" size={16} /> : <Play size={16} />}
+                {t(resumePending ? "action.resuming" : "action.resume")}
               </Button>
             )}
             <Button
               type="button"
               variant="ghost"
               onClick={handleCancel}
-              disabled={!isRunActive || !canControlActiveRun}
+              disabled={!isRunActive || !canControlActiveRun || cancelPending}
             >
-              <Square size={16} />
-              {t("action.cancel")}
+              {cancelPending ? <LoaderCircle className="spin" size={16} /> : <Square size={16} />}
+              {t(cancelPending ? "action.cancelling" : "action.cancel")}
             </Button>
             {actionFeedback && <span className="action-feedback" role="status">{actionFeedback}</span>}
           </div>
@@ -1351,14 +1392,28 @@ export async function withDashboardRunnerLease<T>(
   );
 }
 
-async function waitForDashboardRunnerRelease(
+export async function recoverDashboardRunAfterOwnerRelease(
+  expectedRunId: string,
   signal: AbortSignal,
   lockManager: Pick<DashboardRunnerLockManager, "request"> = navigator.locks,
-): Promise<void> {
-  await lockManager.request(
+  storage = {
+    loadRun: async () => (await loadCrawlerStateFields(["run"])).run,
+    saveRun,
+  },
+): Promise<ScrapeRun | undefined> {
+  return lockManager.request(
     DASHBOARD_RUNNER_LOCK_NAME,
-    { mode: "shared", signal },
-    async () => undefined,
+    { mode: "exclusive", signal },
+    async () => {
+      const storedRun = await storage.loadRun();
+      if (signal.aborted || storedRun.id !== expectedRunId) return undefined;
+      const recoveredRun = reconcileDashboardRun(storedRun, false);
+      if (recoveredRun === storedRun) return undefined;
+      // Keep the lease until persistence finishes so a new start cannot be
+      // overwritten between observing an interrupted run and saving recovery.
+      await storage.saveRun(recoveredRun);
+      return recoveredRun;
+    },
   );
 }
 
@@ -1560,7 +1615,7 @@ interface PropertyRecordCardProps {
   record: ScrapedPropertyRecord;
 }
 
-function PropertyRecordCard({ record }: PropertyRecordCardProps) {
+const PropertyRecordCard = memo(function PropertyRecordCard({ record }: PropertyRecordCardProps) {
   const { formatNumber, resolveText, t } = useExtensionI18n();
   const recordError = resolveText(record.error);
   const displayTitle = record.title ?? t("record.titleUnavailable");
@@ -1621,7 +1676,7 @@ function PropertyRecordCard({ record }: PropertyRecordCardProps) {
       </div>
     </article>
   );
-}
+});
 
 interface PropertyImagePreviewProps {
   record: ScrapedPropertyRecord;

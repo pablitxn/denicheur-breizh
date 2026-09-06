@@ -11,11 +11,8 @@ import {
 } from "../lib/coordinates";
 import { listingIdFromUrl, normalizeListingUrl } from "../lib/leboncoinExtractors";
 import { message } from "../lib/localizedText";
-import {
-  EMPTY_SYNC_STATE,
-  loadExtensionSyncState,
-  SYNC_STORAGE_KEY,
-} from "../sync/storage";
+import { withCrawlerStateLock } from "./crawlerStateLock";
+import { clearExtensionSyncQueue } from "../sync/storage";
 import type {
   IntelligenceRecipe,
   EvaluationPlan,
@@ -33,6 +30,7 @@ export const CRAWLER_STORAGE_KEYS = {
   records: "denicheur:crawler:records",
   recipe: "denicheur:intelligence:recipe",
   plan: "denicheur:intelligence:plan",
+  generation: "denicheur:crawler:generation",
 } as const;
 
 const FILTERS_KEY = CRAWLER_STORAGE_KEYS.filters;
@@ -40,6 +38,7 @@ const RUN_KEY = CRAWLER_STORAGE_KEYS.run;
 const RECORDS_KEY = CRAWLER_STORAGE_KEYS.records;
 const RECIPE_KEY = CRAWLER_STORAGE_KEYS.recipe;
 const PLAN_KEY = CRAWLER_STORAGE_KEYS.plan;
+const GENERATION_KEY = CRAWLER_STORAGE_KEYS.generation;
 const INTERRUPTIBLE_RUN_STATUSES = new Set<ScrapeRun["status"]>([
   "opening-search",
   "configuring-search",
@@ -65,11 +64,19 @@ export const IDLE_RUN: ScrapeRun = {
 };
 
 export async function loadCrawlerState(): Promise<StoredCrawlerState> {
-  return loadCrawlerStateFields(["filters", "run", "records", "recipe"]);
+  return loadCrawlerStateFields(["filters", "run", "records", "recipe", "generation"]);
 }
 
 /** Read and migrate only the fields a surface needs to refresh. */
 export async function loadCrawlerStateFields<K extends keyof StoredCrawlerState>(
+  fields: readonly K[],
+): Promise<Pick<StoredCrawlerState, K>> {
+  return fields.includes("records" as K) || fields.includes("filters" as K)
+    ? withCrawlerStateLock(() => loadCrawlerStateFieldsUnlocked(fields))
+    : loadCrawlerStateFieldsUnlocked(fields);
+}
+
+async function loadCrawlerStateFieldsUnlocked<K extends keyof StoredCrawlerState>(
   fields: readonly K[],
 ): Promise<Pick<StoredCrawlerState, K>> {
   if (fields.length === 0) return {} as Pick<StoredCrawlerState, K>;
@@ -79,6 +86,7 @@ export async function loadCrawlerStateFields<K extends keyof StoredCrawlerState>
     [RUN_KEY]?: ScrapeRun;
     [RECORDS_KEY]?: ScrapedPropertyRecord[];
     [RECIPE_KEY]?: IntelligenceRecipe;
+    [GENERATION_KEY]?: number;
   }>(fields.map((field) => CRAWLER_STORAGE_KEYS[field]));
   const state: Partial<StoredCrawlerState> = {};
   const migrationPatch: Record<string, unknown> = {};
@@ -105,16 +113,17 @@ export async function loadCrawlerStateFields<K extends keyof StoredCrawlerState>
   if (requestedFields.has("run")) {
     state.run = normalizeRun(values[RUN_KEY]);
   }
+  if (requestedFields.has("generation")) state.generation = normalizeGeneration(values[GENERATION_KEY]);
   if (Object.keys(migrationPatch).length > 0) await setStorage(migrationPatch);
   return state as Pick<StoredCrawlerState, K>;
 }
 
 export async function saveFilters(filters: SearchFilters): Promise<void> {
-  await setStorage({ [FILTERS_KEY]: normalizeSearchFilters(filters) });
+  await withCrawlerStateLock(() => setStorage({ [FILTERS_KEY]: normalizeSearchFilters(filters) }));
 }
 
 export async function saveRun(run: ScrapeRun): Promise<void> {
-  await setStorage({ [RUN_KEY]: run });
+  await saveCrawlerState({ run });
 }
 
 export async function saveRecipe(recipe: IntelligenceRecipe): Promise<void> {
@@ -152,7 +161,63 @@ export function reconcileInterruptedRun(run: ScrapeRun, finishedAt = new Date().
   };
 }
 
-export async function saveCrawlerState(state: Partial<StoredCrawlerState>): Promise<void> {
+export async function saveCrawlerState(
+  state: Partial<StoredCrawlerState>,
+  options: { previousRecords?: readonly ScrapedPropertyRecord[]; expectedGeneration?: number } = {},
+): Promise<void> {
+  await withCrawlerStateLock(async () => {
+    let next = state;
+    if (state.records && options.previousRecords) {
+      const current = await loadCrawlerStateFieldsUnlocked(["records", "generation"]);
+      assertGeneration(current.generation, options.expectedGeneration);
+      next = { ...state, records: mergeCrawlerRecordDelta(current.records, options.previousRecords, state.records) };
+    } else if (options.expectedGeneration !== undefined) {
+      const current = await loadCrawlerStateFieldsUnlocked(["generation"]);
+      assertGeneration(current.generation, options.expectedGeneration);
+    }
+    await persistCrawlerStateUnlocked(next);
+  });
+}
+
+type CrawlerData = Pick<StoredCrawlerState, "run" | "records">;
+
+/** The callback performs only a synchronous transformation; network work stays outside the lock. */
+export async function updateCrawlerData(update: (current: CrawlerData) => Partial<CrawlerData>): Promise<void> {
+  await withCrawlerStateLock(async () => {
+    const current = await loadCrawlerStateFieldsUnlocked(["run", "records"]);
+    await persistCrawlerStateUnlocked(update(current));
+  });
+}
+
+function assertGeneration(current: number | undefined, expected: number | undefined): void {
+  if (expected !== undefined && normalizeGeneration(current) !== expected) {
+    throw new Error("The local collection was cleared. Reload the dashboard before starting another collection.");
+  }
+}
+
+function normalizeGeneration(value: number | undefined): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
+
+export function mergeCrawlerRecordDelta(
+  current: readonly ScrapedPropertyRecord[],
+  previous: readonly ScrapedPropertyRecord[],
+  incoming: readonly ScrapedPropertyRecord[],
+): ScrapedPropertyRecord[] {
+  const key = (record: ScrapedPropertyRecord) => `${record.source}:${record.id}`;
+  const nextById = new Map(incoming.map((record) => [key(record), record]));
+  const previousById = new Map(previous.map((record) => [key(record), record]));
+  const merged = new Map(current.map((record) => [key(record), record]));
+  for (const record of previous) {
+    if (!nextById.has(key(record))) merged.delete(key(record));
+  }
+  for (const record of incoming) {
+    if (previousById.get(key(record)) !== record) merged.set(key(record), record);
+  }
+  return [...merged.values()].sort((a, b) => b.scrapedAt.localeCompare(a.scrapedAt)).slice(0, 500);
+}
+
+async function persistCrawlerStateUnlocked(state: Partial<StoredCrawlerState>): Promise<void> {
   const patch: Record<string, unknown> = {};
 
   if (state.filters) {
@@ -171,23 +236,24 @@ export async function saveCrawlerState(state: Partial<StoredCrawlerState>): Prom
     patch[RECORDS_KEY] = migrateStoredRecords(state.records);
   }
 
-  await setStorage(patch);
+  if (Object.keys(patch).length > 0) await setStorage(patch);
 }
 
 export async function clearRecords(): Promise<void> {
-  await setStorage({ [RECORDS_KEY]: [], [RUN_KEY]: IDLE_RUN });
+  await withCrawlerStateLock(async () => {
+    const current = await loadCrawlerStateFieldsUnlocked(["generation"]);
+    await setStorage({ [RECORDS_KEY]: [], [RUN_KEY]: IDLE_RUN, [GENERATION_KEY]: normalizeGeneration(current.generation) + 1 });
+  });
 }
 
 export async function clearRecordsAndSyncQueue(): Promise<void> {
-  const syncState = await loadExtensionSyncState();
-  await setStorage({
-    [RECORDS_KEY]: [],
-    [RUN_KEY]: IDLE_RUN,
-    [SYNC_STORAGE_KEY]: {
-      ...structuredClone(EMPTY_SYNC_STATE),
-      activePlan: syncState.activePlan,
-      activeRecipe: syncState.activeRecipe,
-    },
+  await withCrawlerStateLock(async () => {
+    const current = await loadCrawlerStateFieldsUnlocked(["generation"]);
+    await clearExtensionSyncQueue({
+      [RECORDS_KEY]: [],
+      [RUN_KEY]: IDLE_RUN,
+      [GENERATION_KEY]: normalizeGeneration(current.generation) + 1,
+    });
   });
 }
 

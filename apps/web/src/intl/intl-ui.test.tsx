@@ -53,7 +53,8 @@ function installApiFixture() {
         openAiConfigured: true,
       }), { status: 200 });
     }
-    if (url.includes("/v1/listings?")) {
+    if (url.endsWith("/v1/listings/metadata")) return new Response(JSON.stringify({ revision: "1", total: 1, sources: [{ source: "leboncoin", count: 1 }] }), { status: 200 });
+    if (url.includes("/v1/listings?") || url.includes("/v1/listings/map?")) {
       return new Response(JSON.stringify({
         items: [{
           source: "leboncoin",

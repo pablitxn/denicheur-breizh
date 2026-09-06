@@ -12,6 +12,37 @@ import { createRequest, createResponse } from "./fixtures.js";
 const VALID_EXTENSION_ORIGIN = "chrome-extension://oekklajlieiinmjcmhdfeodpdhahhjdi";
 
 describe("HTTP API", () => {
+  it("serves authenticated conditional catalog reads and explicit cursor restart errors with browser CORS", async () => {
+    const operatorToken = "test-operator-token-with-at-least-32-chars";
+    const { app, repository } = createTestApp({ config: { operatorToken } });
+    try {
+      seedCollectedData(repository);
+      for (const endpoint of ["/v1/listings/metadata", "/v1/listings/map"]) {
+        await request(app).get(endpoint).expect(401);
+        const response = await request(app).get(endpoint)
+          .set("Authorization", `Bearer ${operatorToken}`).set("Origin", VALID_EXTENSION_ORIGIN).expect(200);
+        expect(response.headers.etag).toBeDefined();
+        expect(response.headers["access-control-expose-headers"]).toContain("ETag");
+        expect(response.headers["cache-control"]).toBe("private, no-cache");
+        const unchanged = await request(app).get(endpoint).set("Authorization", `Bearer ${operatorToken}`)
+          .set("If-None-Match", response.headers.etag!).expect(304);
+        expect(unchanged.text).toBe("");
+        const preflight = await request(app).options(endpoint).set("Origin", VALID_EXTENSION_ORIGIN)
+          .set("Access-Control-Request-Method", "GET").set("Access-Control-Request-Headers", "If-None-Match,Authorization").expect(204);
+        expect(preflight.headers["access-control-allow-headers"]).toContain("If-None-Match");
+      }
+      const filtered = await request(app).get("/v1/listings?sources=leboncoin&sources=leboncoin&sort=title&order=asc")
+        .set("Authorization", `Bearer ${operatorToken}`).expect(200);
+      expect(filtered.body.total).toBe(1);
+      await request(app).get("/v1/listings?source=leboncoin&sources=leboncoin")
+        .set("Authorization", `Bearer ${operatorToken}`).expect(400);
+      const legacyCursor = Buffer.from('{"offset":1}').toString("base64url");
+      const expired = await request(app).get(`/v1/listings?cursor=${legacyCursor}`)
+        .set("Authorization", `Bearer ${operatorToken}`).expect(410);
+      expect(expired.body.error.code).toBe("PAGINATION_CURSOR_RESTART_REQUIRED");
+    } finally { repository.close(); }
+  });
+
   it("reports only minimal public health without invoking the evaluator", async () => {
     const { app, filter } = createTestApp();
 

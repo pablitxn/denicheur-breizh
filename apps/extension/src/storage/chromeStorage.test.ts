@@ -10,12 +10,22 @@ import {
   isCrawlerStorageKey,
   loadCrawlerState,
   loadCrawlerStateFields,
+  saveCrawlerState,
+  updateCrawlerData,
   migrateStoredRecords,
   reconcileInterruptedRun,
   saveRecipe,
 } from "./chromeStorage";
 
 let storage: Record<string, unknown>;
+
+function concurrentRecord(id: string, searchRunId: string): ScrapedPropertyRecord {
+  return {
+    id, searchRunId, source: "leboncoin", title: `Synthetic ${id}`,
+    listingUrl: `https://www.leboncoin.fr/ad/ventes_immobilieres/${id}`,
+    scrapedAt: "2026-09-06T12:00:00Z", features: [], status: "detailed", rawTextSample: "Synthetic",
+  };
+}
 
 beforeEach(() => {
   storage = {};
@@ -39,6 +49,89 @@ beforeEach(() => {
 });
 
 describe("crawler run recovery", () => {
+  it.each(["evaluation-first", "capture-first"])("preserves concurrent collection and evaluation writes: %s", async (order) => {
+    const previous = concurrentRecord("3007106001", "previous-run");
+    await saveCrawlerState({ records: [previous] });
+    const baseline = await loadCrawlerState();
+    const added = concurrentRecord("3007106002", "capture-run");
+    const evaluation = {
+      executionId: "execution-1", listingId: previous.id, planId: "plan-1", planVersion: 1,
+      decision: "relevant" as const, score: 90, summary: "Synthetic evaluation", steps: [],
+    };
+    const capture = () => saveCrawlerState({
+      run: { ...IDLE_RUN, id: "capture-run", status: "collecting-details", collected: 1 },
+      records: [...baseline.records, added],
+    }, { previousRecords: baseline.records, expectedGeneration: baseline.generation });
+    const evaluate = () => updateCrawlerData((current) => ({
+      records: current.records.map((record) => record.id === previous.id ? { ...record, planEvaluation: evaluation } : record),
+    }));
+
+    await Promise.all(order === "evaluation-first" ? [evaluate(), capture()] : [capture(), evaluate()]);
+
+    const result = await loadCrawlerState();
+    expect(result.records.map((record) => record.id).sort()).toEqual([previous.id, added.id]);
+    expect(result.records.find((record) => record.id === previous.id)?.planEvaluation).toEqual(evaluation);
+    expect(result.run).toMatchObject({ id: "capture-run", collected: 1 });
+  });
+
+  it("holds the writer lock until storage acknowledges the write", async () => {
+    let releaseWrite!: () => void;
+    let markStarted!: () => void;
+    const writeStarted = new Promise<void>((resolve) => { markStarted = resolve; });
+    const set = vi.spyOn(chrome.storage.local, "set").mockImplementationOnce((patch, callback) => {
+      Object.assign(storage, patch);
+      releaseWrite = callback!;
+      markStarted();
+      return undefined as never;
+    });
+    const first = saveCrawlerState({ records: [concurrentRecord("3007106001", "run-1")] });
+    await writeStarted;
+    const update = vi.fn((current) => ({ records: [...current.records, concurrentRecord("3007106002", "run-2")] }));
+    const second = updateCrawlerData(update);
+    await Promise.resolve();
+
+    expect(update).not.toHaveBeenCalled();
+    releaseWrite();
+    await Promise.all([first, second]);
+
+    expect(update).toHaveBeenCalledOnce();
+    expect((await loadCrawlerState()).records).toHaveLength(2);
+    set.mockRestore();
+  });
+
+  it("rejects a stale capture generation and does not resurrect data after clear", async () => {
+    await saveCrawlerState({ records: [concurrentRecord("3007106001", "run-1")] });
+    const baseline = await loadCrawlerState();
+    await clearRecords();
+
+    await expect(saveCrawlerState({
+      run: { ...IDLE_RUN, id: "old-run", status: "completed" },
+      records: [...baseline.records, concurrentRecord("3007106002", "old-run")],
+    }, { previousRecords: baseline.records, expectedGeneration: baseline.generation })).rejects.toThrow("collection was cleared");
+    await updateCrawlerData((current) => ({
+      records: current.records.map((record) => ({ ...record, title: "Late evaluation response" })),
+    }));
+
+    const current = await loadCrawlerState();
+    expect(current.records).toEqual([]);
+    expect(current.run.id).toBe("idle");
+    expect(current.generation).toBe(1);
+  });
+
+  it("leaves stored data unchanged when cross-context locking is unavailable", async () => {
+    storage["denicheur:crawler:records"] = [concurrentRecord("3007106001", "run-1")];
+    const before = structuredClone(storage);
+    const locks = navigator.locks;
+    Object.defineProperty(navigator, "locks", { configurable: true, value: undefined });
+    try {
+      await expect(clearRecords()).rejects.toThrow("Web Locks");
+      await expect(saveCrawlerState({ records: [] })).rejects.toThrow("Web Locks");
+      expect(storage).toEqual(before);
+    } finally {
+      Object.defineProperty(navigator, "locks", { configurable: true, value: locks });
+    }
+  });
+
   it("refreshes progress without reading or migrating the listing collection", async () => {
     const get = vi.spyOn(chrome.storage.local, "get");
     storage["denicheur:crawler:run"] = { id: "progress-run", collected: 12 };

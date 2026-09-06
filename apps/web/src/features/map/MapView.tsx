@@ -3,11 +3,11 @@ import type { GeoJSONSource, Map as MapLibreMap, Marker as MapLibreMarker } from
 import "maplibre-gl/dist/maplibre-gl.css";
 import { Button, Chip, EmptyState, SectionLabel, Select } from "@denicheur-breizh/design-system";
 import { ExternalLink, MapPin, X } from "lucide-react";
-import { useListing, useListings } from "../../api/hooks";
+import { useListing, useMapListings } from "../../api/hooks";
 import { PropertyVisual } from "../../components/PropertyVisual";
 import { useAppIntl } from "../../intl/IntlContext";
 import type { LocaleCode } from "../../intl/locales";
-import type { ListingDecision, PropertyListing } from "../../types";
+import type { ListingDecision, PropertyMapListing } from "../../types";
 import { formatDecimal, formatInteger, formatPrice, formatRooms } from "../../utils/format";
 import {
   propertiesToGeoJson,
@@ -32,11 +32,11 @@ import {
 } from "./mapGeography";
 import styles from "./MapView.module.css";
 
-const emptyListings: PropertyListing[] = [];
+const emptyListings: PropertyMapListing[] = [];
 
 export function MapView() {
   const { locale, t } = useAppIntl();
-  const listingsQuery = useListings({ limit: 100 });
+  const listingsQuery = useMapListings();
   const listings = listingsQuery.data?.items ?? emptyListings;
   const [activeSource, setActiveSource] = useUrlState("msource", "all", stringUrlCodec);
   const [activeType, setActiveType] = useUrlState("mtype", "all", stringUrlCodec);
@@ -51,7 +51,7 @@ export function MapView() {
   const markerConstructorRef = useRef<typeof import("maplibre-gl").Marker | null>(null);
   const selectedMarkerRef = useRef<MapLibreMarker | null>(null);
   const interestMarkersRef = useRef<MapLibreMarker[]>([]);
-  const listingsRef = useRef<PropertyListing[]>(emptyListings);
+  const listingsRef = useRef<PropertyMapListing[]>(emptyListings);
 
   const sources = useMemo(
     () => Array.from(new Set(listings.map((listing) => listing.source))).sort(),
@@ -445,6 +445,7 @@ export function MapView() {
           </div>
           <p className={styles.resultsHint}>{t("map.resultsHint")}</p>
           <MapResultsList
+            key={`${activeSource}:${activeType}`}
             listings={visibleMapped}
             selectedKey={selected?.key}
             locale={locale}
@@ -461,6 +462,7 @@ export function MapView() {
             : listingsQuery.isFetching
               ? t("map.refreshing")
               : t("map.visibleResults", { count: visibleMapped.length })}
+          {listingsQuery.error && listingsQuery.data && <Button size="sm" disabled={listingsQuery.isFetching} onClick={() => void listingsQuery.refetch()}>{t("common.retry")}</Button>}
         </div>
         {selectedInterest && (
           <aside className={styles.interestDetail} aria-label={t("map.interest.detailAria")}>
@@ -529,7 +531,7 @@ export function MapView() {
         {!mapFailed && (listingsQuery.isLoading || !mapReady) && !listingsQuery.error && (
           <EmptyState className={styles.statusOverlay} role="status">{t("map.loading")}</EmptyState>
         )}
-        {listingsQuery.error && !mapFailed && (
+        {listingsQuery.error && !listingsQuery.data && !mapFailed && (
           <EmptyState className={styles.statusOverlay} role="alert">
             <div className={styles.stateContent}>
               <strong>{t("map.errorProperties")}</strong>
@@ -545,6 +547,11 @@ export function MapView() {
           aria-label={t("map.detailAria")}
           aria-busy={detailQuery.isFetching}
         >
+          {detailQuery.error && <div className={styles.detailNotice} role="alert">
+            <p>{t("properties.detailError")}</p>
+            <Button size="sm" disabled={detailQuery.isFetching} onClick={() => void detailQuery.refetch()}>{t("common.retry")}</Button>
+          </div>}
+          {detailQuery.isPending && <p className={styles.detailNotice} role="status">{t("common.loading")}</p>}
           <MapListingDetail
             listing={selected}
             onClose={clearSelection}
@@ -557,7 +564,7 @@ export function MapView() {
 }
 
 interface MapResultsListProps {
-  listings: PropertyListing[];
+  listings: PropertyMapListing[];
   selectedKey?: string;
   locale: LocaleCode;
   onSelect: (key: string) => void;
@@ -565,11 +572,32 @@ interface MapResultsListProps {
 
 function MapResultsList({ listings, selectedKey, locale, onSelect }: MapResultsListProps) {
   const { t } = useAppIntl();
+  const [page, setPage] = useState(0);
+  const listRef = useRef<HTMLUListElement | null>(null);
+  const pageSize = 30;
+  const currentPage = Math.min(page, Math.max(0, Math.ceil(listings.length / pageSize) - 1));
+  const pageItems = listings.slice(currentPage * pageSize, (currentPage + 1) * pageSize);
+  const lastSelection = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (lastSelection.current !== selectedKey) {
+      const index = listings.findIndex((listing) => listing.key === selectedKey);
+      if (index >= 0) setPage(Math.floor(index / pageSize));
+      if (index >= 0 || !selectedKey) lastSelection.current = selectedKey;
+    }
+  }, [listings, selectedKey]);
+  useEffect(() => { if (listRef.current) listRef.current.scrollTop = 0; }, [currentPage]);
 
   return (
     <>
-      <ul className={styles.resultsList} aria-label={t("map.results")}>
-        {listings.map((listing) => {
+      {listings.length > pageSize && <nav className={styles.resultPagination} aria-label={t("catalog.pagination")}>
+        <span role="status">{t("catalog.range", { start: currentPage * pageSize + 1, end: currentPage * pageSize + pageItems.length, total: listings.length })}</span>
+        <div>
+          <Button size="sm" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>{t("catalog.previous")}</Button>
+          <Button size="sm" disabled={(currentPage + 1) * pageSize >= listings.length} onClick={() => setPage(currentPage + 1)}>{t("catalog.next")}</Button>
+        </div>
+      </nav>}
+      <ul ref={listRef} className={styles.resultsList} aria-label={t("map.results")}>
+        {pageItems.map((listing) => {
           const title = listing.title ?? listing.externalId;
           const active = listing.key === selectedKey;
           return (
@@ -611,7 +639,7 @@ function MapResultsList({ listings, selectedKey, locale, onSelect }: MapResultsL
 }
 
 interface MapListingDetailProps {
-  listing: PropertyListing;
+  listing: PropertyMapListing;
   onClose: () => void;
   onSelectInterest: (id: string) => void;
 }
@@ -744,7 +772,7 @@ function MapListingDetail({ listing, onClose, onSelectInterest }: MapListingDeta
                   <strong>{formatDecimal(evaluation.score, locale)} / 100</strong>
                 )}
               </div>
-              {evaluation.summary.trim() && <p className={styles.detailText}>{evaluation.summary}</p>}
+              {evaluation.summary?.trim() && <p className={styles.detailText}>{evaluation.summary}</p>}
             </>
           ) : (
             <p className={styles.detailText}>{t("properties.notEvaluated")}</p>
@@ -800,7 +828,7 @@ function DecisionChip({ decision }: { decision: ListingDecision }) {
   return <Chip active tone={tone}>{t(messageId)}</Chip>;
 }
 
-function formatResultMeta(listing: PropertyListing, locale: LocaleCode, unavailable: string): string {
+function formatResultMeta(listing: PropertyMapListing, locale: LocaleCode, unavailable: string): string {
   const values = [
     listing.surfaceM2 === undefined ? undefined : `${formatInteger(listing.surfaceM2, locale)}\u00a0m²`,
     listing.rooms === undefined ? undefined : formatRooms(listing.rooms, locale),

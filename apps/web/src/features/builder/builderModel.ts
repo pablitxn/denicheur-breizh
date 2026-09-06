@@ -24,6 +24,37 @@ export interface PlanWorkingDraft {
   value: EvaluationPlanDraft;
 }
 
+// Persisted drafts may contain unfinished edits. Check the shape needed by the
+// editor here; publication validation below applies the stricter domain rules.
+export function isRecipeWorkingDraft(input: unknown): input is RecipeWorkingDraft {
+  if (!isWorkingDraft(input)) return false;
+  const draft = input.value;
+  return typeof draft.threshold === "number" && Array.isArray(draft.criteria)
+    && draft.criteria.every((criterion: unknown) => isRecord(criterion)
+      && typeof criterion.id === "string" && typeof criterion.name === "string"
+      && typeof criterion.description === "string" && typeof criterion.weight === "number"
+      && typeof criterion.required === "boolean"
+      && (criterion.evidenceRequired === undefined || typeof criterion.evidenceRequired === "boolean"));
+}
+
+export function isPlanWorkingDraft(input: unknown): input is PlanWorkingDraft {
+  if (!isWorkingDraft(input)) return false;
+  const draft = input.value;
+  return (draft.operator === "all" || draft.operator === "any") && Array.isArray(draft.recipes)
+    && draft.recipes.every((reference: unknown) => isRecord(reference)
+      && typeof reference.recipeId === "string" && typeof reference.recipeVersion === "number");
+}
+
+function isWorkingDraft(input: unknown): input is Record<string, unknown> & { value: Record<string, unknown> } {
+  return isRecord(input) && ["new", "version", "duplicate"].includes(String(input.mode))
+    && (input.sourceKey === undefined || typeof input.sourceKey === "string")
+    && isRecord(input.value) && typeof input.value.id === "string" && typeof input.value.name === "string";
+}
+
+function isRecord(input: unknown): input is Record<string, unknown> {
+  return input !== null && typeof input === "object" && !Array.isArray(input);
+}
+
 export interface VersionFamily<T extends { id: string; name: string; version: number }> {
   id: string;
   latest: T;
@@ -174,40 +205,6 @@ export function moveItem<T>(items: readonly T[], index: number, direction: -1 | 
 
 export function workingDraftKey(mode: DraftMode, id: string, baseVersion?: number): string {
   return mode === "version" && baseVersion !== undefined ? `${id}:${baseVersion}` : `new:${id}`;
-}
-
-export function readWorkingDrafts<T>(storageKey: string): Record<string, T> {
-  if (typeof window === "undefined") return {};
-  try {
-    const stored = window.localStorage.getItem(storageKey);
-    if (!stored) return {};
-    const parsed: unknown = JSON.parse(stored);
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, T> : {};
-  } catch {
-    return {};
-  }
-}
-
-export function persistWorkingDraft<T>(storageKey: string, draftKey: string, draft: T): void {
-  if (typeof window === "undefined") return;
-  try {
-    const drafts = readWorkingDrafts<T>(storageKey);
-    window.localStorage.setItem(storageKey, JSON.stringify({ ...drafts, [draftKey]: draft }));
-  } catch {
-    // The editor remains usable for this session when local storage is unavailable.
-  }
-}
-
-export function removeWorkingDraft(storageKey: string, draftKey: string): void {
-  if (typeof window === "undefined") return;
-  try {
-    const drafts = readWorkingDrafts<unknown>(storageKey);
-    delete drafts[draftKey];
-    if (Object.keys(drafts).length === 0) window.localStorage.removeItem(storageKey);
-    else window.localStorage.setItem(storageKey, JSON.stringify(drafts));
-  } catch {
-    // Nothing else is required when storage is unavailable.
-  }
 }
 
 export function blankCriterion(id: string) {

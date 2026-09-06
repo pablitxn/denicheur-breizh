@@ -20,7 +20,7 @@ import {
   useEvaluationExecutionResults,
   useEvaluationExecutions,
   useEvaluationPlans,
-  useListings,
+  useMapListings,
   useRecipes,
   useRetryEvaluationExecution,
   useRun,
@@ -70,10 +70,12 @@ export function ScoringsView() {
   const resultsQuery = useEvaluationExecutionResults(execution?.id, execution?.status);
   const results = resultsQuery.data?.items ?? [];
   const [runId, setRunId] = useUrlState("srun", "", stringUrlCodec);
-  const selectedRun = completedRuns.find((run) => run.id === runId) ?? completedRuns[0];
-  const runDetailQuery = useRun(selectedRun?.id);
+  const runDetailQuery = useRun(runId || completedRuns[0]?.id);
+  const selectedRun = runId
+    ? completedRuns.find((run) => run.id === runId) ?? (runDetailQuery.data?.id === runId && runDetailQuery.data.status === "completed" ? runDetailQuery.data : undefined)
+    : completedRuns[0];
   const hasDetailedSnapshots = (runDetailQuery.data?.detailedListingCount ?? 0) > 0;
-  const listingsQuery = useListings(execution ? { runId: execution.runId, limit: 100 } : undefined);
+  const listingsQuery = useMapListings(Boolean(execution));
   const listingNames = useMemo(() => new Map(
     (listingsQuery.data?.items ?? []).map((listing) => [listing.key, listing.title ?? listing.externalId]),
   ), [listingsQuery.data?.items]);
@@ -95,18 +97,19 @@ export function ScoringsView() {
   }, [executionId, planExecutions, setExecutionId]);
 
   useEffect(() => {
-    if (selectedRun && runId !== selectedRun.id) setRunId(selectedRun.id);
+    if (selectedRun && !runId) setRunId(selectedRun.id);
   }, [runId, selectedRun, setRunId]);
 
   useEffect(() => {
     if (selectedResult && listingId !== selectedResult.listingId) setListingId(selectedResult.listingId);
-    if (!selectedResult && listingId) setListingId("");
-  }, [listingId, selectedResult, setListingId]);
+    if (!selectedResult && listingId && resultsQuery.isSuccess) setListingId("");
+  }, [listingId, resultsQuery.isSuccess, selectedResult, setListingId]);
 
   const loading = plansQuery.isLoading || defaultPlanQuery.isLoading || recipesQuery.isLoading || runsQuery.isLoading || executionsQuery.isLoading;
-  const error = plansQuery.error || defaultPlanQuery.error || recipesQuery.error || runsQuery.error || executionsQuery.error;
+  const configurationError = plansQuery.error || defaultPlanQuery.error || recipesQuery.error;
+  const error = configurationError || runsQuery.error || executionsQuery.error;
   if (loading) return <ScoringState copy={t("scorings.loading")} />;
-  if (error) return <ScoringState copy={t("scorings.error")} retry={() => void Promise.all([plansQuery.refetch(), defaultPlanQuery.refetch(), recipesQuery.refetch(), runsQuery.refetch(), executionsQuery.refetch()])} />;
+  if (error && !plansQuery.data && !runsQuery.data && !executionsQuery.data) return <ScoringState copy={t("scorings.error")} retry={() => void Promise.all([plansQuery.refetch(), defaultPlanQuery.refetch(), recipesQuery.refetch(), runsQuery.refetch(), executionsQuery.refetch()])} />;
 
   const launch = () => {
     if (!selectedPlan || !selectedRun || !hasDetailedSnapshots) return;
@@ -134,6 +137,9 @@ export function ScoringsView() {
   };
 
   const counts = decisionCounts(results);
+  const resultsLoading = Boolean(selectedExecutionId) && (executionQuery.isLoading || resultsQuery.isLoading);
+  const resultsUnavailable = (executionQuery.isError && !execution) || (resultsQuery.isError && !resultsQuery.data);
+  const emptyResultCopy = resultsLoading ? t("scorings.resultsLoading") : resultsUnavailable ? t("scorings.executionError") : execution && !isExecutionTerminal(execution.status) ? t("scorings.awaitingResults") : t("scorings.empty");
   return (
     <section className={styles.view} aria-labelledby="scorings-view-title">
       <aside className={styles.controlPanel}>
@@ -143,13 +149,16 @@ export function ScoringsView() {
           <span>{t("scorings.executionCount", { count: executions.length })}</span>
         </div>
 
+        {configurationError && <div className={styles.error} role="alert"><p>{t("scorings.configRefreshError")}</p><Button size="sm" onClick={() => void Promise.all([plansQuery.refetch(), defaultPlanQuery.refetch(), recipesQuery.refetch()])}>{t("common.retry")}</Button></div>}
+
         <section className={styles.controlSection}>
           <label><SectionLabel>{t("scorings.planVersion")}</SectionLabel><select value={selectedPlan ? evaluationPlanKey(selectedPlan) : ""} onChange={(event) => selectPlan(event.target.value)} disabled={plans.length === 0}><option value="">{t("scorings.noPlan")}</option>{groupPlanOptions(plans).map((family) => <optgroup key={family.id} label={family.name}>{family.versions.map((plan) => <option key={evaluationPlanKey(plan)} value={evaluationPlanKey(plan)}>{plan.name} · v{plan.version}{plan.isDefault ? ` · ${t("scorings.default")}` : ""}</option>)}</optgroup>)}</select></label>
           {selectedPlan && <div className={styles.planSummary}><span><strong>{t(`builder.operator.${selectedPlan.operator}`)}</strong><small>{selectedPlan.recipes.map((reference) => `${reference.recipeId}@v${reference.recipeVersion}`).join(" · ")}</small></span>{selectedPlan.isDefault && <Chip active tone="good">{t("scorings.default")}</Chip>}</div>}
         </section>
 
         <section className={styles.controlSection}>
-          <label><SectionLabel>{t("scorings.completedRun")}</SectionLabel><select value={selectedRun?.id ?? ""} onChange={(event) => setRunId(event.target.value)} disabled={completedRuns.length === 0}><option value="">{t("scorings.noCompletedRuns")}</option>{completedRuns.map((run) => <option key={run.id} value={run.id}>{run.id} · {formatDate(run.finishedAt ?? run.updatedAt, locale)}</option>)}</select></label>
+          <label><SectionLabel>{t("scorings.completedRun")}</SectionLabel><select value={runId || selectedRun?.id || ""} onChange={(event) => setRunId(event.target.value)} disabled={completedRuns.length === 0 && !runId}><option value="">{t(runsQuery.hasNextPage ? "scorings.noLoadedCompletedRuns" : "scorings.noCompletedRuns")}</option>{runId && !completedRuns.some((run) => run.id === runId) && <option value={runId}>{runId}</option>}{completedRuns.map((run) => <option key={run.id} value={run.id}>{run.id} · {formatDate(run.finishedAt ?? run.updatedAt, locale)}</option>)}</select></label>
+          <HistoryControls kind="runs" query={runsQuery} />
           <label className={styles.forceToggle}><input type="checkbox" checked={force} onChange={(event) => setForce(event.target.checked)} />{t("scorings.force")}</label>
           <Button variant="primary" onClick={launch} disabled={!selectedPlan || !selectedRun || !hasDetailedSnapshots || runDetailQuery.isLoading || startExecution.isPending}><Play size={14} aria-hidden="true" />{startExecution.isPending ? t("scorings.starting") : t("scorings.start")}</Button>
           {selectedRun && runDetailQuery.isSuccess && !hasDetailedSnapshots && <p className={styles.error} role="alert">{t("scorings.noDetailedSnapshots")}</p>}
@@ -159,7 +168,8 @@ export function ScoringsView() {
 
         <section className={styles.executionShelf}>
           <SectionLabel>{t("scorings.executions")}</SectionLabel>
-          {planExecutions.length === 0 ? <p>{t("scorings.noExecutions")}</p> : planExecutions.map((item) => <button type="button" key={item.id} className={execution?.id === item.id ? styles.executionActive : ""} onClick={() => setExecutionId(item.id)}><ExecutionStatusIcon status={item.status} /><span><strong>{formatDate(item.createdAt, locale)}</strong><small>{t(`scorings.status.${item.status}`)} · {item.counters.processed}/{item.counters.total}</small></span></button>)}
+          {planExecutions.length === 0 ? !executionsQuery.error && <p>{t(executionsQuery.hasNextPage ? "scorings.noLoadedExecutions" : "scorings.noExecutions")}</p> : planExecutions.map((item) => <button type="button" key={item.id} aria-pressed={execution?.id === item.id} className={execution?.id === item.id ? styles.executionActive : ""} onClick={() => setExecutionId(item.id)}><ExecutionStatusIcon status={item.status} /><span><strong>{formatDate(item.createdAt, locale)}</strong><small>{t(`scorings.status.${item.status}`)} · {item.counters.processed}/{item.counters.total}</small></span></button>)}
+          <HistoryControls kind="executions" query={executionsQuery} />
         </section>
       </aside>
 
@@ -170,19 +180,42 @@ export function ScoringsView() {
         </header>
 
         {execution && <ExecutionProgress execution={execution} />}
-        {(executionQuery.error || resultsQuery.error || cancelExecution.isError || retryExecution.isError) && <p className={styles.error} role="alert">{t("scorings.executionError")}</p>}
+        {(executionQuery.error || resultsQuery.error) && <div className={styles.error} role="alert"><p>{t("scorings.executionError")}</p><Button size="sm" disabled={executionQuery.isFetching || resultsQuery.isFetching} onClick={() => void Promise.all([selectedExecutionId && executionQuery.refetch(), execution && resultsQuery.refetch()])}>{t("common.retry")}</Button></div>}
+        {(cancelExecution.isError || retryExecution.isError) && <p className={styles.error} role="alert">{t("scorings.executionError")}</p>}
         <nav className={styles.decisionFilters} aria-label={t("scorings.decisionFilters")}>{(["all", "relevant", "not-relevant", "review"] as const).map((item) => <button type="button" key={item} className={decision === item ? styles.filterActive : ""} aria-pressed={decision === item} onClick={() => setDecision(item)}><span>{item === "all" ? t("scorings.all") : t(`decision.${item}`)}</span><b>{item === "all" ? results.length : counts[item]}</b></button>)}</nav>
 
-        <div className={styles.resultList}>
-          {filteredResults.length === 0 ? <EmptyState>{execution && !isExecutionTerminal(execution.status) ? t("scorings.awaitingResults") : t("scorings.empty")}</EmptyState> : filteredResults.map((result) => <ResultListItem key={result.listingId} result={result} title={listingNames.get(result.listingId)} active={selectedResult?.listingId === result.listingId} onClick={() => setListingId(result.listingId)} />)}
+        <div className={styles.resultList} aria-busy={resultsLoading}>
+          {filteredResults.length === 0 ? <EmptyState role="status">{emptyResultCopy}</EmptyState> : filteredResults.map((result) => <ResultListItem key={result.listingId} result={result} title={listingNames.get(result.listingId)} active={selectedResult?.listingId === result.listingId} onClick={() => setListingId(result.listingId)} />)}
         </div>
       </div>
 
       <article className={styles.resultDetail}>
-        {selectedResult ? <ExecutionResultDetail result={selectedResult} recipes={recipes} title={listingNames.get(selectedResult.listingId)} /> : <EmptyState>{t("scorings.empty")}</EmptyState>}
+        {selectedResult ? <ExecutionResultDetail result={selectedResult} recipes={recipes} title={listingNames.get(selectedResult.listingId)} /> : <EmptyState>{emptyResultCopy}</EmptyState>}
       </article>
     </section>
   );
+}
+
+interface HistoryQuery {
+  data?: { items: unknown[]; total: number };
+  error: unknown;
+  hasNextPage: boolean;
+  isFetching: boolean;
+  isFetchingNextPage: boolean;
+  fetchNextPage: () => Promise<unknown>;
+  refetch: () => Promise<unknown>;
+}
+
+function HistoryControls({ kind, query }: { kind: "runs" | "executions"; query: HistoryQuery }) {
+  const { t } = useAppIntl();
+  return <div className={styles.historyControls}>
+    {query.data && <span role="status">{t(kind === "runs" ? "scorings.runsLoaded" : "scorings.executionsLoaded", { count: query.data.items.length, total: query.data.total })}</span>}
+    {Boolean(query.error) && <p role="alert">{t("scorings.historyError")}</p>}
+    <div>
+      {query.hasNextPage && <Button size="sm" disabled={query.isFetching || Boolean(query.error)} onClick={() => void query.fetchNextPage()}>{t(query.isFetchingNextPage ? "scorings.historyLoading" : kind === "runs" ? "scorings.loadOlderRuns" : "scorings.loadOlderExecutions")}</Button>}
+      <Button size="sm" disabled={query.isFetching} onClick={() => void query.refetch()}><RefreshCw size={13} aria-hidden="true" />{t(kind === "runs" ? "scorings.refreshRuns" : "scorings.refreshExecutions")}</Button>
+    </div>
+  </div>;
 }
 
 function ExecutionProgress({ execution }: { execution: EvaluationExecution }) {

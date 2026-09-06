@@ -1,6 +1,6 @@
 .view {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr);
   height: 100%;
   min-height: 0;
 }
@@ -21,6 +21,32 @@
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+
+.sourceCount {
+  font-family: var(--font-mono);
+  font-size: var(--fs-body-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.pageBar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: var(--fs-body-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.pageActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
 }
 
 .toolbarTitle {
@@ -281,6 +307,13 @@
   margin: 0;
   color: var(--color-text-muted);
   font-size: 12px;
+}
+
+.cardTitle .cardPriceUnavailable {
+  color: var(--color-text-muted);
+  font-family: var(--font-sans);
+  font-size: var(--fs-body-sm);
+  font-weight: 400;
 }
 
 .detail {
@@ -558,6 +591,7 @@
     width: 100%;
     justify-content: flex-start;
     margin-left: 0;
+    flex-wrap: wrap;
   }
 
   .toolbarTitle {

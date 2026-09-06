@@ -77,7 +77,7 @@
 }
 
 .planSummary > span,
-.executionShelf button > span,
+.executionShelf > button > span,
 .resultList button > span,
 .stepCard > header > span {
   display: flex;
@@ -110,7 +110,7 @@
   gap: var(--space-2);
 }
 
-.executionShelf button,
+.executionShelf > button,
 .resultList button {
   display: flex;
   align-items: center;
@@ -125,7 +125,7 @@
   text-align: left;
 }
 
-.executionShelf button:hover,
+.executionShelf > button:hover,
 .executionShelf .executionActive,
 .resultList button:hover,
 .resultList .resultActive {
@@ -243,6 +243,34 @@
   flex-direction: column;
   gap: var(--space-1);
   padding: var(--space-3);
+}
+
+.historyControls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  font-size: var(--fs-body-sm);
+}
+
+.historyControls > span {
+  color: var(--color-text-muted);
+}
+
+.historyControls > p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.historyControls > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.historyControls button {
+  flex: 1 1 auto;
+  min-height: var(--h-control);
+  white-space: normal;
 }
 
 .detailScroll {

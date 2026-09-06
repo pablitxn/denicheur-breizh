@@ -2,14 +2,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { EvaluationPlanDraft, IntelligenceRecipe } from "../../types";
 import {
   groupVersions,
+  isPlanWorkingDraft,
+  isRecipeWorkingDraft,
   moveItem,
-  persistWorkingDraft,
-  planDraftStorageKey,
-  readWorkingDrafts,
-  removeWorkingDraft,
   validateRecipeDraft,
   validatePlanDraft,
-  workingDraftKey,
 } from "./builderModel";
 
 const recipes: IntelligenceRecipe[] = [
@@ -21,6 +18,14 @@ const recipes: IntelligenceRecipe[] = [
 afterEach(() => window.localStorage.clear());
 
 describe("builder model", () => {
+  it("accepts structurally valid unfinished drafts while rejecting incompatible saved entries", () => {
+    expect(isRecipeWorkingDraft({ mode: "new", value: { ...recipe("", 1, ""), criteria: [] } })).toBe(true);
+    expect(isPlanWorkingDraft({ mode: "new", value: { id: "", name: "", operator: "all", recipes: [] } })).toBe(true);
+    expect(isRecipeWorkingDraft({ mode: "version", value: { id: "recipe", name: "Older draft" } })).toBe(false);
+    expect(isRecipeWorkingDraft({ mode: "new", value: { ...recipe("recipe", 1, "Draft"), criteria: [null] } })).toBe(false);
+    expect(isPlanWorkingDraft({ mode: "new", value: { id: "plan", name: "Draft", operator: "all", recipes: [42] } })).toBe(false);
+  });
+
   it("groups immutable versions by family and exposes the latest first", () => {
     const groups = groupVersions(recipes);
 
@@ -52,19 +57,6 @@ describe("builder model", () => {
     };
 
     expect(validateRecipeDraft(draft)).toBe("criterionWeights");
-  });
-
-  it("persists independent drafts and removes only the published entry", () => {
-    const first = { mode: "new", value: { id: "plan-a" } };
-    const second = { mode: "version", value: { id: "plan-b" } };
-    const firstKey = workingDraftKey("new", "plan-a");
-    const secondKey = workingDraftKey("version", "plan-b", 2);
-    persistWorkingDraft(planDraftStorageKey, firstKey, first);
-    persistWorkingDraft(planDraftStorageKey, secondKey, second);
-    expect(readWorkingDrafts(planDraftStorageKey)).toEqual({ [firstKey]: first, [secondKey]: second });
-
-    removeWorkingDraft(planDraftStorageKey, firstKey);
-    expect(readWorkingDrafts(planDraftStorageKey)).toEqual({ [secondKey]: second });
   });
 
   it("reorders plan recipes without mutating the original array", () => {

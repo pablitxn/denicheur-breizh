@@ -6,6 +6,8 @@ export const queryKeys = {
   },
   listings: {
     all: ["listings"] as const,
+    metadata: () => [...queryKeys.listings.all, "metadata"] as const,
+    map: () => [...queryKeys.listings.all, "map"] as const,
     lists: () => [...queryKeys.listings.all, "list"] as const,
     list: (filters?: ListingFilters) => [...queryKeys.listings.lists(), filters ?? {}] as const,
     details: () => [...queryKeys.listings.all, "detail"] as const,

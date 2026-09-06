@@ -22,6 +22,7 @@ import {
   type RunnerClock,
   type RunnerTabGateway,
 } from "./scrapeRunner";
+import type { RunnerSnapshot } from "./runnerSnapshot";
 
 const storageMocks = vi.hoisted(() => ({
   loadCrawlerState: vi.fn(),
@@ -517,7 +518,7 @@ function nativePhase(message: ContentRequest): NativeSearchPhase | undefined {
 
 interface CapturedSnapshot {
   run: ScrapeRun;
-  records: ScrapedPropertyRecord[];
+  records: readonly ScrapedPropertyRecord[];
 }
 
 function snapshotCollector() {
@@ -578,6 +579,68 @@ async function flushMicrotasks(iterations = 4): Promise<void> {
 }
 
 describe("scrape runner native browser orchestration", () => {
+  it("does not create a search tab when cancelled while resolving the dashboard tab", async () => {
+    const gateway = new FakeTabGateway(happyResponseFactory([listing("3007106001")]));
+    const collector = snapshotCollector();
+    const runner = createRunner(collector, gateway, new DeterministicClock(gateway.events));
+    const originalGetCurrent = gateway.getCurrent.bind(gateway);
+    vi.spyOn(gateway, "getCurrent").mockImplementation(async () => {
+      runner.cancel();
+      return originalGetCurrent();
+    });
+
+    await runner.run(searchFilters());
+
+    expect(collector.latest().run.status).toBe("cancelled");
+    expect(gateway.created).toEqual([]);
+    expect(gateway.updates).toEqual([]);
+    expect(gateway.removed).toEqual([]);
+  });
+
+  it("shares unchanged observer collections and isolates persisted state from observer mutations", async () => {
+    const result = listing("3007106001");
+    const gateway = new FakeTabGateway(happyResponseFactory([result]));
+    const observed: RunnerSnapshot[] = [];
+    const runner = new ScrapeRunner((snapshot) => {
+      observed.push(snapshot);
+      expect(() => snapshot.run.filterWarnings.push({ field: "observer", message: "Injected" })).toThrow(TypeError);
+      if (snapshot.records[0]) {
+        expect(() => snapshot.records[0].features.push("Injected")).toThrow(TypeError);
+      }
+    }, undefined, { tabs: gateway, clock: new DeterministicClock(gateway.events), random: () => 0.5 });
+
+    await runner.run(searchFilters({ collectDetailPages: false }));
+
+    expect(observed.at(-1)?.run.status).toBe("completed");
+    const recordWrites = storageMocks.saveCrawlerState.mock.calls.filter(([state]) => state.records);
+    expect(new Set(observed.map((snapshot) => snapshot.records)).size).toBe(recordWrites.length);
+    expect(observed.length).toBeGreaterThan(recordWrites.length);
+    expect(observed[0].run.status).toBe("opening-search");
+    for (const [state] of storageMocks.saveCrawlerState.mock.calls) {
+      expect(state.run.filterWarnings).not.toContainEqual({ field: "observer", message: "Injected" });
+      expect(state.records?.flatMap((record: ScrapedPropertyRecord) => record.features) ?? []).not.toContain("Injected");
+    }
+  });
+
+  it("retries the unsaved record delta after a rejected storage write", async () => {
+    const runner = new ScrapeRunner(() => undefined) as unknown as {
+      persist(run: ScrapeRun, records: ScrapedPropertyRecord[], filters: SearchFilters): Promise<void>;
+    };
+    const activeRun = run();
+    const filters = searchFilters();
+    const baseline: ScrapedPropertyRecord[] = [];
+    const captured = [record("3007106001", "listing")];
+    await runner.persist(activeRun, baseline, filters);
+    storageMocks.saveCrawlerState.mockRejectedValueOnce(new Error("Synthetic storage failure"));
+
+    await expect(runner.persist(activeRun, captured, filters)).rejects.toThrow("Synthetic storage failure");
+    await runner.persist(activeRun, captured, filters);
+
+    const retry = storageMocks.saveCrawlerState.mock.calls.at(-1)!;
+    expect(retry[0].records).toBe(captured);
+    expect(retry[1].previousRecords).toBe(baseline);
+  });
+
   it("revalidates a single results filter pass as complete before collecting", async () => {
     const result = listing("3007106001");
     const gateway = new FakeTabGateway(

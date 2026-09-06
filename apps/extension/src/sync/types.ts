@@ -58,6 +58,8 @@ export interface EvaluationQueueEntry {
 
 export interface ExtensionSyncState {
   version: 2;
+  /** Incremented by a coordinated clear; absent in older version-2 snapshots. */
+  generation?: number;
   status: "idle" | "pending" | "syncing" | "error";
   queue: SyncQueueEntry[];
   syncedFingerprints: Record<string, string>;

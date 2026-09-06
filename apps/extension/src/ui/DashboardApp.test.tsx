@@ -8,6 +8,7 @@ import {
   parseRecordsPageSize,
   parseResultsViewState,
   recipeFromDrafts,
+  recoverDashboardRunAfterOwnerRelease,
   reconcileDashboardRun,
   recordMatchesQuery,
   resolveResultsPage,
@@ -26,6 +27,69 @@ function pausedRun(): ScrapeRun {
 }
 
 describe("dashboard runner ownership recovery", () => {
+  it.each([
+    "opening-search", "configuring-search", "collecting-search", "collecting-details", "evaluating", "paused-captcha",
+  ] as const)("recovers an orphaned %s run while retaining the exclusive lease through persistence", async (status) => {
+    let held = false;
+    const persisted = { ...pausedRun(), status };
+    const loadRun = vi.fn(async () => persisted);
+    const saveRun = vi.fn(async () => { expect(held).toBe(true); });
+    const lockManager = {
+      async request<T>(_name: string, options: LockOptions, callback: LockGrantedCallback<T>): Promise<T> {
+        expect(options.mode).toBe("exclusive");
+        held = true;
+        try { return await callback({ name: "runner", mode: "exclusive" } as Lock); }
+        finally { held = false; }
+      },
+    };
+
+    const result = await recoverDashboardRunAfterOwnerRelease(
+      persisted.id, new AbortController().signal, lockManager, { loadRun, saveRun },
+    );
+
+    expect(result?.status).toBe("cancelled");
+    expect(saveRun).toHaveBeenCalledOnce();
+    expect(held).toBe(false);
+  });
+
+  it("does not cancel a replacement run or rewrite terminal state after the owner releases its lease", async () => {
+    const saveRun = vi.fn();
+    const lockManager = {
+      async request<T>(_name: string, _options: LockOptions, callback: LockGrantedCallback<T>): Promise<T> {
+        return callback({ name: "runner", mode: "exclusive" } as Lock);
+      },
+    };
+    const loadRun = vi.fn()
+      .mockResolvedValueOnce({ ...pausedRun(), id: "new-run" })
+      .mockResolvedValueOnce({ ...pausedRun(), status: "completed" });
+
+    for (let index = 0; index < 2; index += 1) {
+      await expect(recoverDashboardRunAfterOwnerRelease(
+        "paused-run", new AbortController().signal, lockManager, { loadRun, saveRun },
+      )).resolves.toBeUndefined();
+    }
+    expect(saveRun).not.toHaveBeenCalled();
+  });
+
+  it("does not persist recovery when the observer is closed during the storage read", async () => {
+    const abortController = new AbortController();
+    const saveRun = vi.fn();
+    const lockManager = {
+      async request<T>(_name: string, _options: LockOptions, callback: LockGrantedCallback<T>): Promise<T> {
+        return callback({ name: "runner", mode: "exclusive" } as Lock);
+      },
+    };
+    const loadRun = vi.fn(async () => {
+      abortController.abort();
+      return pausedRun();
+    });
+
+    await expect(recoverDashboardRunAfterOwnerRelease(
+      "paused-run", abortController.signal, lockManager, { loadRun, saveRun },
+    )).resolves.toBeUndefined();
+    expect(saveRun).not.toHaveBeenCalled();
+  });
+
   it("cancels a restored pause in every dashboard when no runner owner exists", () => {
     const persisted = pausedRun();
 

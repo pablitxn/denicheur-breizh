@@ -28,23 +28,49 @@ const API_BASE_URL = "http://127.0.0.1:14310";
 const WEB_BASE_URL = "http://127.0.0.1:14173";
 test.describe("Denicheur MV3 native-search runtime", () => {
   test.afterEach(async ({ context, page }, testInfo) => {
-    if (testInfo.status !== testInfo.expectedStatus) return;
+    const failed = testInfo.status !== testInfo.expectedStatus;
     // Opening the dashboard closes the action popup that may own `page`.
     const storagePage = [page, ...context.pages()].find((candidate) =>
       !candidate.isClosed() && candidate.url().startsWith(`chrome-extension://${EXPECTED_EXTENSION_ID}/`),
     );
-    if (!storagePage) throw new Error("No open extension page is available to verify the final crawler snapshot.");
-    const run = await readStoredRun(storagePage);
+    if (!storagePage) {
+      if (failed) return;
+      throw new Error("No open extension page is available to verify the final crawler snapshot.");
+    }
+    let run = await readStoredRun(storagePage);
     const runId = run.id;
     if (typeof runId !== "string" || runId === "idle") return;
 
-    // A local terminal label precedes the background's final ingestion PUT.
+    if (failed && !["completed", "cancelled", "failed", "blocked-activity"].includes(String(run.status))) {
+      await test.step("Cancel this failed fixture's owning crawler before closing its context", async () => {
+        for (const candidate of context.pages()) {
+          if (candidate.isClosed() || !candidate.url().startsWith(extensionUrl(EXPECTED_EXTENSION_ID, "dashboard.html"))) continue;
+          const tab = await candidate.evaluate(async () => chrome.tabs.getCurrent());
+          if (typeof run.dashboardTabId === "number" && tab?.id !== run.dashboardTabId) continue;
+          const cancel = candidate.getByRole("button", { name: /^(Cancel|Annuler|Cancelar)$/ });
+          if (await cancel.count() !== 1 || !await cancel.isEnabled()) continue;
+          await testInfo.attach("failed-run-before-cleanup", { body: await candidate.screenshot(), contentType: "image/png" });
+          await cancel.click();
+          break;
+        }
+      });
+    }
+
+    // The runner observer publishes terminal UI before awaiting storage's
+    // acknowledgement; storage then triggers the background's final PUT.
     // Keep its browser context alive until the real API observes that snapshot;
     // otherwise another test inherits an active run that can no longer sync.
     // Do not force synchronization here: a broken automatic sync must fail the
     // owning runtime test instead of being repaired or hidden by its cleanup.
     await test.step("Wait for the terminal crawler snapshot in the API", async () => {
-      expect(["completed", "cancelled", "failed", "blocked-activity"]).toContain(run.status);
+      await expect.poll(async () => {
+        run = await readStoredRun(storagePage);
+        return { id: run.id, status: run.status };
+      }, {
+        message: `Run ${runId} must acknowledge its terminal snapshot in local storage`,
+        timeout: 10_000,
+        intervals: [50, 100, 250],
+      }).toMatchObject({ id: runId, status: expect.stringMatching(/^(completed|cancelled|failed|blocked-activity)$/) });
       await expect.poll(async () => {
         const response = await context.request.get(
           `${API_BASE_URL}/v1/runs/${encodeURIComponent(runId)}`,
@@ -245,7 +271,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
         executionId: expect.any(String),
       },
     });
-    await expect(popup.getByText("Synced with the local API", { exact: true })).toBeVisible();
+    await expect(popup.getByText("Collected data synced", { exact: true })).toBeVisible();
     await expect.poll(async () => {
       const storage = await readExtensionStorage(popup);
       const records = storage["denicheur:crawler:records"] as Array<{
@@ -798,7 +824,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
 
     const start = page.getByRole("button", { name: "Start collection", exact: true });
     await start.click();
-    await expect(page.getByRole("button", { name: "Starting…", exact: true })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Collection in progress", exact: true })).toBeDisabled();
 
     await expect(page.getByText("completed", { exact: true })).toBeVisible({ timeout: 55_000 });
     await expect(page.getByText(
@@ -931,7 +957,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
 
     const start = page.getByRole("button", { name: "Start collection", exact: true });
     await start.click();
-    await expect(page.getByRole("button", { name: "Starting…", exact: true })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Collection in progress", exact: true })).toBeDisabled();
 
     await expect(page.getByText("completed", { exact: true })).toBeVisible({ timeout: 55_000 });
     await expect(page.getByText("Collected 1 detailed listing.", { exact: true })).toBeVisible();
@@ -1120,7 +1146,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     const pageCountBeforeRun = context.pages().length;
     const start = page.getByRole("button", { name: "Start collection", exact: true });
     await start.click();
-    await expect(page.getByRole("button", { name: "Starting…", exact: true })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Collection in progress", exact: true })).toBeDisabled();
 
     await expect(page.getByText("completed", { exact: true })).toBeVisible({ timeout: 85_000 });
     await expect(page.getByText(
@@ -1209,7 +1235,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
 
     const start = page.getByRole("button", { name: "Start collection", exact: true });
     await start.click();
-    await expect(page.getByRole("button", { name: "Starting…", exact: true })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Collection in progress", exact: true })).toBeDisabled();
 
     await expect(page.getByText("completed", { exact: true })).toBeVisible({ timeout: 55_000 });
     await expect(page.getByText("Collected 0 detailed listings.", { exact: true })).toBeVisible();
@@ -1347,7 +1373,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     const searchRequestsBeforeRun = tracker.searchRequests;
     const start = page.getByRole("button", { name: "Start collection", exact: true });
     await start.click();
-    await expect(page.getByRole("button", { name: "Starting…", exact: true })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Collection in progress", exact: true })).toBeDisabled();
     await expect(page.getByText("configuring search", { exact: true })).toBeVisible({ timeout: 10_000 });
     await page.getByRole("button", { name: "Cancel" }).click();
 
@@ -1369,7 +1395,7 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     await configureNativeSearch(page);
 
     await page.getByRole("button", { name: "Start collection" }).click();
-    await expect(page.getByText("CAPTCHA pending", { exact: true })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByRole("banner").getByText("CAPTCHA pending", { exact: true })).toBeVisible({ timeout: 15_000 });
     await expect(page.getByRole("button", { name: "Resume" })).toBeVisible();
     expect(tracker.searchRequests).toBe(0);
 
@@ -1393,10 +1419,11 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     await configureNativeSearch(page);
 
     await page.getByRole("button", { name: "Start collection" }).click();
-    await expect(page.getByText("CAPTCHA pending", { exact: true })).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("banner").getByText("CAPTCHA pending", { exact: true })).toBeVisible({ timeout: 20_000 });
     const searchUrl = context.pages().find((candidate) => candidate.url().includes("/recherche?"))?.url();
     await page.getByRole("button", { name: "Resume" }).click();
-    await expect(page.getByText("CAPTCHA pending", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Resume", exact: true })).toBeEnabled();
+    await expect(page.getByRole("banner").getByText("CAPTCHA pending", { exact: true })).toBeVisible();
     expect(context.pages().find((candidate) => candidate.url().includes("/recherche?"))?.url()).toBe(searchUrl);
     expect(tracker.searchRequests).toBe(1);
     await page.getByRole("button", { name: "Cancel" }).click();

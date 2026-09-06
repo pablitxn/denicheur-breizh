@@ -307,7 +307,19 @@ function mediaPolicy(maxAssetsPerRun: number): MediaAdmissionPolicy {
 function rewindToMigrationThree(path: string): void {
   const legacy = new DatabaseSync(path);
   try {
+    // Revision triggers and scalar counter columns were introduced after v3 too.
+    const triggers = legacy.prepare("SELECT name FROM sqlite_schema WHERE type = 'trigger'").all();
+    for (const trigger of triggers) legacy.exec(`DROP TRIGGER "${String(trigger.name).replaceAll('"', '""')}"`);
     legacy.exec(`
+      DROP TABLE pagination_snapshot_items;
+      DROP TABLE pagination_snapshots;
+      DROP TABLE listing_projection_payloads;
+      DROP TABLE projection_cache_usage;
+      DROP TABLE listing_read_revisions;
+      DROP TABLE collection_revisions;
+      DROP INDEX execution_items_counter_idx;
+      ALTER TABLE evaluation_execution_items DROP COLUMN result_decision;
+      ALTER TABLE evaluation_execution_items DROP COLUMN result_failed;
       DROP TABLE collected_data_cleanup_lease;
       DROP TABLE global_provider_call_reservations;
       DROP TABLE evaluation_provider_call_reservations;

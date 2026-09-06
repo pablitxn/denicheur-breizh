@@ -45,9 +45,10 @@ import type {
   SiteChallenge,
 } from "../lib/types";
 import { loadCrawlerState, saveCrawlerState } from "../storage/chromeStorage";
+import { RunnerSnapshotCache, type RunnerSnapshot } from "./runnerSnapshot";
 import { requestImmediateSync } from "../sync/runtime";
 
-type RunnerObserver = (snapshot: { run: ScrapeRun; records: ScrapedPropertyRecord[] }) => void;
+type RunnerObserver = (snapshot: RunnerSnapshot) => void;
 export type ListingEvaluator = (
   runId: string,
   recipe: IntelligenceRecipe,
@@ -158,6 +159,8 @@ export class ScrapeRunner {
   private abortController = new AbortController();
   private lastPersistedFilters: SearchFilters | undefined;
   private lastPersistedRecords: ScrapedPropertyRecord[] | undefined;
+  private snapshots = new RunnerSnapshotCache();
+  private storageGeneration = 0;
   private terminalReviewTabId: number | undefined;
   private dashboardTabId: number | undefined;
   private currentOwnedTabId: number | undefined;
@@ -200,6 +203,7 @@ export class ScrapeRunner {
     this.abortController = new AbortController();
     this.lastPersistedFilters = undefined;
     this.lastPersistedRecords = undefined;
+    this.snapshots = new RunnerSnapshotCache();
     this.terminalReviewTabId = undefined;
     this.dashboardTabId = undefined;
     this.currentOwnedTabId = undefined;
@@ -220,7 +224,9 @@ export class ScrapeRunner {
     const timing = getRunTiming(safeFilters);
     const target = safeFilters.maxListings;
     const startedAt = new Date().toISOString();
-    let records = (await loadCrawlerState()).records;
+    const initialState = await loadCrawlerState();
+    this.storageGeneration = initialState.generation ?? 0;
+    let records = initialState.records;
     const run: ScrapeRun = {
       id: `run-${Date.now()}`,
       status: "opening-search",
@@ -243,11 +249,14 @@ export class ScrapeRunner {
     let searchTabId: number | undefined;
 
     try {
+      this.ensureActive();
       const dashboardTab = await this.tabs.getCurrent();
+      this.ensureActive();
       if (dashboardTab?.id === undefined || dashboardTab.windowId === undefined) {
         throw new Error("Chrome did not expose the dashboard tab to the crawler.");
       }
       this.dashboardTabId = dashboardTab.id;
+      run.dashboardTabId = dashboardTab.id;
 
       const homeTab = await this.tabs.create({
         url: "about:blank",
@@ -260,6 +269,7 @@ export class ScrapeRunner {
       this.ownedTabIds.add(searchTabId);
       this.currentOwnedTabId = searchTabId;
 
+      this.ensureActive();
       await this.tabs.update(searchTabId, { url: HOME_URL, active: true });
       await this.waitForPageLoadObservation(searchTabId);
       await this.observeLoadedPage();
@@ -361,6 +371,7 @@ export class ScrapeRunner {
 
         try {
           const searchTab = await this.tabs.get(searchTabId);
+          this.ensureActive();
           const detailTab = await this.tabs.create({
             url: "about:blank",
             active: true,
@@ -374,6 +385,7 @@ export class ScrapeRunner {
           }
           this.ownedTabIds.add(detailTabId);
           this.currentOwnedTabId = detailTabId;
+          this.ensureActive();
           await this.tabs.update(detailTabId, { url: listing.url, active: true });
           await this.waitForPageLoadObservation(detailTabId);
           await this.observeLoadedPage();
@@ -1235,21 +1247,24 @@ export class ScrapeRunner {
     records: ScrapedPropertyRecord[],
     filters: SearchFilters,
   ): Promise<void> {
-    const snapshot = { run: { ...run }, records: [...records] };
+    const snapshot = this.snapshots.create(run, records);
     this.observer(snapshot);
     const state: Parameters<typeof saveCrawlerState>[0] = { run: snapshot.run };
     const shouldPersistRecords = this.lastPersistedRecords !== records;
     const shouldPersistFilters = this.lastPersistedFilters !== filters;
 
     if (shouldPersistRecords) {
-      state.records = snapshot.records;
+      state.records = records;
     }
 
     if (shouldPersistFilters) {
       state.filters = filters;
     }
 
-    await saveCrawlerState(state);
+    await saveCrawlerState(state, {
+      expectedGeneration: this.storageGeneration,
+      ...(shouldPersistRecords ? { previousRecords: this.lastPersistedRecords ?? records } : {}),
+    });
     if (shouldPersistRecords) this.lastPersistedRecords = records;
     if (shouldPersistFilters) this.lastPersistedFilters = filters;
   }

@@ -298,6 +298,8 @@ export interface ScrapeRun {
   startedAt?: string;
   finishedAt?: string;
   searchUrl?: string;
+  /** Extension dashboard that owns this run; used only to focus existing controls. */
+  dashboardTabId?: number;
   target: number;
   found: number;
   pagesVisited: number;
@@ -315,6 +317,8 @@ export interface ScrapeRun {
 }
 
 export interface StoredCrawlerState {
+  /** Incremented by local clear so an earlier capture cannot recreate cleared data. */
+  generation?: number;
   filters: SearchFilters;
   recipe: IntelligenceRecipe;
   run: ScrapeRun;

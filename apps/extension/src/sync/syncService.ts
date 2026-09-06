@@ -23,7 +23,7 @@ import {
   clearEvaluationPlan,
   loadCrawlerState,
   loadEvaluationPlan,
-  saveCrawlerState,
+  updateCrawlerData,
   saveEvaluationPlan,
   saveRecipe,
 } from "../storage/chromeStorage";
@@ -39,7 +39,7 @@ import {
 } from "./api";
 import {
   loadExtensionSyncState,
-  saveExtensionSyncState,
+  updateExtensionSyncState,
 } from "./storage";
 import {
   INGESTION_BATCH_SIZE,
@@ -68,90 +68,72 @@ interface FlushOptions extends SyncOptions {
 export async function reconcileStoredCrawlerState(
   options: Pick<SyncOptions, "now"> = {},
 ): Promise<ExtensionSyncState> {
-  const [crawler, state] = await Promise.all([
-    loadCrawlerState(),
-    loadExtensionSyncState(),
-  ]);
-  const next = reconcileCrawlerSnapshot(state, crawler, options.now?.() ?? new Date());
-  await saveExtensionSyncState(next);
-  return next;
+  const before = await loadExtensionSyncState();
+  const crawler = await loadCrawlerState();
+  return updateExtensionSyncState(
+    (current) => reconcileCrawlerSnapshot(current, crawler, options.now?.() ?? new Date()),
+    before.generation ?? 0,
+  );
 }
 
 export async function flushQueuedIngestion(options: FlushOptions = {}): Promise<ExtensionSyncState> {
   const now = options.now ?? (() => new Date());
-  let state = await loadExtensionSyncState();
-
-  if (state.queue.length === 0) {
-    const idle = { ...state, status: "idle" as const, lastError: undefined };
-    await saveExtensionSyncState(idle);
-    return idle;
-  }
-
-  state = {
-    ...state,
-    status: "syncing",
-    lastAttemptAt: now().toISOString(),
-    queue: options.force
-      ? state.queue.map((entry) => ({ ...entry, nextAttemptAt: 0 }))
-      : state.queue,
-  };
-  await saveExtensionSyncState(state);
+  const state = await updateExtensionSyncState((current) => current.queue.length === 0
+    ? { ...current, status: "idle", lastError: undefined }
+    : {
+        ...current,
+        status: "syncing",
+        lastAttemptAt: now().toISOString(),
+        queue: options.force ? current.queue.map((entry) => ({ ...entry, nextAttemptAt: 0 })) : current.queue,
+      });
+  if (state.queue.length === 0) return state;
+  const generation = state.generation ?? 0;
 
   for (;;) {
     const current = await loadExtensionSyncState();
+    if (current.generation !== generation) return current;
     const entry = current.queue.find((candidate) => candidate.nextAttemptAt <= now().getTime());
     if (!entry) {
-      const pending = {
-        ...current,
-        status: current.lastError ? "error" as const : "pending" as const,
-      };
-      await saveExtensionSyncState(pending);
-      return pending;
+      return updateExtensionSyncState((latest) => ({
+        ...latest,
+        status: latest.lastError ? "error" : latest.queue.length > 0 ? "pending" : "idle",
+      }), generation);
     }
 
     try {
       await ingestRunBatch(entry.runId, entry.payload, options);
-      const latest = await loadExtensionSyncState();
-      const stillCurrent = latest.queue.find((candidate) => candidate.key === entry.key);
-      const queue = stillCurrent?.fingerprint === entry.fingerprint
-        ? latest.queue.filter((candidate) => candidate.key !== entry.key)
-        : latest.queue;
-      const syncedFingerprints = trimFingerprints({
-        ...latest.syncedFingerprints,
-        [entry.key]: entry.fingerprint,
-      });
-      const succeeded: ExtensionSyncState = {
-        ...latest,
-        status: queue.length === 0 ? "idle" : "syncing",
-        queue,
-        syncedFingerprints,
-        lastSuccessAt: now().toISOString(),
-        lastError: undefined,
-      };
-      await saveExtensionSyncState(succeeded);
-      if (queue.length === 0) return succeeded;
-    } catch (error) {
-      const latest = await loadExtensionSyncState();
-      const failure = errorMessage(error);
-      const queue = latest.queue.map((candidate) => {
-        if (candidate.key !== entry.key || candidate.fingerprint !== entry.fingerprint) return candidate;
-        const attempts = candidate.attempts + 1;
+      const succeeded = await updateExtensionSyncState((latest) => {
+        const stillCurrent = latest.queue.find((candidate) => candidate.key === entry.key);
+        if (!stillCurrent || stillCurrent.fingerprint !== entry.fingerprint || stillCurrent.attempts !== entry.attempts) return latest;
+        const queue = latest.queue.filter((candidate) => candidate.key !== entry.key);
         return {
-          ...candidate,
-          attempts,
-          nextAttemptAt: now().getTime() + retryDelayMs(attempts),
-          updatedAt: now().toISOString(),
+          ...latest,
+          status: queue.length === 0 ? "idle" : "syncing",
+          queue,
+          syncedFingerprints: trimFingerprints({ ...latest.syncedFingerprints, [entry.key]: entry.fingerprint }),
+          lastSuccessAt: now().toISOString(),
+          lastError: undefined,
+        };
+      }, generation);
+      if (succeeded.queue.length === 0 || succeeded.generation !== generation) return succeeded;
+    } catch (error) {
+      const failure = errorMessage(error);
+      return updateExtensionSyncState((latest) => {
+        const stillCurrent = latest.queue.find((candidate) => candidate.key === entry.key);
+        if (!stillCurrent || stillCurrent.fingerprint !== entry.fingerprint || stillCurrent.attempts !== entry.attempts) return latest;
+        return {
+          ...latest,
+          status: "error",
+          queue: latest.queue.map((candidate) => candidate.key !== entry.key ? candidate : {
+            ...candidate,
+            attempts: candidate.attempts + 1,
+            nextAttemptAt: now().getTime() + retryDelayMs(candidate.attempts + 1),
+            updatedAt: now().toISOString(),
+            lastError: failure,
+          }),
           lastError: failure,
         };
-      });
-      const failed: ExtensionSyncState = {
-        ...latest,
-        status: "error",
-        queue,
-        lastError: failure,
-      };
-      await saveExtensionSyncState(failed);
-      return failed;
+      }, generation);
     }
   }
 }
@@ -162,8 +144,7 @@ export async function refreshActiveRecipeCache(options: SyncOptions = {}): Promi
   try {
     const recipe = await fetchActiveRecipe(options);
     await saveRecipe(recipe);
-    const state = await loadExtensionSyncState();
-    const next: ExtensionSyncState = {
+    return updateExtensionSyncState((state) => ({
       ...state,
       activeRecipe: {
         status: "cached",
@@ -171,22 +152,17 @@ export async function refreshActiveRecipeCache(options: SyncOptions = {}): Promi
         recipeId: recipe.id,
         recipeVersion: recipe.version,
       },
-    };
-    await saveExtensionSyncState(next);
-    return next;
+    }));
   } catch (error) {
     const failure = errorMessage(error);
-    const state = await loadExtensionSyncState();
-    const next: ExtensionSyncState = {
+    return updateExtensionSyncState((state) => ({
       ...state,
       activeRecipe: {
         ...state.activeRecipe,
         status: state.activeRecipe.recipeId ? "cached" : "unavailable",
         lastError: failure,
       },
-    };
-    await saveExtensionSyncState(next);
-    return next;
+    }));
   }
 }
 
@@ -195,24 +171,21 @@ export async function refreshDefaultPlanCache(options: SyncOptions = {}): Promis
 
   try {
     const plan = await fetchDefaultEvaluationPlan(options);
-    const state = await loadExtensionSyncState();
     if (!plan) {
       await clearEvaluationPlan();
-      const next: ExtensionSyncState = {
+      return updateExtensionSyncState((state) => ({
         ...state,
         activePlan: {
           status: "none",
           fetchedAt: now().toISOString(),
         },
-      };
-      await saveExtensionSyncState(next);
-      return next;
+      }));
     }
 
     await saveEvaluationPlan(plan);
     const primaryRecipe = primaryPlanRecipe(plan);
     if (primaryRecipe) await saveRecipe(primaryRecipe);
-    const next: ExtensionSyncState = {
+    return updateExtensionSyncState((state) => ({
       ...state,
       activePlan: {
         status: "cached",
@@ -230,22 +203,17 @@ export async function refreshDefaultPlanCache(options: SyncOptions = {}): Promis
             },
           }
         : {}),
-    };
-    await saveExtensionSyncState(next);
-    return next;
+    }));
   } catch (error) {
     const failure = errorMessage(error);
-    const state = await loadExtensionSyncState();
-    const next: ExtensionSyncState = {
+    return updateExtensionSyncState((state) => ({
       ...state,
       activePlan: {
         ...state.activePlan,
         status: state.activePlan.planId ? "cached" : "unavailable",
         lastError: failure,
       },
-    };
-    await saveExtensionSyncState(next);
-    return next;
+    }));
   }
 }
 
@@ -260,13 +228,12 @@ export async function enqueueDefaultPlanEvaluation(
   options: EnqueueEvaluationOptions,
 ): Promise<EvaluationQueueEntry> {
   const now = options.now ?? (() => new Date());
-  const [state, plan, crawler] = await Promise.all([
-    loadExtensionSyncState(),
+  const before = await loadExtensionSyncState();
+  const [plan, crawler] = await Promise.all([
     loadEvaluationPlan(),
     loadCrawlerState(),
   ]);
-  if (state.activePlan.status !== "cached" || !plan ||
-    plan.id !== state.activePlan.planId || plan.version !== state.activePlan.planVersion) {
+  if (!plan) {
     throw new ExtensionApiError("No default evaluation plan is available.", 404, "NO_DEFAULT_PLAN");
   }
   const detailedRecords = crawler.records.filter(
@@ -286,87 +253,91 @@ export async function enqueueDefaultPlanEvaluation(
     locale: options.locale,
     listingIds,
   });
-  if (!options.force) {
-    const existing = state.evaluationQueue.find((entry) =>
-      !entry.force && evaluationEntryScope(entry) === scope);
-    if (existing) return existing;
-  }
-
-  const generation = options.force
-    ? state.evaluationQueue.filter((entry) => evaluationEntryScope(entry) === scope).length + 1
-    : 1;
-  const idempotencyKey = `extension-${payloadFingerprint({ scope, force: Boolean(options.force), generation })}`;
-  const createdAt = now().toISOString();
-  const entry: EvaluationQueueEntry = {
-    key: idempotencyKey,
-    idempotencyKey,
-    runId: options.runId,
-    planId: plan.id,
-    planVersion: plan.version,
-    locale: options.locale,
-    ...(listingIds ? { listingIds } : {}),
-    ...(options.force ? { force: true } : {}),
-    status: "queued",
-    attempts: 0,
-    nextAttemptAt: 0,
-    createdAt,
-    updatedAt: createdAt,
-  };
-  const evaluationQueue = trimEvaluationHistory([...state.evaluationQueue, entry]);
-  await saveExtensionSyncState({
-    ...state,
-    status: "pending",
-    evaluationQueue,
-  });
-  if (crawler.run.id === options.runId) {
-    await saveCrawlerState({
-      run: {
-        ...crawler.run,
-        intelligenceStatus: "evaluating",
-        intelligenceError: undefined,
-        message: message("run.evaluating", { count: detailedRecords.length }),
-      },
-    });
-  }
+  let entry: EvaluationQueueEntry | undefined;
+  let appended = false;
+  await updateExtensionSyncState((state) => {
+    if (state.activePlan.status !== "cached" ||
+      plan.id !== state.activePlan.planId || plan.version !== state.activePlan.planVersion) {
+      throw new ExtensionApiError("No default evaluation plan is available.", 404, "NO_DEFAULT_PLAN");
+    }
+    if (!options.force) {
+      entry = state.evaluationQueue.find((candidate) => !candidate.force && evaluationEntryScope(candidate) === scope);
+      if (entry) return state;
+    }
+    const generation = options.force
+      ? state.evaluationQueue.filter((candidate) => evaluationEntryScope(candidate) === scope).length + 1
+      : 1;
+    const idempotencyKey = `extension-${payloadFingerprint({ scope, force: Boolean(options.force), generation })}`;
+    const createdAt = now().toISOString();
+    entry = {
+      key: idempotencyKey,
+      idempotencyKey,
+      runId: options.runId,
+      planId: plan.id,
+      planVersion: plan.version,
+      locale: options.locale,
+      ...(listingIds ? { listingIds } : {}),
+      ...(options.force ? { force: true } : {}),
+      status: "queued",
+      attempts: 0,
+      nextAttemptAt: 0,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    appended = true;
+    return { ...state, status: "pending", evaluationQueue: trimEvaluationHistory([...state.evaluationQueue, entry]) };
+  }, before.generation ?? 0);
+  if (!entry) throw new ExtensionApiError("The local collection was cleared before evaluation could be queued.", 409, "COLLECTION_CLEARED");
+  if (!appended) return entry;
+  await updateCrawlerData((current) => current.run.id === options.runId ? {
+    run: {
+      ...current.run,
+      intelligenceStatus: "evaluating",
+      intelligenceError: undefined,
+      message: message("run.evaluating", { count: detailedRecords.length }),
+    },
+  } : {});
   return entry;
 }
 
 export async function flushEvaluationQueue(options: FlushOptions = {}): Promise<ExtensionSyncState> {
   const now = options.now ?? (() => new Date());
   let state = await loadExtensionSyncState();
+  const generation = state.generation ?? 0;
   const activeStatuses = new Set<EvaluationQueueEntry["status"]>(["queued", "creating", "polling"]);
 
   for (const entry of state.evaluationQueue) {
+    if (state.generation !== generation) return state;
     if (!activeStatuses.has(entry.status) || entry.nextAttemptAt > now().getTime()) continue;
     if (state.queue.some((batch) => batch.runId === entry.runId)) continue;
-    state = await processEvaluationEntry(entry, { ...options, now });
+    state = await processEvaluationEntry(entry, { ...options, now, generation });
   }
 
-  const hasPendingEvaluation = state.evaluationQueue.some((entry) => activeStatuses.has(entry.status));
-  const next: ExtensionSyncState = {
-    ...state,
-    status: state.queue.length > 0 || hasPendingEvaluation
+  return updateExtensionSyncState((current) => ({
+    ...current,
+    status: current.queue.length > 0 || current.evaluationQueue.some((entry) => activeStatuses.has(entry.status))
       ? "pending"
-      : state.status === "error"
+      : current.status === "error"
         ? "error"
         : "idle",
-  };
-  await saveExtensionSyncState(next);
-  return next;
+  }), generation);
 }
 
 async function processEvaluationEntry(
   entry: EvaluationQueueEntry,
-  options: FlushOptions & { now: () => Date },
+  options: FlushOptions & { now: () => Date; generation: number },
 ): Promise<ExtensionSyncState> {
   try {
+    const before = await loadExtensionSyncState();
+    if (!currentEvaluationAttempt(before, entry, options.generation)) return before;
     let execution: EvaluationExecution;
     if (!entry.executionId) {
-      await updateEvaluationEntry(entry.key, (current) => ({
+      const creating = await updateEvaluationEntry(entry, (current) => ({
         ...current,
         status: "creating",
         updatedAt: options.now().toISOString(),
-      }));
+      }), options.generation);
+      if (!currentEvaluationAttempt(creating, entry, options.generation)) return creating;
       execution = await createEvaluationExecution(
         entry.runId,
         {
@@ -382,47 +353,53 @@ async function processEvaluationEntry(
     } else {
       execution = (await fetchEvaluationExecution(entry.executionId, options)).execution;
     }
+    const latest = await loadExtensionSyncState();
+    if (!currentEvaluationAttempt(latest, entry, options.generation)) return latest;
 
     if (execution.status === "queued" || execution.status === "running") {
-      return updateEvaluationEntry(entry.key, (current) => ({
+      return updateEvaluationEntry(entry, (current) => ({
         ...current,
         status: "polling",
         executionId: execution.id,
         nextAttemptAt: options.now().getTime() + EVALUATION_POLL_INTERVAL_MS,
         updatedAt: options.now().toISOString(),
         lastError: undefined,
-      }));
+      }), options.generation);
     }
     if (execution.status === "completed" || execution.status === "partial" || execution.status === "failed") {
       const detail = await fetchEvaluationExecutionResults(execution.id, options);
+      const current = await loadExtensionSyncState();
+      if (!currentEvaluationAttempt(current, entry, options.generation)) return current;
       if (detail.items.length > 0) {
         await applyPlanEvaluationResults(entry, detail.execution, detail.items);
       } else if (execution.status === "failed") {
         await markPlanEvaluationFailure(entry, execution.error ?? "Evaluation execution failed.");
       }
-      return updateEvaluationEntry(entry.key, (current) => ({
+      return updateEvaluationEntry(entry, (current) => ({
         ...current,
         status: execution.status === "failed" ? "failed" : "completed",
         executionId: execution.id,
         nextAttemptAt: 0,
         updatedAt: options.now().toISOString(),
         lastError: execution.status === "completed" ? undefined : execution.error,
-      }));
+      }), options.generation);
     }
 
     await markPlanEvaluationFailure(entry, execution.error ?? `Execution ${execution.status}.`);
-    return updateEvaluationEntry(entry.key, (current) => ({
+    return updateEvaluationEntry(entry, (current) => ({
       ...current,
       status: execution.status === "cancelled" ? "cancelled" : "failed",
       executionId: execution.id,
       nextAttemptAt: 0,
       updatedAt: options.now().toISOString(),
       lastError: execution.error ?? `Execution ${execution.status}.`,
-    }));
+    }), options.generation);
   } catch (error) {
     const retryable = isRetryableEvaluationError(error);
     const failure = errorMessage(error);
-    const state = await updateEvaluationEntry(entry.key, (current) => {
+    let recordedFailure = false;
+    const state = await updateEvaluationEntry(entry, (current) => {
+      recordedFailure = true;
       const attempts = current.attempts + 1;
       return {
         ...current,
@@ -434,8 +411,8 @@ async function processEvaluationEntry(
         updatedAt: options.now().toISOString(),
         lastError: failure,
       };
-    });
-    if (!retryable) await markPlanEvaluationFailure(entry, failure);
+    }, options.generation);
+    if (!retryable && recordedFailure) await markPlanEvaluationFailure(entry, failure);
     return state;
   }
 }
@@ -445,55 +422,51 @@ async function applyPlanEvaluationResults(
   execution: EvaluationExecution,
   items: Awaited<ReturnType<typeof fetchEvaluationExecutionResults>>["items"],
 ): Promise<void> {
-  const crawler = await loadCrawlerState();
   const byListingId = new Map(items.map((item) => [item.listingId, item]));
-  const records = crawler.records.map((record) => {
-    if (record.searchRunId !== entry.runId) return record;
-    const planEvaluation = byListingId.get(record.id);
-    return planEvaluation ? { ...record, planEvaluation } : record;
-  });
-  if (crawler.run.id !== entry.runId) {
-    await saveCrawlerState({ records });
-    return;
-  }
+  await updateCrawlerData((crawler) => {
+    const records = crawler.records.map((record) => {
+      if (record.searchRunId !== entry.runId) return record;
+      const planEvaluation = byListingId.get(record.id);
+      return planEvaluation ? { ...record, planEvaluation } : record;
+    });
+    if (crawler.run.id !== entry.runId) return { records };
 
-  const evaluated = records.flatMap((record) =>
-    record.searchRunId === entry.runId && record.planEvaluation?.executionId === execution.id
-      ? [record.planEvaluation]
-      : []);
-  const scopedDetailed = records.filter(
-    (record) => record.searchRunId === entry.runId && record.status === "detailed",
-  );
-  const intelligenceStatus = execution.status !== "completed" || evaluated.length < scopedDetailed.length
-    ? "partial" as const
-    : "completed" as const;
-  await saveCrawlerState({
-    records,
-    run: {
-      ...crawler.run,
-      intelligenceStatus,
-      intelligenceError: execution.error
-        ? errorMessageDescriptor("error.intelligenceFailed", execution.error)
-        : undefined,
-      evaluated: evaluated.length,
-      relevant: evaluated.filter((item) => item.decision === "relevant").length,
-      notRelevant: evaluated.filter((item) => item.decision === "not-relevant").length,
-      review: evaluated.filter((item) => item.decision === "review").length,
-      message: intelligenceStatus === "completed"
-        ? message("run.evaluated", { count: evaluated.length })
-        : message("run.intelligencePartial", {
-            evaluated: evaluated.length,
-            pending: Math.max(0, scopedDetailed.length - evaluated.length),
-            total: scopedDetailed.length,
-          }),
-    },
+    const evaluated = records.flatMap((record) =>
+      record.searchRunId === entry.runId && record.planEvaluation?.executionId === execution.id
+        ? [record.planEvaluation]
+        : []);
+    const scopedDetailed = records.filter(
+      (record) => record.searchRunId === entry.runId && record.status === "detailed",
+    );
+    const intelligenceStatus = execution.status !== "completed" || evaluated.length < scopedDetailed.length
+      ? "partial" as const
+      : "completed" as const;
+    return {
+      records,
+      run: {
+        ...crawler.run,
+        intelligenceStatus,
+        intelligenceError: execution.error
+          ? errorMessageDescriptor("error.intelligenceFailed", execution.error)
+          : undefined,
+        evaluated: evaluated.length,
+        relevant: evaluated.filter((item) => item.decision === "relevant").length,
+        notRelevant: evaluated.filter((item) => item.decision === "not-relevant").length,
+        review: evaluated.filter((item) => item.decision === "review").length,
+        message: intelligenceStatus === "completed"
+          ? message("run.evaluated", { count: evaluated.length })
+          : message("run.intelligencePartial", {
+              evaluated: evaluated.length,
+              pending: Math.max(0, scopedDetailed.length - evaluated.length),
+              total: scopedDetailed.length,
+            }),
+      },
+    };
   });
 }
 
 async function markPlanEvaluationFailure(entry: EvaluationQueueEntry, failure: string): Promise<void> {
-  const crawler = await loadCrawlerState();
-  if (crawler.run.id !== entry.runId) return;
-  await saveCrawlerState({
+  await updateCrawlerData((crawler) => crawler.run.id !== entry.runId ? {} : {
     run: {
       ...crawler.run,
       intelligenceStatus: "failed",
@@ -504,16 +477,29 @@ async function markPlanEvaluationFailure(entry: EvaluationQueueEntry, failure: s
 }
 
 async function updateEvaluationEntry(
-  key: string,
+  expected: EvaluationQueueEntry,
   update: (entry: EvaluationQueueEntry) => EvaluationQueueEntry,
+  generation: number,
 ): Promise<ExtensionSyncState> {
-  const state = await loadExtensionSyncState();
-  const next: ExtensionSyncState = {
-    ...state,
-    evaluationQueue: state.evaluationQueue.map((entry) => entry.key === key ? update(entry) : entry),
-  };
-  await saveExtensionSyncState(next);
-  return next;
+  return updateExtensionSyncState((state) => {
+    const current = currentEvaluationAttempt(state, expected, generation);
+    if (!current) return state;
+    return {
+      ...state,
+      evaluationQueue: state.evaluationQueue.map((entry) => entry === current ? update(entry) : entry),
+    };
+  }, generation);
+}
+
+function currentEvaluationAttempt(
+  state: ExtensionSyncState,
+  expected: EvaluationQueueEntry,
+  generation: number,
+): EvaluationQueueEntry | undefined {
+  if (state.generation !== generation) return undefined;
+  return state.evaluationQueue.find((entry) => entry.key === expected.key &&
+    entry.attempts === expected.attempts && entry.executionId === expected.executionId &&
+    (entry.status === "queued" || entry.status === "creating" || entry.status === "polling"));
 }
 
 export async function synchronizeExtension(options: FlushOptions = {}): Promise<ExtensionSyncState> {

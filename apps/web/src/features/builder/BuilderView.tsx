@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -37,18 +37,17 @@ import {
   duplicatePlanDraft,
   duplicateRecipeDraft,
   groupVersions,
+  isPlanWorkingDraft,
+  isRecipeWorkingDraft,
   latestRecipeVersion,
   moveItem,
   nextAvailableRecipe,
   parseRecipeRef,
-  persistWorkingDraft,
   planDraftStorageKey,
   planVersionKey,
-  readWorkingDrafts,
   recipeDraftStorageKey,
   recipeRefKey,
   recipeVersionKey,
-  removeWorkingDraft,
   toPlanDraft,
   toRecipeDraft,
   validatePlanDraft,
@@ -58,12 +57,22 @@ import {
   type RecipeWorkingDraft,
   type VersionFamily,
 } from "./builderModel";
+import { createWorkingDraftStore, type WorkingDraftSnapshot, type WorkingDraftStore } from "./workingDraftStore";
 import styles from "./BuilderView.module.css";
 
 type BuilderTab = "recipes" | "plans";
 const builderTabCodec = enumUrlCodec<BuilderTab>(["recipes", "plans"]);
 
-export function BuilderView() {
+export function createBuilderDraftStores() {
+  return {
+    recipes: createWorkingDraftStore<RecipeWorkingDraft>(recipeDraftStorageKey, undefined, isRecipeWorkingDraft),
+    plans: createWorkingDraftStore<PlanWorkingDraft>(planDraftStorageKey, undefined, isPlanWorkingDraft),
+  };
+}
+
+const defaultDraftStores = createBuilderDraftStores();
+
+export function BuilderView({ draftStores = defaultDraftStores }: { draftStores?: ReturnType<typeof createBuilderDraftStores> } = {}) {
   const { t } = useAppIntl();
   const recipesQuery = useRecipes();
   const plansQuery = useEvaluationPlans();
@@ -84,14 +93,15 @@ export function BuilderView() {
   const selectedPlan = plans.find((plan) => planVersionKey(plan) === requestedPlan)
     ?? plans.find((plan) => plan.isDefault)
     ?? planFamilies[0]?.latest;
-  const [recipeDrafts, setRecipeDrafts] = useState<Record<string, RecipeWorkingDraft>>(
-    () => readWorkingDrafts(recipeDraftStorageKey),
-  );
-  const [planDrafts, setPlanDrafts] = useState<Record<string, PlanWorkingDraft>>(
-    () => readWorkingDrafts(planDraftStorageKey),
-  );
-  const [activeRecipeDraftKey, setActiveRecipeDraftKey] = useState<string>();
-  const [activePlanDraftKey, setActivePlanDraftKey] = useState<string>();
+  const recipeState = useSyncExternalStore(draftStores.recipes.subscribe, draftStores.recipes.getSnapshot);
+  const planState = useSyncExternalStore(draftStores.plans.subscribe, draftStores.plans.getSnapshot);
+  const { drafts: recipeDrafts, activeKey: activeRecipeDraftKey } = recipeState;
+  const { drafts: planDrafts, activeKey: activePlanDraftKey } = planState;
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; };
+  }, []);
   const recipeDraft = activeRecipeDraftKey ? recipeDrafts[activeRecipeDraftKey] : undefined;
   const planDraft = activePlanDraftKey ? planDrafts[activePlanDraftKey] : undefined;
 
@@ -100,10 +110,11 @@ export function BuilderView() {
     if (tab === "plans" && !requestedPlan && selectedPlan) setRequestedPlan(planVersionKey(selectedPlan));
   }, [requestedPlan, requestedRecipe, selectedPlan, selectedRecipe, setRequestedPlan, setRequestedRecipe, tab]);
 
-  const loading = recipesQuery.isLoading || plansQuery.isLoading || defaultPlanQuery.isLoading;
+  const loading = recipesQuery.isLoading || plansQuery.isLoading;
   const error = recipesQuery.error || plansQuery.error || defaultPlanQuery.error;
-  if (loading) return <BuilderState copy={t("builder.loading")} />;
-  if (error) {
+  const hasDrafts = Object.keys(recipeDrafts).length > 0 || Object.keys(planDrafts).length > 0;
+  if (loading && !hasDrafts) return <BuilderState copy={t("builder.loading")} />;
+  if (error && !hasDrafts && !recipesQuery.data && !plansQuery.data) {
     return <BuilderState
       copy={t("builder.error")}
       retry={() => void Promise.all([recipesQuery.refetch(), plansQuery.refetch(), defaultPlanQuery.refetch()])}
@@ -111,85 +122,71 @@ export function BuilderView() {
   }
 
   const selectRecipe = (recipe: IntelligenceRecipe) => {
-    setActiveRecipeDraftKey(undefined);
+    draftStores.recipes.select();
     setRequestedRecipe(recipeVersionKey(recipe));
   };
 
   const selectPlan = (plan: EvaluationPlan) => {
-    setActivePlanDraftKey(undefined);
+    draftStores.plans.select();
     setRequestedPlan(planVersionKey(plan));
   };
 
   const updateRecipeDraft = (key: string, update: (current: RecipeDraft) => RecipeDraft) => {
-    setRecipeDrafts((current) => {
-      const working = current[key];
-      if (!working) return current;
-      const next = { ...working, value: update(working.value) };
-      persistWorkingDraft(recipeDraftStorageKey, key, next);
-      return { ...current, [key]: next };
-    });
+    const working = draftStores.recipes.getSnapshot().drafts[key];
+    if (working) draftStores.recipes.put(key, { ...working, value: update(working.value) });
   };
 
   const updatePlanDraft = (key: string, update: (current: EvaluationPlanDraft) => EvaluationPlanDraft) => {
-    setPlanDrafts((current) => {
-      const working = current[key];
-      if (!working) return current;
-      const next = { ...working, value: update(working.value) };
-      persistWorkingDraft(planDraftStorageKey, key, next);
-      return { ...current, [key]: next };
-    });
+    const working = draftStores.plans.getSnapshot().drafts[key];
+    if (working) draftStores.plans.put(key, { ...working, value: update(working.value) });
   };
 
   const startRecipeDraft = (working: RecipeWorkingDraft, baseVersion?: number) => {
     const key = workingDraftKey(working.mode, working.value.id, baseVersion);
-    const next = { ...recipeDrafts, [key]: working };
-    setRecipeDrafts(next);
-    persistWorkingDraft(recipeDraftStorageKey, key, working);
-    setActiveRecipeDraftKey(key);
+    draftStores.recipes.open(key, working);
   };
 
   const startPlanDraft = (working: PlanWorkingDraft, baseVersion?: number) => {
     const key = workingDraftKey(working.mode, working.value.id, baseVersion);
-    const next = { ...planDrafts, [key]: working };
-    setPlanDrafts(next);
-    persistWorkingDraft(planDraftStorageKey, key, working);
-    setActivePlanDraftKey(key);
+    draftStores.plans.open(key, working);
   };
 
   const discardRecipeDraft = (key: string) => {
     if (!window.confirm(t("builder.discardDraftConfirm"))) return;
-    removeWorkingDraft(recipeDraftStorageKey, key);
-    setRecipeDrafts((current) => Object.fromEntries(Object.entries(current).filter(([candidate]) => candidate !== key)));
-    setActiveRecipeDraftKey(undefined);
+    draftStores.recipes.remove(key);
   };
 
   const discardPlanDraft = (key: string) => {
     if (!window.confirm(t("builder.discardDraftConfirm"))) return;
-    removeWorkingDraft(planDraftStorageKey, key);
-    setPlanDrafts((current) => Object.fromEntries(Object.entries(current).filter(([candidate]) => candidate !== key)));
-    setActivePlanDraftKey(undefined);
+    draftStores.plans.remove(key);
   };
 
-  const publishRecipe = (key: string, draft: RecipeDraft) => {
-    saveRecipe.mutate(draft, {
-      onSuccess: (saved) => {
-        removeWorkingDraft(recipeDraftStorageKey, key);
-        setRecipeDrafts((current) => Object.fromEntries(Object.entries(current).filter(([candidate]) => candidate !== key)));
-        setActiveRecipeDraftKey(undefined);
-        setRequestedRecipe(recipeVersionKey(saved));
-      },
-    });
+  const publishRecipe = async (key: string, draft: RecipeDraft) => {
+    const submitted = draftStores.recipes.getSnapshot().drafts[key];
+    try {
+      const saved = await saveRecipe.mutateAsync(draft);
+      const wasActive = draftStores.recipes.getSnapshot().activeKey === key;
+      const removed = draftStores.recipes.remove(key, submitted);
+      if (mounted.current && wasActive && removed) setRequestedRecipe(recipeVersionKey(saved));
+    } catch { /* The mutation state displays the error and retains the draft. */ }
   };
 
-  const publishPlan = (key: string, draft: EvaluationPlanDraft) => {
-    savePlan.mutate(draft, {
-      onSuccess: (saved) => {
-        removeWorkingDraft(planDraftStorageKey, key);
-        setPlanDrafts((current) => Object.fromEntries(Object.entries(current).filter(([candidate]) => candidate !== key)));
-        setActivePlanDraftKey(undefined);
-        setRequestedPlan(planVersionKey(saved));
-      },
-    });
+  const publishPlan = async (key: string, draft: EvaluationPlanDraft) => {
+    const submitted = draftStores.plans.getSnapshot().drafts[key];
+    try {
+      const saved = await savePlan.mutateAsync(draft);
+      const wasActive = draftStores.plans.getSnapshot().activeKey === key;
+      const removed = draftStores.plans.remove(key, submitted);
+      if (mounted.current && wasActive && removed) setRequestedPlan(planVersionKey(saved));
+    } catch { /* The mutation state displays the error and retains the draft. */ }
+  };
+
+  const navigateTabs = (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const next = event.key === "Home" ? "recipes" : event.key === "End" ? "plans" : tab === "recipes" ? "plans" : "recipes";
+    setTab(next);
+    document.getElementById(`builder-tab-${next}`)?.focus();
   };
 
   return (
@@ -199,8 +196,8 @@ export function BuilderView() {
           <SectionLabel>{t("builder.library")}</SectionLabel>
           <h1 id="builder-view-title">{t("builder.title")}</h1>
           <div className={styles.workspaceTabs} role="tablist" aria-label={t("builder.workspaceTabs")}>
-            <button type="button" role="tab" aria-selected={tab === "recipes"} className={tab === "recipes" ? styles.tabActive : ""} onClick={() => setTab("recipes")}>{t("builder.tab.recipes")}</button>
-            <button type="button" role="tab" aria-selected={tab === "plans"} className={tab === "plans" ? styles.tabActive : ""} onClick={() => setTab("plans")}>{t("builder.tab.plans")}</button>
+            <button id="builder-tab-recipes" type="button" role="tab" aria-controls="builder-panel" tabIndex={tab === "recipes" ? 0 : -1} aria-selected={tab === "recipes"} className={tab === "recipes" ? styles.tabActive : ""} onKeyDown={navigateTabs} onClick={() => setTab("recipes")}>{t("builder.tab.recipes")}</button>
+            <button id="builder-tab-plans" type="button" role="tab" aria-controls="builder-panel" tabIndex={tab === "plans" ? 0 : -1} aria-selected={tab === "plans"} className={tab === "plans" ? styles.tabActive : ""} onKeyDown={navigateTabs} onClick={() => setTab("plans")}>{t("builder.tab.plans")}</button>
           </div>
           {tab === "recipes" ? (
             <Button size="sm" onClick={() => startRecipeDraft({ mode: "new", value: blankRecipeDraft() })}>
@@ -221,7 +218,7 @@ export function BuilderView() {
             activeDraftKey={activeRecipeDraftKey}
             versionKey={recipeVersionKey}
             onSelect={selectRecipe}
-            onSelectDraft={setActiveRecipeDraftKey}
+            onSelectDraft={draftStores.recipes.select}
           />
         ) : (
           <VersionLibrary
@@ -231,23 +228,26 @@ export function BuilderView() {
             activeDraftKey={activePlanDraftKey}
             versionKey={planVersionKey}
             onSelect={selectPlan}
-            onSelectDraft={setActivePlanDraftKey}
+            onSelectDraft={draftStores.plans.select}
           />
         )}
       </aside>
 
-      <main className={styles.editor}>
+      <div id="builder-panel" role="tabpanel" aria-labelledby={`builder-tab-${tab}`} className={styles.editor}>
+        {error && <div className={styles.notice} role="alert"><p>{t("builder.refreshError")}</p><Button size="sm" onClick={() => void Promise.all([recipesQuery.refetch(), plansQuery.refetch(), defaultPlanQuery.refetch()])}>{t("common.retry")}</Button></div>}
+        {tab === "recipes" ? <DraftStorageNotice state={recipeState} store={draftStores.recipes} /> : <DraftStorageNotice state={planState} store={draftStores.plans} />}
         {tab === "recipes" ? (
           recipeDraft && activeRecipeDraftKey ? (
             <RecipeDraftEditor
-              key={activeRecipeDraftKey}
+              key={`${activeRecipeDraftKey}:${recipeState.revision}`}
               working={recipeDraft}
               error={validateRecipeDraft(recipeDraft.value)}
               saving={saveRecipe.isPending}
+              blocked={Boolean(recipeState.conflicts[activeRecipeDraftKey])}
               saveError={saveRecipe.isError}
               onChange={(update) => updateRecipeDraft(activeRecipeDraftKey, update)}
               onDiscard={() => discardRecipeDraft(activeRecipeDraftKey)}
-              onPublish={() => publishRecipe(activeRecipeDraftKey, recipeDraft.value)}
+              onPublish={() => void publishRecipe(activeRecipeDraftKey, recipeDraft.value)}
             />
           ) : selectedRecipe ? (
             <PublishedRecipe
@@ -263,23 +263,25 @@ export function BuilderView() {
               recipes={recipes}
               error={validatePlanDraft(planDraft.value, recipes)}
               saving={savePlan.isPending}
+              blocked={Boolean(planState.conflicts[activePlanDraftKey])}
               saveError={savePlan.isError}
               onChange={(update) => updatePlanDraft(activePlanDraftKey, update)}
               onDiscard={() => discardPlanDraft(activePlanDraftKey)}
-              onPublish={() => publishPlan(activePlanDraftKey, planDraft.value)}
+              onPublish={() => void publishPlan(activePlanDraftKey, planDraft.value)}
             />
           ) : selectedPlan ? (
             <PublishedPlan
               plan={selectedPlan}
               recipes={recipes}
               settingDefault={setDefaultPlan.isPending}
+              settingDefaultError={setDefaultPlan.isError && setDefaultPlan.variables?.id === selectedPlan.id && setDefaultPlan.variables?.version === selectedPlan.version}
               onNewVersion={() => startPlanDraft({ mode: "version", sourceKey: planVersionKey(selectedPlan), value: toPlanDraft(selectedPlan) }, selectedPlan.version)}
               onDuplicate={() => startPlanDraft({ mode: "duplicate", sourceKey: planVersionKey(selectedPlan), value: duplicatePlanDraft(selectedPlan) })}
               onSetDefault={() => setDefaultPlan.mutate({ id: selectedPlan.id, version: selectedPlan.version })}
             />
           ) : <EmptyState>{recipes.length === 0 ? t("builder.noRecipesForPlan") : t("builder.noPlans")}</EmptyState>
         )}
-      </main>
+      </div>
 
       <aside className={styles.inspector}>
         {tab === "recipes" ? (
@@ -290,6 +292,24 @@ export function BuilderView() {
       </aside>
     </section>
   );
+}
+
+function DraftStorageNotice<T extends { value: { id: string; name: string } }>({ state, store }: { state: WorkingDraftSnapshot<T>; store: WorkingDraftStore<T> }) {
+  const { t } = useAppIntl();
+  return <>
+    {state.sessionOnly && <div className={styles.notice} role="alert"><p>{t("builder.draftSessionOnly")}</p><Button size="sm" onClick={store.retry}>{t("builder.retryDraftStorage")}</Button></div>}
+    {Object.entries(state.conflicts).map(([key, conflict]) => {
+      const local = state.drafts[key];
+      const name = local?.value.name || conflict.incoming?.value.name || local?.value.id || key;
+      return <div className={styles.notice} role="alert" key={key}>
+        <p>{t(conflict.incoming ? "builder.draftConflict" : "builder.draftRemovedElsewhere", { name })}</p>
+        <div className={styles.noticeActions}>
+          <Button size="sm" onClick={() => store.resolve(key, "local")}>{t(!local ? "builder.keepDeletion" : conflict.incoming ? "builder.keepLocalDraft" : "builder.recoverDraftCopy")}</Button>
+          <Button size="sm" onClick={() => store.resolve(key, "incoming")}>{t(conflict.incoming ? "builder.useIncomingDraft" : "builder.acceptDraftRemoval")}</Button>
+        </div>
+      </div>;
+    })}
+  </>;
 }
 
 interface VersionLibraryProps<T extends { id: string; version: number; name: string }, D extends { value: { name: string; id: string } }> {
@@ -357,13 +377,14 @@ interface RecipeDraftEditorProps {
   working: RecipeWorkingDraft;
   error?: string;
   saving: boolean;
+  blocked?: boolean;
   saveError: boolean;
   onChange: (update: (current: RecipeDraft) => RecipeDraft) => void;
   onDiscard: () => void;
   onPublish: () => void;
 }
 
-function RecipeDraftEditor({ working, error, saving, saveError, onChange, onDiscard, onPublish }: RecipeDraftEditorProps) {
+function RecipeDraftEditor({ working, error, saving, blocked, saveError, onChange, onDiscard, onPublish }: RecipeDraftEditorProps) {
   const { t } = useAppIntl();
   const draft = working.value;
   const [criterionKeys, setCriterionKeys] = useState(() => draft.criteria.map((_, index) => index));
@@ -384,9 +405,10 @@ function RecipeDraftEditor({ working, error, saving, saveError, onChange, onDisc
   }));
   return <div className={styles.editorScroll}>
     <EditorHeader title={draft.name || t("builder.untitledRecipe")} draft actions={<>
-      <Button onClick={onDiscard}><Trash2 size={14} aria-hidden="true" />{t("builder.discardDraft")}</Button>
-      <Button variant="primary" onClick={onPublish} disabled={Boolean(error) || saving}><Save size={14} aria-hidden="true" />{saving ? t("builder.saving") : t("builder.publishVersion")}</Button>
+      <Button onClick={onDiscard} disabled={saving || blocked}><Trash2 size={14} aria-hidden="true" />{t("builder.discardDraft")}</Button>
+      <Button variant="primary" onClick={onPublish} disabled={Boolean(error) || saving || blocked}><Save size={14} aria-hidden="true" />{saving ? t("builder.saving") : t("builder.publishVersion")}</Button>
     </>} />
+    <fieldset className={styles.draftFields} disabled={saving || blocked} aria-busy={saving}>
     <section className={styles.editorContent}>
       {(error || saveError) && <p className={styles.error} role="alert">{saveError ? t("builder.saveError") : `${t("builder.invalidRecipe")}: ${error}`}</p>}
       <div className={styles.formGrid}>
@@ -411,10 +433,11 @@ function RecipeDraftEditor({ working, error, saving, saveError, onChange, onDisc
         </article>)}
       </div>
     </section>
+    </fieldset>
   </div>;
 }
 
-function PublishedPlan({ plan, recipes, settingDefault, onNewVersion, onDuplicate, onSetDefault }: { plan: EvaluationPlan; recipes: IntelligenceRecipe[]; settingDefault: boolean; onNewVersion: () => void; onDuplicate: () => void; onSetDefault: () => void }) {
+function PublishedPlan({ plan, recipes, settingDefault, settingDefaultError, onNewVersion, onDuplicate, onSetDefault }: { plan: EvaluationPlan; recipes: IntelligenceRecipe[]; settingDefault: boolean; settingDefaultError: boolean; onNewVersion: () => void; onDuplicate: () => void; onSetDefault: () => void }) {
   const { locale, t } = useAppIntl();
   return <div className={styles.editorScroll}>
     <EditorHeader title={plan.name} version={plan.version} readOnly actions={<>
@@ -423,6 +446,7 @@ function PublishedPlan({ plan, recipes, settingDefault, onNewVersion, onDuplicat
       <Button variant="primary" onClick={onNewVersion}><FilePenLine size={14} aria-hidden="true" />{t("builder.newVersion")}</Button>
     </>} />
     <section className={styles.editorContent}>
+      {settingDefaultError && <p className={styles.error} role="alert">{t("builder.saveError")}</p>}
       <div className={styles.factGrid}>
         <Fact label={t("builder.planId")} value={plan.id} />
         <Fact label={t("builder.operator")} value={t(`builder.operator.${plan.operator}`)} />
@@ -439,13 +463,14 @@ interface PlanDraftEditorProps {
   recipes: IntelligenceRecipe[];
   error?: string;
   saving: boolean;
+  blocked?: boolean;
   saveError: boolean;
   onChange: (update: (current: EvaluationPlanDraft) => EvaluationPlanDraft) => void;
   onDiscard: () => void;
   onPublish: () => void;
 }
 
-function PlanDraftEditor({ working, recipes, error, saving, saveError, onChange, onDiscard, onPublish }: PlanDraftEditorProps) {
+function PlanDraftEditor({ working, recipes, error, saving, blocked, saveError, onChange, onDiscard, onPublish }: PlanDraftEditorProps) {
   const { t } = useAppIntl();
   const draft = working.value;
   const families = groupVersions(recipes);
@@ -455,9 +480,10 @@ function PlanDraftEditor({ working, recipes, error, saving, saveError, onChange,
   };
   return <div className={styles.editorScroll}>
     <EditorHeader title={draft.name || t("builder.untitledPlan")} draft actions={<>
-      <Button onClick={onDiscard}><Trash2 size={14} aria-hidden="true" />{t("builder.discardDraft")}</Button>
-      <Button variant="primary" onClick={onPublish} disabled={Boolean(error) || saving}><Save size={14} aria-hidden="true" />{saving ? t("builder.saving") : t("builder.publishVersion")}</Button>
+      <Button onClick={onDiscard} disabled={saving || blocked}><Trash2 size={14} aria-hidden="true" />{t("builder.discardDraft")}</Button>
+      <Button variant="primary" onClick={onPublish} disabled={Boolean(error) || saving || blocked}><Save size={14} aria-hidden="true" />{saving ? t("builder.saving") : t("builder.publishVersion")}</Button>
     </>} />
+    <fieldset className={styles.draftFields} disabled={saving || blocked} aria-busy={saving}>
     <section className={styles.editorContent}>
       {(error || saveError) && <p className={styles.error} role="alert">{saveError ? t("builder.saveError") : `${t("builder.planInvalid")}: ${error}`}</p>}
       <div className={styles.formGrid}>
@@ -487,6 +513,7 @@ function PlanDraftEditor({ working, recipes, error, saving, saveError, onChange,
         })}
       </div>}
     </section>
+    </fieldset>
   </div>;
 }
 

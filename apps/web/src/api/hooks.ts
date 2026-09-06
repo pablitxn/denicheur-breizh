@@ -1,5 +1,6 @@
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { denicheurApi } from "./denicheurApi";
+import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { denicheurApi, type ConditionalValue, type MapCatalog } from "./denicheurApi";
+import type { ListingsMetadata } from "@denicheur-breizh/contracts";
 import { queryKeys } from "./queryKeys";
 import type {
   EvaluationExecution,
@@ -32,9 +33,35 @@ export function useHealth() {
 export function useListings(filters?: ListingFilters) {
   return useQuery({
     queryKey: queryKeys.listings.list(filters),
-    queryFn: ({ signal }) => denicheurApi.listAllProperties(filters, signal),
+    queryFn: ({ signal }) => denicheurApi.listProperties(filters, signal),
     placeholderData: keepPreviousData,
+    // The catalog revision invalidates page one. Later pages stay on their immutable snapshot.
+    refetchOnWindowFocus: !filters?.cursor,
+    refetchOnReconnect: !filters?.cursor,
+    staleTime: filters?.cursor ? Infinity : 5_000,
+  });
+}
+
+export function useListingsMetadata() {
+  const client = useQueryClient();
+  const key = queryKeys.listings.metadata();
+  return useQuery({
+    queryKey: key,
+    queryFn: ({ signal }) => denicheurApi.listingsMetadata(client.getQueryData<ConditionalValue<ListingsMetadata>>(key), signal),
+    select: (data) => data.value,
     ...liveQueryOptions,
+  });
+}
+
+export function useMapListings(enabled = true) {
+  const client = useQueryClient();
+  const key = queryKeys.listings.map();
+  return useQuery({
+    queryKey: key,
+    queryFn: ({ signal }) => denicheurApi.listMapCatalog(client.getQueryData<ConditionalValue<MapCatalog>>(key), signal),
+    select: (data) => data.value,
+    ...liveQueryOptions,
+    enabled,
   });
 }
 
@@ -48,10 +75,14 @@ export function useListing(source?: string, externalId?: string) {
 }
 
 export function useRuns() {
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: queryKeys.runs.lists(),
-    queryFn: ({ signal }) => denicheurApi.listRuns(signal),
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ signal, pageParam }) => denicheurApi.listRuns(signal, pageParam),
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+    select: (data) => ({ ...data.pages[0]!, items: data.pages.flatMap((page) => page.items) }),
     ...liveQueryOptions,
+    refetchInterval: (query) => query.state.data?.pages.length === 1 ? visibleRefetchInterval() : false,
   });
 }
 
@@ -163,10 +194,13 @@ export function useSetDefaultEvaluationPlan() {
 }
 
 export function useEvaluationExecutions(filters?: { runId?: string; status?: EvaluationExecution["status"] }) {
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: queryKeys.evaluationExecutions.list(filters),
-    queryFn: ({ signal }) => denicheurApi.listEvaluationExecutions(filters, signal),
-    refetchInterval: (query) => query.state.data?.items.some((item) => !isExecutionTerminal(item.status)) ? 2_000 : false,
+    initialPageParam: undefined as string | undefined,
+    queryFn: ({ signal, pageParam }) => denicheurApi.listEvaluationExecutions(filters, signal, pageParam),
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+    select: (data) => ({ ...data.pages[0]!, items: data.pages.flatMap((page) => page.items) }),
+    refetchInterval: (query) => query.state.data?.pages.length === 1 && query.state.data.pages[0]?.items.some((item) => !isExecutionTerminal(item.status)) ? 2_000 : false,
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: true,
     refetchOnReconnect: true,

@@ -5,7 +5,7 @@ import type { PropertyImageAsset, PropertyListing } from "../types";
 import styles from "./PropertyVisual.module.css";
 
 interface PropertyVisualProps {
-  property: PropertyListing;
+  property: Pick<PropertyListing, "key" | "title" | "externalId" | "imageUrls" | "imageAssets">;
   size?: "sm" | "md" | "lg";
   navigation?: boolean;
 }
@@ -182,7 +182,7 @@ function findAvailableImageIndex(
   return undefined;
 }
 
-function createDisplayImages(property: PropertyListing, size: Required<PropertyVisualProps>["size"]): DisplayImage[] {
+function createDisplayImages(property: PropertyVisualProps["property"], size: Required<PropertyVisualProps>["size"]): DisplayImage[] {
   const assetsBySourceUrl = new Map(
     (property.imageAssets ?? []).map((asset) => [asset.sourceUrl, asset] as const),
   );

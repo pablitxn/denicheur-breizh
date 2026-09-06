@@ -6,9 +6,11 @@ import type {
 } from "./types";
 
 export const SYNC_STORAGE_KEY = "denicheur:sync:state";
+const SYNC_STATE_LOCK = "denicheur:sync:state";
 
 export const EMPTY_SYNC_STATE: ExtensionSyncState = {
   version: 2,
+  generation: 0,
   status: "idle",
   queue: [],
   syncedFingerprints: {},
@@ -18,6 +20,10 @@ export const EMPTY_SYNC_STATE: ExtensionSyncState = {
 };
 
 export async function loadExtensionSyncState(): Promise<ExtensionSyncState> {
+  return withSyncStateLock(loadExtensionSyncStateUnlocked);
+}
+
+async function loadExtensionSyncStateUnlocked(): Promise<ExtensionSyncState> {
   const values = await getStorage<{ [SYNC_STORAGE_KEY]?: unknown }>([SYNC_STORAGE_KEY]);
   const stored = values[SYNC_STORAGE_KEY];
   const normalized = normalizeSyncState(stored);
@@ -27,8 +33,40 @@ export async function loadExtensionSyncState(): Promise<ExtensionSyncState> {
   return normalized;
 }
 
-export async function saveExtensionSyncState(state: ExtensionSyncState): Promise<void> {
-  await setStorage({ [SYNC_STORAGE_KEY]: state });
+/** Transform current storage synchronously; network and crawler reads stay outside this lock. */
+export async function updateExtensionSyncState(
+  update: (current: ExtensionSyncState) => ExtensionSyncState,
+  expectedGeneration?: number,
+): Promise<ExtensionSyncState> {
+  return withSyncStateLock(async () => {
+    const current = await loadExtensionSyncStateUnlocked();
+    if (expectedGeneration !== undefined && current.generation !== expectedGeneration) return current;
+    const next = update(current);
+    if (next !== current) await setStorage({ [SYNC_STORAGE_KEY]: next });
+    return next;
+  });
+}
+
+/** Called with the crawler lock held, so records and outbox clear in one storage write. */
+export async function clearExtensionSyncQueue(crawlerPatch: Record<string, unknown>): Promise<void> {
+  await withSyncStateLock(async () => {
+    const current = await loadExtensionSyncStateUnlocked();
+    await setStorage({
+      ...crawlerPatch,
+      [SYNC_STORAGE_KEY]: {
+        ...structuredClone(EMPTY_SYNC_STATE),
+        generation: (current.generation ?? 0) + 1,
+        activePlan: current.activePlan,
+        activeRecipe: current.activeRecipe,
+      },
+    });
+  });
+}
+
+async function withSyncStateLock<T>(operation: () => Promise<T>): Promise<T> {
+  const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
+  if (!locks?.request) throw new Error("This browser cannot safely coordinate the local sync queue. Use a Chrome version with Web Locks support.");
+  return await locks.request(SYNC_STATE_LOCK, { mode: "exclusive" }, operation);
 }
 
 function normalizeSyncState(value: unknown): ExtensionSyncState {
@@ -75,6 +113,9 @@ function normalizeSyncState(value: unknown): ExtensionSyncState {
 
   return {
     version: 2,
+    generation: typeof value.generation === "number" && Number.isSafeInteger(value.generation) && value.generation >= 0
+      ? value.generation
+      : 0,
     status: value.status === "pending" || value.status === "syncing" || value.status === "error"
       ? value.status
       : "idle",

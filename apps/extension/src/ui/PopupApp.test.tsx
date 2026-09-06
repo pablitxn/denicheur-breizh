@@ -53,7 +53,8 @@ beforeEach(() => {
         removeListener: (listener: StorageListener) => listeners.delete(listener),
       },
     },
-    tabs: { query: queryTabs, create: vi.fn().mockResolvedValue({}) },
+    tabs: { query: queryTabs, create: vi.fn().mockResolvedValue({}), update: vi.fn().mockResolvedValue({}) },
+    windows: { update: vi.fn().mockResolvedValue({}) },
   });
   container = document.createElement("div");
   document.body.append(container);
@@ -84,6 +85,32 @@ async function changeStorage(changes: Record<string, chrome.storage.StorageChang
 }
 
 describe("popup feedback and live state", () => {
+  it("does not claim synchronization before the first successfully transferred batch", async () => {
+    await renderPopup();
+    expect(container.textContent).toContain("No completed sync yet");
+    expect(container.textContent).not.toContain("Collected data synced");
+
+    storage[SYNC_STORAGE_KEY] = { ...EMPTY_SYNC_STATE, lastSuccessAt: "2026-09-06T12:00:00Z" };
+    await changeStorage({ [SYNC_STORAGE_KEY]: { newValue: storage[SYNC_STORAGE_KEY] } });
+
+    expect(container.textContent).toContain("Collected data synced");
+    expect(container.textContent).not.toContain("No completed sync yet");
+  });
+
+  it("opens the owning dashboard instead of a different existing dashboard during an active run", async () => {
+    storage[CRAWLER_STORAGE_KEYS.run] = { ...IDLE_RUN, status: "collecting-details", dashboardTabId: 22 };
+    queryTabs.mockResolvedValueOnce([{ id: 11, windowId: 1 }, { id: 22, windowId: 2 }]);
+    const close = vi.spyOn(window, "close").mockImplementation(() => undefined);
+    await renderPopup();
+
+    await act(async () => button("Open dashboard").click());
+
+    expect(chrome.tabs.update).toHaveBeenCalledWith(22, { active: true });
+    expect(chrome.windows.update).toHaveBeenCalledWith(2, { focused: true });
+    expect(chrome.tabs.create).not.toHaveBeenCalled();
+    close.mockRestore();
+  });
+
   it("shows rejected synchronization without hiding progress and clears the alert after retry", async () => {
     vi.mocked(requestImmediateSync).mockRejectedValueOnce(new Error("Background unavailable"));
     await renderPopup();

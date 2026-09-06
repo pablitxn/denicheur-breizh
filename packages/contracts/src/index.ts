@@ -780,6 +780,8 @@ export const listingsQuerySchema = z
   .object({
     ...paginationQueryFields,
     source: listingSourceSchema.optional(),
+    sources: z.union([listingSourceSchema, z.array(listingSourceSchema).min(1).max(20)])
+      .transform((value) => typeof value === "string" ? [value] : [...new Set(value)]).optional(),
     runId: identifierSchema.optional(),
     status: listingStatusSchema.optional(),
     decision: listingDecisionSchema.optional(),
@@ -789,10 +791,38 @@ export const listingsQuerySchema = z
     surfaceMin: z.coerce.number().finite().min(0).optional(),
     surfaceMax: z.coerce.number().finite().min(0).optional(),
     energyClass: optionalText(20),
-    sort: z.enum(["updatedAt", "scrapedAt", "priceEuros"]).default("updatedAt"),
+    sort: z.enum(["updatedAt", "scrapedAt", "priceEuros", "title", "surfaceM2", "score", "source"]).default("updatedAt"),
     order: z.enum(["asc", "desc"]).default("desc"),
   })
-  .strict();
+  .strict()
+  .refine((query) => !query.source || !query.sources, "Use source or sources, not both.");
+
+export const listingMapSummarySchema = listingRecordSchema.pick({
+  id: true, source: true, externalId: true, url: true, status: true, scrapedAt: true,
+  title: true, priceEuros: true, propertyType: true, rooms: true, surfaceM2: true,
+  location: true, coordinates: true, imageUrl: true, lastRunId: true,
+  firstSeenAt: true, lastSeenAt: true, updatedAt: true,
+}).extend({
+  coverAsset: listingImageAssetSchema.optional(),
+  evaluation: listingEvaluationRecordSchema.pick({ decision: true, score: true, evaluatedAt: true }).optional(),
+});
+
+export const listingsMapQuerySchema = z.object({
+  cursor: paginationQueryFields.cursor,
+  limit: z.coerce.number().int().min(1).max(1_000).default(500),
+}).strict();
+
+export const listingsMapPageSchema = z.object({
+  items: z.array(listingMapSummarySchema).max(1_000),
+  nextCursor: z.string().nullable(),
+  total: z.number().int().min(0),
+}).strict();
+
+export const listingsMetadataSchema = z.object({
+  revision: z.string().min(1),
+  total: z.number().int().min(0),
+  sources: z.array(z.object({ source: listingSourceSchema, count: z.number().int().min(0) }).strict()),
+}).strict();
 
 export const runsQuerySchema = z
   .object({
@@ -935,6 +965,10 @@ export type ListingRunObservation = z.infer<typeof listingRunObservationSchema>;
 export type ListingDetail = z.infer<typeof listingDetailSchema>;
 export type RunDetail = z.infer<typeof runDetailSchema>;
 export type ListingsQuery = z.infer<typeof listingsQuerySchema>;
+export type ListingMapSummary = z.infer<typeof listingMapSummarySchema>;
+export type ListingsMapQuery = z.infer<typeof listingsMapQuerySchema>;
+export type ListingsMapPage = z.infer<typeof listingsMapPageSchema>;
+export type ListingsMetadata = z.infer<typeof listingsMetadataSchema>;
 export type RunsQuery = z.infer<typeof runsQuerySchema>;
 export type RunListingsQuery = z.infer<typeof runListingsQuerySchema>;
 export type EvaluationExecutionsQuery = z.infer<typeof evaluationExecutionsQuerySchema>;

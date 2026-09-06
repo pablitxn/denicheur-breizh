@@ -1,8 +1,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppIntlProvider } from "../../intl/IntlContext";
-import { BuilderView } from "./BuilderView";
+import { BuilderView, createBuilderDraftStores } from "./BuilderView";
 import { recipeDraftStorageKey } from "./builderModel";
 
 const timestamp = "2026-07-19T10:00:00.000Z";
@@ -21,12 +21,54 @@ const plan = {
 };
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
   window.localStorage.clear();
   window.history.replaceState({}, "", "/");
 });
 
 describe("BuilderView", () => {
+  it("keeps the editor available without overwriting malformed saved drafts", async () => {
+    vi.stubGlobal("fetch", builderFetch());
+    const damaged = JSON.stringify({ bad: 42 });
+    window.localStorage.setItem(recipeDraftStorageKey, damaged);
+    renderBuilder();
+    await screen.findByRole("heading", { name: "Maison famille" });
+    expect(screen.getByText(/le navigateur ne peut pas les enregistrer/u)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Créer une version" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Nom" }), { target: { value: "Recoverable session draft" } });
+
+    expect(screen.getByRole("textbox", { name: "Nom" })).toHaveValue("Recoverable session draft");
+    expect(window.localStorage.getItem(recipeDraftStorageKey)).toBe(damaged);
+    fireEvent.click(screen.getByRole("button", { name: "Réessayer l’enregistrement" }));
+    expect(window.localStorage.getItem(recipeDraftStorageKey)).toBe(damaged);
+    expect(screen.getByText(/le navigateur ne peut pas les enregistrer/u)).toBeInTheDocument();
+  });
+
+  it("reports a failed default-plan change and allows a successful retry", async () => {
+    const fallback = builderFetch();
+    let failed = false;
+    let saved = false;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/v1/evaluation-plans/primary-home/set-default") && init?.method === "POST") {
+        if (!failed) { failed = true; return json({ error: { message: "Unavailable" } }, 503); }
+        saved = true;
+        return json({ ...plan, isDefault: true });
+      }
+      if (url.endsWith("/v1/evaluation-plans")) return json({ items: [{ ...plan, isDefault: saved }] });
+      return fallback(input, init);
+    }));
+    renderBuilder("/?btab=plans");
+    const makeDefault = await screen.findByRole("button", { name: "Marcar predeterminado" });
+    fireEvent.click(makeDefault);
+    expect(await screen.findByRole("alert")).toHaveTextContent("No se pudo guardar");
+    expect(makeDefault).toBeEnabled();
+    fireEvent.click(makeDefault);
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Marcar predeterminado" })).not.toBeInTheDocument());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("keeps published recipes read only and publishes edits only as a new recoverable version", async () => {
     const fetcher = builderFetch();
     vi.stubGlobal("fetch", fetcher);
@@ -101,14 +143,95 @@ describe("BuilderView", () => {
     expect(screen.getAllByRole("textbox", { name: "Identifiant" })[0]).toBe(survivor);
     expect(screen.getAllByRole("textbox", { name: "Identifiant" })).toHaveLength(2);
   });
+
+  it("preserves a quota-limited draft across navigation and offers a successful storage retry", async () => {
+    vi.stubGlobal("fetch", builderFetch());
+    const originalWrite = window.localStorage.setItem.bind(window.localStorage);
+    const write = vi.spyOn(window.localStorage, "setItem").mockImplementation((key, value) => {
+      if (key === recipeDraftStorageKey) throw new DOMException("Quota", "QuotaExceededError");
+      originalWrite(key, value);
+    });
+    const firstView = renderBuilder();
+    await screen.findByRole("heading", { name: "Maison famille" });
+    fireEvent.click(screen.getByRole("button", { name: "Créer une version" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Nom" }), { target: { value: "Draft retained in this tab" } });
+    expect(screen.getByText(/le navigateur ne peut pas les enregistrer/u)).toBeInTheDocument();
+    firstView.unmount();
+
+    renderBuilder("/", firstView.draftStores);
+    expect(await screen.findByRole("textbox", { name: "Nom" })).toHaveValue("Draft retained in this tab");
+    write.mockRestore();
+    fireEvent.click(screen.getByRole("button", { name: "Réessayer l’enregistrement" }));
+    expect(screen.queryByText(/le navigateur ne peut pas les enregistrer/u)).not.toBeInTheDocument();
+    expect(window.localStorage.getItem(recipeDraftStorageKey)).toContain("Draft retained in this tab");
+  });
+
+  it("finishes published draft cleanup after the Builder has unmounted", async () => {
+    const fetcher = builderFetch();
+    let finishPublication: (() => void) | undefined;
+    const publication = new Promise<void>((resolve) => { finishPublication = resolve; });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "PUT") await publication;
+      return fetcher(input, init);
+    }));
+    const view = renderBuilder();
+    await screen.findByRole("heading", { name: "Maison famille" });
+    fireEvent.click(screen.getByRole("button", { name: "Créer une version" }));
+    fireEvent.click(screen.getByRole("button", { name: "Publier la version" }));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "Nom" })).toBeDisabled());
+    view.unmount();
+    await act(async () => { finishPublication!(); });
+
+    await waitFor(() => expect(view.draftStores.recipes.getSnapshot().drafts).toEqual({}));
+    expect(window.localStorage.getItem(recipeDraftStorageKey)).toBeNull();
+  });
+
+  it("pauses a conflicting editor until the user chooses the other tab's version", async () => {
+    vi.stubGlobal("fetch", builderFetch());
+    const view = renderBuilder();
+    await screen.findByRole("heading", { name: "Maison famille" });
+    fireEvent.click(screen.getByRole("button", { name: "Créer une version" }));
+    const localDraft = view.draftStores.recipes.getSnapshot().drafts["family:2"]!;
+    act(() => {
+      window.localStorage.setItem(recipeDraftStorageKey, JSON.stringify({
+        "family:2": { ...localDraft, value: { ...localDraft.value, name: "Edited in another tab" } },
+      }));
+      window.dispatchEvent(new StorageEvent("storage", { key: recipeDraftStorageKey }));
+    });
+
+    expect(screen.getByText(/a été modifié dans un autre onglet/u)).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Nom" })).toHaveValue("Maison famille");
+    expect(screen.getByRole("button", { name: "Publier la version" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Utiliser l’autre version" }));
+    expect(screen.getByRole("textbox", { name: "Nom" })).toHaveValue("Edited in another tab");
+    expect(screen.getByRole("button", { name: "Publier la version" })).toBeEnabled();
+  });
+
+  it("supports arrow, Home and End navigation with one tab stop and a labelled panel", async () => {
+    vi.stubGlobal("fetch", builderFetch());
+    renderBuilder();
+    const recipes = await screen.findByRole("tab", { name: "Recettes" });
+    const plans = screen.getByRole("tab", { name: "Plans" });
+    recipes.focus();
+    fireEvent.keyDown(recipes, { key: "ArrowRight" });
+    expect(plans).toHaveFocus();
+    expect(plans).toHaveAttribute("aria-selected", "true");
+    expect(recipes).toHaveAttribute("tabindex", "-1");
+    expect(screen.getByRole("tabpanel", { name: "Plans" })).toBeInTheDocument();
+    fireEvent.keyDown(plans, { key: "Home" });
+    expect(recipes).toHaveFocus();
+    fireEvent.keyDown(recipes, { key: "End" });
+    expect(plans).toHaveFocus();
+  });
 });
 
-function renderBuilder(href = "/") {
+function renderBuilder(href = "/", draftStores = createBuilderDraftStores()) {
   window.localStorage.setItem("denicheur:locale", "fr");
   if (href.includes("btab=plans")) window.localStorage.setItem("denicheur:locale", "es");
   window.history.replaceState({}, "", href);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-  render(<QueryClientProvider client={client}><AppIntlProvider><BuilderView /></AppIntlProvider></QueryClientProvider>);
+  const view = render(<QueryClientProvider client={client}><AppIntlProvider><BuilderView draftStores={draftStores} /></AppIntlProvider></QueryClientProvider>);
+  return { ...view, draftStores, client };
 }
 
 function builderFetch() {

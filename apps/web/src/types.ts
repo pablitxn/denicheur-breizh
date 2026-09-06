@@ -97,12 +97,18 @@ export interface PropertyListing {
   features: string[];
   status?: string;
   scrapedAt?: string;
+  updatedAt?: string;
   coordinates?: PropertyCoordinates;
   latestRun?: ListingRunReference;
   runs: ListingRunReference[];
   evaluation?: ListingEvaluation;
   evaluations: ListingEvaluation[];
 }
+
+/** Lightweight catalog projection. Evaluation evidence is available from the detail endpoint. */
+export type PropertyMapListing = Omit<PropertyListing, "evaluation"> & {
+  evaluation?: Pick<ListingEvaluation, "decision" | "score" | "evaluatedAt"> & { summary?: string };
+};
 
 export interface IntelligenceCriterion {
   id: string;
@@ -158,6 +164,8 @@ export interface ListingFilters {
   energyClassMax?: string;
   cursor?: string;
   limit?: number;
+  sort?: "title" | "priceEuros" | "surfaceM2" | "score" | "source" | "updatedAt";
+  order?: "asc" | "desc";
 }
 
 export interface PaginatedListings {

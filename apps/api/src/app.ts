@@ -20,6 +20,7 @@ import {
   ingestionRequestSchema,
   listingIdentitySchema,
   listingsQuerySchema,
+  listingsMapQuerySchema,
   recipeDraftSchema,
   runListingsQuerySchema,
   runsQuerySchema,
@@ -219,6 +220,21 @@ export function createApp({
 
   app.get("/v1/listings", (request, response) => {
     response.json(repository.listListings(parseOrThrow(listingsQuerySchema.safeParse(request.query))));
+  });
+
+  app.get("/v1/listings/metadata", (request, response) => {
+    const result = repository.listingsMetadata(request.get("If-None-Match"));
+    response.set({ ETag: result.etag, "Cache-Control": "private, no-cache" });
+    if (!result.metadata) { response.status(304).end(); return; }
+    response.json(result.metadata);
+  });
+
+  app.get("/v1/listings/map", (request, response) => {
+    const query = parseOrThrow(listingsMapQuerySchema.safeParse(request.query));
+    const result = repository.listMapListings(query, request.get("If-None-Match"));
+    response.set({ ETag: result.etag, "Cache-Control": "private, no-cache" });
+    if (!result.page) { response.status(304).end(); return; }
+    response.json(result.page);
   });
 
   app.get("/v1/listings/:source/:externalId", (request, response) => {

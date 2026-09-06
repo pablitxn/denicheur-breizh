@@ -8,7 +8,7 @@ const mapRuntime = vi.hoisted(() => ({ create: vi.fn(), fail: false }));
 const query = vi.hoisted(() => ({ items: [] as PropertyListing[] }));
 
 vi.mock("../../api/hooks", () => ({
-  useListings: () => ({ data: { items: query.items }, isSuccess: true, isFetching: false }),
+  useMapListings: () => ({ data: { items: query.items }, isSuccess: true, isFetching: false }),
   useListing: () => ({}),
 }));
 
@@ -59,6 +59,18 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("map recovery and navigation", () => {
+  it("bounds the sidebar to 30 results while keeping every matching listing reachable", async () => {
+    query.items = Array.from({ length: 1000 }, (_, index) => ({ ...query.items[0]!, key: `leboncoin:${index}`, externalId: String(index), title: `Home ${index}` }));
+    renderMap();
+    expect(screen.getAllByRole("button", { name: /^Show details for Home/ })).toHaveLength(30);
+    fireEvent.click(screen.getByRole("button", { name: "Next" }));
+    expect(screen.getByRole("button", { name: "Show details for Home 30" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show details for Home 0" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /^Show details for Home/ })).toHaveLength(30);
+    fireEvent.click(screen.getByRole("button", { name: "Previous" }));
+    expect(screen.getByRole("button", { name: "Show details for Home 0" })).toBeInTheDocument();
+  });
+
   it("discards failed canvas setup when changing locale", async () => {
     mapRuntime.fail = true;
     renderMap();

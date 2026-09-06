@@ -29,6 +29,10 @@ import {
   listingEvaluationRecordSchema,
   listingIngestionSchema,
   listingRecordSchema,
+  listingMapSummarySchema,
+  type ListingsMapQuery,
+  type ListingsMapPage,
+  type ListingsMetadata,
   parseListingKey,
   recipeVersionSchema,
   resolvedEvaluationPlanVersionSchema,
@@ -86,7 +90,9 @@ interface Migration {
   readonly sql: string;
 }
 
-const LATEST_EVALUATION_ORDER = "e.evaluated_at DESC, e.run_id DESC, e.recipe_id ASC, e.recipe_version DESC, e.locale ASC";
+import { EVALUATION_COUNTER_MIGRATION, EXECUTION_COUNTERS_JSON_SQL } from "./evaluationCounterSql.js";
+import { PaginationSnapshots, PAGINATION_SNAPSHOT_MIGRATION, collectionEtag, type PaginationSnapshotPolicy, type SnapshotPayload } from "./paginationSnapshots.js";
+import { LATEST_EVALUATION_ORDER, LISTING_EVALUATION_JOIN, LISTING_PAYLOAD_SQL, LISTING_MAP_PAYLOAD_SQL, EXECUTION_PAYLOAD_SQL } from "./listingReadSql.js";
 
 export const DATABASE_MIGRATIONS: readonly Migration[] = [
   {
@@ -469,6 +475,8 @@ export const DATABASE_MIGRATIONS: readonly Migration[] = [
       ) STRICT;
     `,
   },
+  { version: 10, sql: PAGINATION_SNAPSHOT_MIGRATION },
+  { version: 11, sql: EVALUATION_COUNTER_MIGRATION },
 ];
 
 interface StoredListingRow extends Record<string, unknown> {
@@ -634,6 +642,7 @@ export interface RepositoryOptions {
   readonly path: string;
   readonly now?: () => Date;
   readonly mediaAdmission?: Partial<MediaAdmissionPolicy>;
+  readonly paginationSnapshots?: Partial<PaginationSnapshotPolicy>;
 }
 
 export interface MediaAdmissionPolicy {
@@ -789,6 +798,8 @@ export class DenicheurRepository implements GlobalProviderBudgetStore {
   private readonly database: DatabaseSync;
   private readonly now: () => Date;
   private readonly mediaAdmission: MediaAdmissionPolicy;
+  private readonly snapshots: PaginationSnapshots;
+  private listingMetadataCache?: ListingsMetadata;
 
   constructor(options: RepositoryOptions) {
     const privateDatabase = options.path === ":memory:"
@@ -801,6 +812,8 @@ export class DenicheurRepository implements GlobalProviderBudgetStore {
       this.database.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;");
       assertMediaAdmissionPolicy(this.mediaAdmission);
       this.migrate();
+      this.snapshots = new PaginationSnapshots(this.database, this.now, options.paginationSnapshots);
+      this.snapshots.prune(true);
       if (!this.isCollectedDataCleanupActive()) this.reconcileLegacyMedia();
       this.seedDefaultEvaluationPlan();
       this.reconcileAbandonedEvaluationAttempts();
@@ -1236,6 +1249,8 @@ export class DenicheurRepository implements GlobalProviderBudgetStore {
 
       const deleted = this.collectedDataCounts();
       this.database.exec(`
+        DELETE FROM pagination_snapshots;
+        DELETE FROM listing_projection_payloads;
         DELETE FROM media_jobs;
         DELETE FROM listing_media;
         DELETE FROM media_assets;
@@ -1245,6 +1260,7 @@ export class DenicheurRepository implements GlobalProviderBudgetStore {
         DELETE FROM run_listings;
         DELETE FROM listings;
         DELETE FROM runs;
+        DELETE FROM listing_read_revisions;
       `);
 
       const remaining = this.collectedDataCounts();
@@ -1330,29 +1346,71 @@ export class DenicheurRepository implements GlobalProviderBudgetStore {
   }
 
   listListings(query: ListingsQuery): ListingsPage {
-    const offset = decodeCursor(query.cursor);
     const { where, parameters } = listingWhere(query);
-    const totalRow = this.database.prepare(`SELECT COUNT(*) AS total FROM listings l ${where}`).get(...parameters);
-    const total = readNumber(totalRow, "total");
     const sortColumn = {
-      updatedAt: "l.updated_at",
-      scrapedAt: "l.scraped_at",
-      priceEuros: "l.price_euros",
+      updatedAt: "l.updated_at", scrapedAt: "l.scraped_at", priceEuros: "l.price_euros",
+      title: "json_extract(l.data_json, '$.title')", surfaceM2: "l.surface_m2", score: "e.score", source: "l.source",
     }[query.sort];
-    const rows = this.database.prepare(`
-      SELECT l.* FROM listings l
-      ${where}
-      ORDER BY ${sortColumn} ${query.order.toUpperCase()}, l.source ASC, l.external_id ASC
-      LIMIT ? OFFSET ?
-    `).all(...parameters, query.limit, offset) as StoredListingRow[];
-    const items = this.rowsToListings(rows);
-    const nextOffset = offset + items.length;
+    const { items, nextCursor, total } = this.snapshots.read({
+      collection: "listings", query: { ...query, projection: "full", sources: query.sources ? [...query.sources].sort() : undefined },
+      limit: query.limit, cursor: query.cursor,
+      load: () => this.listingProjectionRows("full", where, parameters,
+        `(${sortColumn} IS NULL) ASC, ${sortColumn} ${query.order.toUpperCase()}, l.source, l.external_id`),
+      parse: (payload) => {
+        const snapshot = JSON.parse(payload) as {
+          data: string; id: string; lastRunId: string; firstSeenAt: string; lastSeenAt: string; updatedAt: string;
+          imageAssets: ListingImageAsset[]; evaluation: StoredEvaluationRow | null;
+        };
+        const { data, evaluation, ...metadata } = snapshot;
+        return listingRecordSchema.parse({
+          ...parseListingData(data), ...metadata,
+          ...(evaluation ? { latestEvaluation: rowToEvaluation(evaluation) } : {}),
+        });
+      },
+    });
+    return { items, nextCursor, total };
+  }
 
-    return {
-      items,
-      nextCursor: nextOffset < total ? encodeCursor(nextOffset) : null,
-      total,
-    };
+  listingsMetadata(ifNoneMatch?: string): { metadata?: ListingsMetadata; etag: string } {
+    return this.transaction(() => {
+      const revision = this.snapshots.revision("listings");
+      const etag = collectionEtag(revision, { projection: "metadata" });
+      if (ifNoneMatch === etag) return { etag };
+      if (this.listingMetadataCache?.revision !== revision) {
+        const sources = this.database.prepare("SELECT source, COUNT(*) AS count FROM listings GROUP BY source ORDER BY source")
+          .all() as ListingsMetadata["sources"];
+        this.listingMetadataCache = { revision, sources, total: sources.reduce((sum, source) => sum + source.count, 0) };
+      }
+      return { metadata: this.listingMetadataCache, etag };
+    });
+  }
+
+  listMapListings(query: ListingsMapQuery, ifNoneMatch?: string): { page?: ListingsMapPage; etag: string } {
+    const snapshotQuery = { projection: "map" };
+    const etagQuery = { ...snapshotQuery, pageSize: query.limit, pageCursor: query.cursor ?? null };
+    const { items, nextCursor, total, revision, notModified } = this.snapshots.read({
+      collection: "listings", query: snapshotQuery, limit: query.limit, cursor: query.cursor, ifNoneMatch, etagQuery,
+      load: () => this.listingProjectionRows("map", "", [], "l.source, l.external_id"),
+      parse: (payload) => listingMapSummarySchema.parse(JSON.parse(payload)),
+    });
+    return { ...(notModified ? {} : { page: { items, nextCursor, total } }), etag: collectionEtag(revision, etagQuery) };
+  }
+
+  private listingProjectionRows(projection: "full" | "map", where: string, parameters: SQLInputValue[], order: string): Iterable<SnapshotPayload> {
+    const payloadSql = projection === "full" ? LISTING_PAYLOAD_SQL : LISTING_MAP_PAYLOAD_SQL;
+    const joins = `FROM listings l ${LISTING_EVALUATION_JOIN}
+      JOIN listing_read_revisions revision ON revision.source = l.source AND revision.external_id = l.external_id
+      LEFT JOIN listing_projection_payloads cached ON cached.source = l.source AND cached.external_id = l.external_id
+        AND cached.projection = ? AND cached.revision = revision.revision`;
+    // Existing immutable versions are shared by every query/order at this revision.
+    // Only changed listings pay the full JSON/materialization cost after ingestion.
+    this.database.prepare(`INSERT INTO listing_projection_payloads(source, external_id, projection, revision, payload)
+      SELECT l.source, l.external_id, ?, revision.revision, ${payloadSql} ${joins}
+      ${where} ${where ? "AND" : "WHERE"} cached.id IS NULL LIMIT 100001
+    `).run(projection, projection, ...parameters);
+    return this.database.prepare(`SELECT 'null' AS payload, cached.id AS payload_id, cached.size_bytes
+      ${joins} ${where} ORDER BY ${order}
+    `).iterate(projection, ...parameters) as Iterable<SnapshotPayload>;
   }
 
   getListing(identity: ListingIdentity): ListingDetail | undefined {
@@ -1380,28 +1438,20 @@ export class DenicheurRepository implements GlobalProviderBudgetStore {
   }
 
   listRuns(query: RunsQuery): RunsPage {
-    const offset = decodeCursor(query.cursor);
     const clauses: string[] = [];
     const parameters: SQLInputValue[] = [];
-    if (query.source) {
-      clauses.push("source = ?");
-      parameters.push(query.source);
-    }
-    if (query.status) {
-      clauses.push("status = ?");
-      parameters.push(query.status);
-    }
+    if (query.source) { clauses.push("source = ?"); parameters.push(query.source); }
+    if (query.status) { clauses.push("status = ?"); parameters.push(query.status); }
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-    const total = readNumber(this.database.prepare(`SELECT COUNT(*) AS total FROM runs ${where}`).get(...parameters), "total");
-    const rows = this.database.prepare(`
-      SELECT * FROM runs ${where}
-      ORDER BY updated_at ${query.order.toUpperCase()}, id ASC
-      LIMIT ? OFFSET ?
-    `).all(...parameters, query.limit, offset) as StoredRunRow[];
-    const items = rows.map(rowToRun);
-    const nextOffset = offset + items.length;
-
-    return { items, nextCursor: nextOffset < total ? encodeCursor(nextOffset) : null, total };
+    const { items, nextCursor, total } = this.snapshots.read({
+      collection: "runs", query, limit: query.limit, cursor: query.cursor,
+      load: () => this.database.prepare(`
+        SELECT json_patch(data_json, json_object('updatedAt', updated_at)) AS payload FROM runs ${where}
+        ORDER BY updated_at ${query.order.toUpperCase()}, id ASC
+      `).iterate(...parameters) as Iterable<{ payload: string }>,
+      parse: (payload) => runRecordSchema.parse(JSON.parse(payload)),
+    });
+    return { items, nextCursor, total };
   }
 
   getRun(id: string): RunDetail | undefined {
@@ -1768,34 +1818,21 @@ export class DenicheurRepository implements GlobalProviderBudgetStore {
   }
 
   listEvaluationExecutions(query: EvaluationExecutionsQuery): EvaluationExecutionsPage {
-    const offset = decodeCursor(query.cursor);
     const clauses: string[] = [];
     const parameters: SQLInputValue[] = [];
-    if (query.runId) {
-      clauses.push("run_id = ?");
-      parameters.push(query.runId);
-    }
-    if (query.status) {
-      clauses.push("status = ?");
-      parameters.push(query.status);
-    }
+    if (query.runId) { clauses.push("execution.run_id = ?"); parameters.push(query.runId); }
+    if (query.status) { clauses.push("execution.status = ?"); parameters.push(query.status); }
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-    const total = readNumber(
-      this.database.prepare(`SELECT COUNT(*) AS total FROM evaluation_executions ${where}`).get(...parameters),
-      "total",
-    );
-    const rows = this.database.prepare(`
-      SELECT * FROM evaluation_executions ${where}
-      ORDER BY created_at ${query.order.toUpperCase()}, id ASC
-      LIMIT ? OFFSET ?
-    `).all(...parameters, query.limit, offset) as StoredEvaluationExecutionRow[];
-    const items = rows.map((row) => this.rowToEvaluationExecution(row));
-    const nextOffset = offset + items.length;
-    return evaluationExecutionsPageSchema.parse({
-      items,
-      nextCursor: nextOffset < total ? encodeCursor(nextOffset) : null,
-      total,
+    const { items, nextCursor, total } = this.snapshots.read({
+      collection: "executions", query, limit: query.limit, cursor: query.cursor,
+      load: () => this.database.prepare(`
+        SELECT ${EXECUTION_PAYLOAD_SQL} AS payload FROM evaluation_executions execution
+        LEFT JOIN evaluation_execution_budgets budget ON budget.execution_id = execution.id
+        ${where} ORDER BY execution.created_at ${query.order.toUpperCase()}, execution.id ASC
+      `).iterate(...parameters) as Iterable<{ payload: string }>,
+      parse: (payload) => evaluationExecutionRecordSchema.parse(JSON.parse(payload)),
     });
+    return evaluationExecutionsPageSchema.parse({ items, nextCursor, total });
   }
 
   getEvaluationExecutionResults(id: string): EvaluationExecutionResults | undefined {
@@ -2069,18 +2106,46 @@ export class DenicheurRepository implements GlobalProviderBudgetStore {
     if (updated.changes !== 1) throw new Error("The evaluation execution lease was lost before completing its step.");
   }
 
-  completeEvaluationExecutionItem(leaseOwner: string, result: EvaluationExecutionListingResult): void {
+  completeEvaluationExecutionItem(leaseOwner: string, incoming: EvaluationExecutionListingResult): void {
+    const result = evaluationExecutionListingResultSchema.parse(incoming);
     const identity = parseListingKey(result.listingId);
     if (!identity) throw new Error(`Invalid execution result listing id: ${result.listingId}`);
     this.transaction(() => {
       this.assertEvaluationExecutionLease(result.executionId, leaseOwner);
+      const previous = this.database.prepare(`
+        SELECT item.result_decision, item.result_failed, execution.plan_id, execution.plan_version
+        FROM evaluation_execution_items item JOIN evaluation_executions execution ON execution.id = item.execution_id
+        WHERE item.execution_id = ? AND item.source = ? AND item.external_id = ?
+      `).get(result.executionId, identity.source, identity.externalId) as {
+        result_decision: string | null; result_failed: number; plan_id: string; plan_version: number;
+      } | undefined;
+      if (!previous) throw new ApiError(404, "EVALUATION_ITEM_NOT_FOUND", "The listing does not belong to this execution.");
+      if (previous.plan_id !== result.planId || previous.plan_version !== result.planVersion) {
+        throw new ApiError(409, "EVALUATION_PLAN_MISMATCH", "The result does not belong to this execution's plan version.");
+      }
+      const failed = Number(result.steps.some((step) => step.status === "failed"));
       const now = this.now().toISOString();
       this.database.prepare(`
         UPDATE evaluation_execution_items
-        SET status = 'completed', result_json = ?, updated_at = ?
+        SET status = 'completed', result_json = ?, result_decision = ?, result_failed = ?, updated_at = ?
         WHERE execution_id = ? AND source = ? AND external_id = ?
-      `).run(JSON.stringify(result), now, result.executionId, identity.source, identity.externalId);
-      this.refreshEvaluationExecutionCounters(result.executionId);
+      `).run(JSON.stringify(result), result.decision, failed, now, result.executionId, identity.source, identity.externalId);
+      // Replace just this item's contribution. Replaying or overwriting a checkpoint never double-counts it.
+      this.database.prepare(`
+        UPDATE evaluation_executions SET counters_json = json_set(counters_json,
+          '$.processed', json_extract(counters_json, '$.processed') + ?,
+          '$.relevant', json_extract(counters_json, '$.relevant') + ?,
+          '$.notRelevant', json_extract(counters_json, '$.notRelevant') + ?,
+          '$.review', json_extract(counters_json, '$.review') + ?,
+          '$.failed', json_extract(counters_json, '$.failed') + ?
+        ), updated_at = ? WHERE id = ?
+      `).run(
+        previous.result_decision === null ? 1 : 0,
+        Number(result.decision === "relevant") - Number(previous.result_decision === "relevant"),
+        Number(result.decision === "not-relevant") - Number(previous.result_decision === "not-relevant"),
+        Number(result.decision === "review") - Number(previous.result_decision === "review"),
+        failed - previous.result_failed, now, result.executionId,
+      );
     });
   }
 
@@ -3059,61 +3124,11 @@ export class DenicheurRepository implements GlobalProviderBudgetStore {
   }
 
   private refreshEvaluationExecutionCounters(id: string): void {
-    const rows = this.database.prepare(`
-      SELECT result_json
-      FROM evaluation_execution_items
-      WHERE execution_id = ? AND result_json IS NOT NULL
-    `).all(id);
-    const results = rows.map((row) => evaluationExecutionListingResultSchema.parse(
-      JSON.parse(readString(row, "result_json")) as unknown,
-    ));
-    const counters = {
-      total: readNumber(this.database.prepare(`
-        SELECT COUNT(*) AS total FROM evaluation_execution_items WHERE execution_id = ?
-      `).get(id), "total"),
-      processed: results.length,
-      relevant: results.filter((result) => result.decision === "relevant").length,
-      notRelevant: results.filter((result) => result.decision === "not-relevant").length,
-      review: results.filter((result) => result.decision === "review").length,
-      failed: results.filter((result) => result.steps.some((step) => step.status === "failed")).length,
-    };
     this.database.prepare(`
-      UPDATE evaluation_executions SET counters_json = ?, updated_at = ? WHERE id = ?
-    `).run(JSON.stringify(counters), this.now().toISOString(), id);
-  }
-
-  private rowsToListings(rows: readonly StoredListingRow[]): ListingRecord[] {
-    if (!rows.length) return [];
-    const listings = rows.map((row) => {
-      const data = parseListingData(row.data_json);
-      return { row, data, mediaSourceUrls: listingMediaSourceUrls(data) };
-    });
-    // Resolve only this bounded page. Indexed LIMIT 1 lookups avoid loading evaluation history.
-    const evaluationRows = this.database.prepare(`
-      WITH requested(source, external_id) AS (VALUES ${rows.map(() => "(?, ?)").join(", ")})
-      SELECT latest.* FROM requested
-      JOIN evaluations latest ON latest.rowid = (
-        SELECT e.rowid FROM evaluations e
-        WHERE e.source = requested.source AND e.external_id = requested.external_id
-        ORDER BY ${LATEST_EVALUATION_ORDER}
-        LIMIT 1
-      )
-    `).all(...listings.flatMap(({ data }) => [data.source, data.externalId])) as StoredEvaluationRow[];
-    const evaluationsByListingId = new Map(evaluationRows.map((row) => {
-      const evaluation = rowToEvaluation(row);
-      return [evaluation.listingId, evaluation];
-    }));
-    const mediaBySourceUrl = this.mediaAssetsBySourceUrl(uniqueStrings(
-      listings.flatMap(({ mediaSourceUrls }) => mediaSourceUrls),
-    ));
-    return listings.map(({ row, data, mediaSourceUrls }) => this.rowToListing(row, {
-      data,
-      latestEvaluation: evaluationsByListingId.get(createListingKey(data)),
-      imageAssets: mediaSourceUrls.flatMap((sourceUrl) => {
-        const asset = mediaBySourceUrl.get(sourceUrl);
-        return asset ? [asset] : [];
-      }),
-    }));
+      UPDATE evaluation_executions SET counters_json = (
+        SELECT ${EXECUTION_COUNTERS_JSON_SQL} FROM evaluation_execution_items WHERE execution_id = ?
+      ), updated_at = ? WHERE id = ?
+    `).run(id, this.now().toISOString(), id);
   }
 
   private rowToListing(row: StoredListingRow, related?: {
@@ -3494,6 +3509,10 @@ function listingWhere(query: ListingsQuery): { where: string; parameters: SQLInp
     parameters.push(value);
   };
   if (query.source) add("l.source = ?", query.source);
+  if (query.sources?.length) {
+    clauses.push(`l.source IN (${query.sources.map(() => "?").join(", ")})`);
+    parameters.push(...query.sources);
+  }
   if (query.runId) {
     add(`EXISTS (
       SELECT 1 FROM run_listings rl
@@ -3515,30 +3534,6 @@ function listingWhere(query: ListingsQuery): { where: string; parameters: SQLInp
   if (query.surfaceMax !== undefined) add("l.surface_m2 <= ?", query.surfaceMax);
   if (query.energyClass) add("l.energy_class = ?", query.energyClass);
   return { where: clauses.length ? `WHERE ${clauses.join(" AND ")}` : "", parameters };
-}
-
-function encodeCursor(offset: number): string {
-  return Buffer.from(JSON.stringify({ offset }), "utf8").toString("base64url");
-}
-
-function decodeCursor(cursor: string | undefined): number {
-  if (!cursor) return 0;
-  try {
-    const decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as unknown;
-    if (
-      typeof decoded !== "object" ||
-      decoded === null ||
-      !("offset" in decoded) ||
-      typeof decoded.offset !== "number" ||
-      !Number.isSafeInteger(decoded.offset) ||
-      decoded.offset < 0
-    ) {
-      throw new Error("invalid cursor");
-    }
-    return decoded.offset;
-  } catch (error) {
-    throw new ApiError(400, "INVALID_CURSOR", "The pagination cursor is invalid.", { cause: error });
-  }
 }
 
 interface RunListingsCursor {

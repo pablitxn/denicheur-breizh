@@ -25,6 +25,63 @@ afterEach(() => {
 });
 
 describe("denicheurApi", () => {
+  it("keeps the complete compact map catalog on a 304 without fetching its other pages again", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ items: [listing({ title: "First" })], nextCursor: "second", total: 2 }), { headers: { ETag: '"catalog-1"' } }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ items: [listing({ id: "leboncoin:second", externalId: "second" })], nextCursor: null, total: 2 })))
+      .mockResolvedValueOnce(new Response(null, { status: 304 }));
+    vi.stubGlobal("fetch", fetcher);
+    const initial = await denicheurApi.listMapCatalog();
+    expect(initial.value.items).toHaveLength(2);
+    expect(initial.value.items[0]?.imageUrls).toEqual([]);
+    const refreshed = await denicheurApi.listMapCatalog(initial);
+    expect(refreshed).toBe(initial);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(new Headers(fetcher.mock.calls[2]?.[1].headers).get("If-None-Match")).toBe('"catalog-1"');
+  });
+
+  it("restarts an expired map snapshot without mixing partial generations", async () => {
+    const page = (id: string, nextCursor: string | null) => new Response(JSON.stringify({ items: [listing({ id: `leboncoin:${id}`, externalId: id })], nextCursor, total: 2 }));
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(page("old-first", "expired"))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: "CURSOR_EXPIRED" } }), { status: 410 }))
+      .mockResolvedValueOnce(page("new-first", "fresh"))
+      .mockResolvedValueOnce(page("new-second", null)));
+    const result = await denicheurApi.listMapCatalog();
+    expect(result.value.items.map((item) => item.externalId)).toEqual(["new-first", "new-second"]);
+  });
+
+  it("does not replace a complete catalog when its refresh fails midway", async () => {
+    const previous = { value: { items: [], total: 0 }, etag: '"previous"' };
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ items: [listing()], nextCursor: "next", total: 2 })))
+      .mockRejectedValueOnce(new Error("Disconnected")));
+    await expect(denicheurApi.listMapCatalog(previous)).rejects.toThrow("Disconnected");
+    expect(previous.value).toEqual({ items: [], total: 0 });
+  });
+
+  it("validates metadata and reuses its value on conditional refresh", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ revision: "42", total: 5000, sources: [{ source: "leboncoin", count: 5000 }] }), { headers: { ETag: '"42"' } }))
+      .mockResolvedValueOnce(new Response(null, { status: 304 }));
+    vi.stubGlobal("fetch", fetcher);
+    const first = await denicheurApi.listingsMetadata();
+    expect((await denicheurApi.listingsMetadata(first))).toBe(first);
+    expect(new Headers(fetcher.mock.calls[1]?.[1].headers).get("If-None-Match")).toBe('"42"');
+  });
+
+  it("sends multi-source filters, sort direction and opaque cursors to the server", async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [], nextCursor: null, total: 0 })));
+    vi.stubGlobal("fetch", fetcher);
+    await denicheurApi.listProperties({ sources: ["leboncoin", "seloger"], sort: "score", order: "asc", cursor: "opaque+/=", limit: 50 });
+    const url = new URL(fetcher.mock.calls[0]?.[0]);
+    expect(url.searchParams.getAll("sources")).toEqual(["leboncoin", "seloger"]);
+    expect(url.searchParams.get("sort")).toBe("score");
+    expect(url.searchParams.get("order")).toBe("asc");
+    expect(url.searchParams.get("cursor")).toBe("opaque+/=");
+    expect(url.searchParams.get("limit")).toBe("50");
+  });
+
   it("preserves an API pathname prefix when resolving media routes", () => {
     expect(resolveApiPath("/v1/media/asset/gallery.webp", "https://codex-scout.orchid-labs.xyz/api"))
       .toBe("https://codex-scout.orchid-labs.xyz/api/v1/media/asset/gallery.webp");
@@ -95,25 +152,6 @@ describe("denicheurApi", () => {
       thumbnailUrl: `${API_BASE_URL}/v1/media/${assetId}/thumbnail.webp`,
       galleryUrl: `${API_BASE_URL}/v1/media/${assetId}/gallery.webp`,
     }]);
-  });
-
-  it("follows opaque cursors so UI coverage is based on the full resource, not only the first page", async () => {
-    const fetcher = vi.fn(async (input: RequestInfo | URL) => {
-      const url = new URL(String(input));
-      const secondPage = url.searchParams.get("cursor") === "next-page";
-      return new Response(JSON.stringify({
-        items: [listing({ externalId: secondPage ? "second" : "first", id: `leboncoin:${secondPage ? "second" : "first"}` })],
-        nextCursor: secondPage ? null : "next-page",
-        total: 2,
-      }), { status: 200 });
-    });
-    vi.stubGlobal("fetch", fetcher);
-
-    const result = await denicheurApi.listAllProperties();
-
-    expect(result.items.map((item) => item.key)).toEqual(["leboncoin:first", "leboncoin:second"]);
-    expect(result.total).toBe(2);
-    expect(fetcher).toHaveBeenCalledTimes(2);
   });
 
   it("requests one bounded run-listings page with an encoded run id and opaque cursor", async () => {

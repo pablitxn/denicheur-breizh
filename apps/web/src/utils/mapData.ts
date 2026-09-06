@@ -3,10 +3,10 @@ import {
   pointIsInAdministrativeArea,
   type AdministrativeArea,
 } from "../features/map/mapGeography";
-import type { PropertyListing } from "../types";
+import type { PropertyMapListing } from "../types";
 
 export interface MapCoverage {
-  mapped: PropertyListing[];
+  mapped: PropertyMapListing[];
   sourcePropertyCount: number;
   approximateCount: number;
   unmappedCount: number;
@@ -19,7 +19,7 @@ export interface MapBounds {
   north: number;
 }
 
-export function summarizeMapCoverage(properties: PropertyListing[]): MapCoverage {
+export function summarizeMapCoverage(properties: PropertyMapListing[]): MapCoverage {
   const mapped = properties.filter((property) => property.coordinates !== undefined);
   const sourcePropertyCount = mapped.filter(
     (property) => property.coordinates?.locationKind === "source-property",
@@ -34,9 +34,9 @@ export function summarizeMapCoverage(properties: PropertyListing[]): MapCoverage
 }
 
 export function propertiesWithinBounds(
-  properties: PropertyListing[],
+  properties: PropertyMapListing[],
   bounds: MapBounds,
-): PropertyListing[] {
+): PropertyMapListing[] {
   return properties.filter((property) => {
     const coordinates = property.coordinates;
     if (!coordinates) return false;
@@ -52,9 +52,9 @@ export function propertiesWithinBounds(
 }
 
 export function propertiesWithinAdministrativeArea(
-  properties: PropertyListing[],
+  properties: PropertyMapListing[],
   area: AdministrativeArea,
-): PropertyListing[] {
+): PropertyMapListing[] {
   return properties.filter((property) => {
     const coordinates = property.coordinates;
     return coordinates !== undefined && pointIsInAdministrativeArea(
@@ -64,7 +64,7 @@ export function propertiesWithinAdministrativeArea(
   });
 }
 
-export function propertiesToGeoJson(properties: PropertyListing[]): FeatureCollection<Point> {
+export function propertiesToGeoJson(properties: PropertyMapListing[]): FeatureCollection<Point> {
   return {
     type: "FeatureCollection",
     features: properties.flatMap((property) => {

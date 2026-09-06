@@ -9,6 +9,8 @@ import {
   healthDetailsResponseSchema,
   listingDetailSchema,
   listingsPageSchema,
+  listingsMapPageSchema,
+  listingsMetadataSchema,
   recipeDraftSchema,
   recipeVersionSchema,
   recipesResponseSchema,
@@ -26,6 +28,8 @@ import {
   type ListingEvaluationRecord,
   type ListingRecord,
   type ListingsPage,
+  type ListingMapSummary,
+  type ListingsMetadata,
   type RecipeVersion,
   type RunDetail,
   type RunListingsPage,
@@ -41,6 +45,7 @@ import type {
   PaginatedListings,
   PropertyImageAsset,
   PropertyListing,
+  PropertyMapListing,
   RecipeDraft,
   StartEvaluationExecutionInput,
 } from "../types";
@@ -59,14 +64,34 @@ interface RuntimeSchema<T> {
   safeParse(value: unknown): { success: true; data: T } | { success: false };
 }
 
+export interface ConditionalValue<T> { value: T; etag?: string }
+export interface MapCatalog { items: PropertyMapListing[]; total: number }
+
+export function isExpiredCursor(error: unknown): boolean {
+  return error instanceof DenicheurApiError && error.status === 410;
+}
+
 async function requestJson<T>(
   path: string,
   schema: RuntimeSchema<T>,
   init?: RequestInit,
   signal?: AbortSignal,
 ): Promise<T> {
+  const response = await requestConditionalJson(path, schema, init, signal);
+  if (response.value === null) throw new DenicheurApiError("Unexpected empty response.", 304, "INVALID_API_RESPONSE");
+  return response.value;
+}
+
+async function requestConditionalJson<T>(
+  path: string,
+  schema: RuntimeSchema<T>,
+  init?: RequestInit,
+  signal?: AbortSignal,
+  etag?: string,
+): Promise<{ value: T | null; etag?: string }> {
   const headers = new Headers(init?.headers);
   headers.set("Accept", "application/json");
+  if (etag) headers.set("If-None-Match", etag);
   if (init?.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
 
   let response: Response;
@@ -77,6 +102,7 @@ async function requestJson<T>(
     throw new DenicheurApiError(error instanceof Error ? error.message : "API unavailable");
   }
 
+  if (response.status === 304 && etag) return { value: null, etag };
   const payload: unknown = await response.json().catch(() => undefined);
   if (!response.ok) {
     const apiError = readApiError(payload);
@@ -87,10 +113,41 @@ async function requestJson<T>(
   if (!parsed.success) {
     throw new DenicheurApiError("The API returned a response that does not match the shared contract.", response.status, "INVALID_API_RESPONSE");
   }
-  return parsed.data;
+  return { value: parsed.data, etag: response.headers.get("ETag") ?? undefined };
 }
 
 export const denicheurApi = {
+  async listingsMetadata(previous?: ConditionalValue<ListingsMetadata>, signal?: AbortSignal): Promise<ConditionalValue<ListingsMetadata>> {
+    const response = await requestConditionalJson("/v1/listings/metadata", listingsMetadataSchema, undefined, signal, previous?.etag);
+    return response.value === null && previous ? previous : { value: response.value!, etag: response.etag };
+  },
+
+  async listMapCatalog(previous?: ConditionalValue<MapCatalog>, signal?: AbortSignal): Promise<ConditionalValue<MapCatalog>> {
+    // Commit only a complete traversal. An expired snapshot restarts once; partial pages never leak into the map.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const first = await requestConditionalJson("/v1/listings/map?limit=500", listingsMapPageSchema, undefined, signal, attempt === 0 ? previous?.etag : undefined);
+        if (first.value === null && previous) return previous;
+        if (!first.value) throw new DenicheurApiError("Unexpected empty map response.", 304, "INVALID_API_RESPONSE");
+        const items = first.value.items.map(normalizeMapListing);
+        const seen = new Set<string>();
+        let cursor = first.value.nextCursor;
+        while (cursor) {
+          if (seen.has(cursor)) throw new DenicheurApiError("The API repeated a pagination cursor.", undefined, "INVALID_API_RESPONSE");
+          seen.add(cursor);
+          const params = new URLSearchParams({ limit: "500", cursor });
+          const page = await requestJson(`/v1/listings/map?${params}`, listingsMapPageSchema, undefined, signal);
+          items.push(...page.items.map(normalizeMapListing));
+          cursor = page.nextCursor;
+        }
+        return { value: { items, total: first.value.total }, etag: first.etag };
+      } catch (error) {
+        if (attempt > 0 || !isExpiredCursor(error)) throw error;
+      }
+    }
+    throw new DenicheurApiError("The catalog could not be loaded.");
+  },
+
   async health(signal?: AbortSignal): Promise<HealthStatus> {
     const health: HealthDetailsResponse = await requestJson(
       "/v1/health/details",
@@ -112,24 +169,6 @@ export const denicheurApi = {
     return { items: page.items.map((item) => normalizeListing(item)), nextCursor: page.nextCursor, total: page.total };
   },
 
-  async listAllProperties(filters: ListingFilters = {}, signal?: AbortSignal): Promise<PaginatedListings> {
-    const items = new Map<string, PropertyListing>();
-    let cursor = filters.cursor;
-    let total = 0;
-    const seenCursors = new Set<string>();
-    do {
-      const page = await this.listProperties({ ...filters, cursor, limit: 100 }, signal);
-      page.items.forEach((item) => items.set(item.key, item));
-      total = page.total;
-      cursor = page.nextCursor ?? undefined;
-      if (cursor) {
-        if (seenCursors.has(cursor)) throw new DenicheurApiError("The API repeated a pagination cursor.", undefined, "INVALID_API_RESPONSE");
-        seenCursors.add(cursor);
-      }
-    } while (cursor);
-    return { items: Array.from(items.values()), nextCursor: null, total };
-  },
-
   async getProperty(source: string, externalId: string, signal?: AbortSignal): Promise<PropertyListing> {
     const detail: ListingDetail = await requestJson(
       `/v1/listings/${encodeURIComponent(source)}/${encodeURIComponent(externalId)}`,
@@ -140,8 +179,10 @@ export const denicheurApi = {
     return normalizeListing(detail, detail);
   },
 
-  async listRuns(signal?: AbortSignal): Promise<RunsPage> {
-    return requestJson("/v1/runs?limit=100", runsPageSchema, undefined, signal);
+  async listRuns(signal?: AbortSignal, cursor?: string): Promise<RunsPage> {
+    const params = new URLSearchParams({ limit: "100" });
+    if (cursor) params.set("cursor", cursor);
+    return requestJson(`/v1/runs?${params}`, runsPageSchema, undefined, signal);
   },
 
   async getRun(runId: string, signal?: AbortSignal): Promise<RunDetail> {
@@ -247,8 +288,10 @@ export const denicheurApi = {
   async listEvaluationExecutions(
     filters: { runId?: string; status?: EvaluationExecution["status"] } = {},
     signal?: AbortSignal,
+    cursor?: string,
   ): Promise<EvaluationExecutionsPage> {
     const params = new URLSearchParams({ limit: "100", order: "desc" });
+    if (cursor) params.set("cursor", cursor);
     if (filters.runId) params.set("runId", filters.runId);
     if (filters.status) params.set("status", filters.status);
     return requestJson(`/v1/evaluation-executions?${params}`, evaluationExecutionsPageSchema, undefined, signal);
@@ -300,7 +343,7 @@ export const denicheurApi = {
 
 function listingSearchParams(filters: ListingFilters): string {
   const params = new URLSearchParams();
-  if (filters.sources?.length === 1) params.set("source", filters.sources[0]!);
+  filters.sources?.forEach((source) => params.append("sources", source));
   if (filters.runId) params.set("runId", filters.runId);
   if (filters.status) params.set("status", filters.status);
   if (filters.decision) params.set("decision", filters.decision);
@@ -311,9 +354,22 @@ function listingSearchParams(filters: ListingFilters): string {
   if (filters.energyClassMax) params.set("energyClass", filters.energyClassMax);
   if (filters.cursor) params.set("cursor", filters.cursor);
   params.set("limit", String(filters.limit ?? 100));
-  params.set("sort", "updatedAt");
-  params.set("order", "desc");
+  params.set("sort", filters.sort ?? "updatedAt");
+  params.set("order", filters.order ?? "desc");
   return params.toString();
+}
+
+function normalizeMapListing(record: ListingMapSummary): PropertyMapListing {
+  return {
+    key: record.id, source: record.source, externalId: record.externalId, url: record.url,
+    title: record.title, priceEuros: record.priceEuros, propertyType: record.propertyType,
+    surfaceM2: record.surfaceM2, rooms: record.rooms, location: record.location,
+    coordinates: record.coordinates, status: record.status, scrapedAt: record.scrapedAt, updatedAt: record.updatedAt,
+    imageUrls: record.imageUrl ? [record.imageUrl] : [],
+    imageAssets: record.coverAsset ? [normalizeImageAsset(record.coverAsset)] : [],
+    latestRun: { id: record.lastRunId, observedAt: record.lastSeenAt, status: record.status },
+    evaluation: record.evaluation, features: [], runs: [], evaluations: [],
+  };
 }
 
 function normalizeListing(record: ListingRecord, detail?: ListingDetail): PropertyListing {
@@ -345,6 +401,7 @@ function normalizeListing(record: ListingRecord, detail?: ListingDetail): Proper
     features: record.features ?? [],
     status: record.status,
     scrapedAt: record.scrapedAt,
+    updatedAt: record.updatedAt,
     coordinates: record.coordinates ? { ...record.coordinates } : undefined,
     latestRun: { id: record.lastRunId, observedAt: record.lastSeenAt, status: record.status },
     runs: detail?.runs.map((run) => ({ id: run.runId, observedAt: run.observedAt, status: run.status })) ?? [],

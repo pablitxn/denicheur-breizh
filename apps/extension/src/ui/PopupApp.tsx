@@ -106,7 +106,10 @@ export function PopupApp({ initialThemePreference = "system" }: PopupAppProps) {
     setDashboardError(false);
     try {
       const dashboardUrl = chrome.runtime.getURL("dashboard.html");
-      const existing = (await chrome.tabs.query({ url: `${dashboardUrl}*` }))[0];
+      const dashboards = await chrome.tabs.query({ url: `${dashboardUrl}*` });
+      const existing = (isBusy || run.status === "paused-captcha"
+        ? dashboards.find((tab) => tab.id === run.dashboardTabId)
+        : undefined) ?? dashboards[0];
       if (existing?.id !== undefined) {
         await chrome.tabs.update(existing.id, { active: true });
         await chrome.windows.update(existing.windowId, { focused: true });
@@ -232,7 +235,7 @@ export function PopupApp({ initialThemePreference = "system" }: PopupAppProps) {
             )}
 
             <section className="popup-status" aria-live="polite">
-              <Chip tone={syncState.status === "error" ? "danger" : pendingSyncCount > 0 ? "sunset" : "good"}>
+              <Chip tone={syncState.status === "error" ? "danger" : pendingSyncCount > 0 ? "sunset" : syncState.lastSuccessAt ? "good" : "sea"}>
                 {(syncPending || syncState.status === "syncing") && <LoaderCircle className="spin" size={13} />}
                 {syncPending || syncState.status === "syncing"
                   ? t("sync.syncing")
@@ -240,7 +243,7 @@ export function PopupApp({ initialThemePreference = "system" }: PopupAppProps) {
                     ? t("sync.failed", { detail: syncState.lastError ?? "API" })
                     : pendingSyncCount > 0
                       ? t("sync.pending", { count: pendingSyncCount })
-                      : t("sync.upToDate")}
+                      : t(syncState.lastSuccessAt ? "sync.upToDate" : "sync.notYetSynced")}
               </Chip>
             </section>
           </>
