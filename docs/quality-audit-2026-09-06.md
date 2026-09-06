@@ -71,13 +71,26 @@ Web Storage is not a transactional database. The conflict handling detects obser
 
 ## Access and release review
 
-The new API routes remain behind the existing operator authentication middleware, including 304 responses. Existing CORS allows `If-None-Match`, exposes `ETag`, and preserves configured origins. API responses use `private, no-cache`; the frontend gateway retains its no-store behavior and credential stripping. No dependency, lockfile, Dockerfile, host permission, publication or deployment change is required by this patch.
+The new API routes remain behind the existing operator authentication middleware, including 304 responses. Existing CORS allows `If-None-Match`, exposes `ETag`, and preserves configured origins. API responses use `private, no-cache`; the frontend gateway retains its no-store behavior and credential stripping. The UX/state pass required no dependency, lockfile, Dockerfile, host permission, publication or deployment change. The dependency follow-up below changes only the `qs` resolution in the lockfile.
 
-A remote production dependency audit was attempted but did not run successfully. Automatic approval review rejected escalation because the command would transmit the dependency graph to an external registry. No advisories result is available, and this audit does not claim zero known dependency vulnerabilities. Completing that optional check requires explicit authorization for that disclosure.
+### Authorized dependency follow-up — 2026-09-07
+
+The user explicitly authorized transmitting the production dependency graph to npm after the initial automatic approval rejection. `pnpm audit --prod --json` then reported two moderate advisories in transitive `qs@6.15.3`, reached through Express/body-parser; it reported no high or critical advisories.
+
+| Advisory | Requirement described by the maintainer | Resolution |
+| --- | --- | --- |
+| [GHSA-x5fp-wj9c-mxmx](https://github.com/ljharb/qs/security/advisories/GHSA-x5fp-wj9c-mxmx) | Bracket-key comma parsing can bypass configured array limits when `comma: true`. | Upgrade to `qs@6.16.0`. |
+| [GHSA-4mjr-xmp4-gh2g](https://github.com/ljharb/qs/security/advisories/GHSA-4mjr-xmp4-gh2g) | Serializing an attacker-controlled `constructor.isBuffer` value can throw during a parse/stringify round-trip. | Upgrade to `qs@6.16.0`. |
+
+Code review found no active path to these specific operations: Express uses its simple query parser, `apps/api/src/app.ts` registers JSON/SDP body parsers rather than URL-encoded bodies, and the API has no `qs.stringify` calls. This is a source-level exposure assessment, not deployment evidence. The dependency was upgraded within all existing parent ranges regardless; package manifests and overrides remain unchanged. Unrelated optional-peer resolution changes were excluded, and an offline frozen-lockfile installation verified the resulting graph and package integrity.
+
+The repeat production audit exited successfully with **zero known advisories** across all reported severity levels (136 dependencies plus 32 optional dependencies). Small local probes verified that the installed 6.16.0 rejects the four-element bracket/comma limit bypass and does not throw when stringifying the hostile constructor shape; Express still selects its simple parser.
+
+`pnpm check` passed after the upgrade. API types, **309 API tests** and the API build ran fresh; unaffected packages reused valid Turbo results (810 passing unit/integration tests overall, with two opt-in MinIO tests skipped). E2E TypeScript and design-token checks passed. The 44 browser flows below belong to the preceding UX/state pass and were not repeated for this dependency-only follow-up. The audit covers npm's known production advisories as of this date, not unknown vulnerabilities or development-only packages.
 
 ## Validation and remaining boundaries
 
-Final `pnpm check:all` passed:
+The UX/state pass at `fb2adba` passed `pnpm check:all`:
 
 - TypeScript across every package and the E2E suite; design-token checks.
 - **810 unit/integration tests:** API 309, extension 332, web 128, contracts 21 and i18n 20. Two opt-in MinIO tests were skipped.
