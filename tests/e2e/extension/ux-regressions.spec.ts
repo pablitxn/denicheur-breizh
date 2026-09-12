@@ -257,7 +257,8 @@ test.describe("Denicheur extension UX regressions", () => {
     await page.keyboard.press("Tab");
     await expect(page.getByRole("link", { name: "Aller au contenu principal" })).toBeFocused();
 
-    const theme = page.getByRole("combobox", { name: "Thème de l’interface" });
+    await page.getByRole("button", { name: "Paramètres", exact: true }).click();
+    const theme = page.getByRole("combobox", { name: "Apparence" });
     await theme.selectOption("dark");
     await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
     await expect.poll(() => page.evaluate(async () => {
@@ -267,6 +268,7 @@ test.describe("Denicheur extension UX regressions", () => {
 
     await page.reload();
     await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+    await page.getByRole("button", { name: "Paramètres", exact: true }).click();
     await expect(theme).toHaveValue("dark");
     await expectNoUnexpectedHorizontalOverflow(page);
   });

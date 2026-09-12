@@ -34,10 +34,17 @@ export function App() {
   const density = useWorkspaceStore((state) => state.density);
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme;
+    const media = window.matchMedia?.("(prefers-color-scheme: dark)");
+    const applyTheme = () => {
+      const resolved = theme === "system" ? media?.matches ? "dark" : "light" : theme;
+      document.documentElement.dataset.theme = resolved;
+      document.querySelector('meta[name="theme-color"]')?.setAttribute("content", resolved === "dark" ? "#17141f" : "#fbfaf7");
+    };
+    applyTheme();
+    media?.addEventListener("change", applyTheme);
     document.documentElement.dataset.accent = accent;
     document.documentElement.dataset.density = density;
-    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", theme === "dark" ? "#17141f" : "#fbfaf7");
+    return () => media?.removeEventListener("change", applyTheme);
   }, [accent, density, theme]);
 
   useEffect(() => {

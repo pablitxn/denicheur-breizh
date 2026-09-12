@@ -24,12 +24,12 @@ test.describe("Denicheur MV3 interface locales", () => {
     await expect(popup.getByRole("button", { name: "Ouvrir le tableau de bord" })).toBeVisible();
     await expect(dashboard.getByRole("heading", { name: "Filtres de recherche" })).toBeVisible();
     await expectNoHorizontalOverflow(popup);
-    await expectKeyboardFocusOnFirstLocaleControl(
+    await expectKeyboardFocusOnSettings(
       popup,
-      "Afficher l’interface en Français",
+      "Paramètres",
     );
 
-    await popup.getByRole("button", { name: /Español/u }).click();
+    await changeLanguage(popup, "es");
     await expect(popup.locator("html")).toHaveAttribute("lang", "es-ES");
     await expect(dashboard.locator("html")).toHaveAttribute("lang", "es-ES");
     await expect(popup.getByRole("button", { name: "Abrir panel" })).toBeVisible();
@@ -37,12 +37,12 @@ test.describe("Denicheur MV3 interface locales", () => {
     await expectNoHorizontalOverflow(popup);
     await popup.reload();
     await expect(popup.locator("html")).toHaveAttribute("lang", "es-ES");
-    await expectKeyboardFocusOnFirstLocaleControl(
+    await expectKeyboardFocusOnSettings(
       popup,
-      "Mostrar la interfaz en Français",
+      "Configuración",
     );
 
-    await dashboard.getByRole("button", { name: /English/u }).click();
+    await changeLanguage(dashboard, "en");
     await expect(popup.locator("html")).toHaveAttribute("lang", "en-GB");
     await expect(dashboard.locator("html")).toHaveAttribute("lang", "en-GB");
     await expect(popup.getByRole("button", { name: "Open dashboard" })).toBeVisible();
@@ -50,9 +50,9 @@ test.describe("Denicheur MV3 interface locales", () => {
     await expectNoHorizontalOverflow(popup);
     await popup.reload();
     await expect(popup.locator("html")).toHaveAttribute("lang", "en-GB");
-    await expectKeyboardFocusOnFirstLocaleControl(
+    await expectKeyboardFocusOnSettings(
       popup,
-      "Show the interface in Français",
+      "Settings",
     );
 
     await expect.poll(() => popup.evaluate(async () => {
@@ -112,7 +112,7 @@ test.describe("Denicheur MV3 interface locales", () => {
     await dashboard.reload();
 
     await expect(dashboard.getByText("Résumé français immuable.", { exact: true })).toBeVisible();
-    await dashboard.getByRole("button", { name: /Español/u }).click();
+    await changeLanguage(dashboard, "es");
 
     await expect(dashboard.getByText("Résumé français immuable.", { exact: true })).toBeVisible();
     await expect(dashboard.getByText(/Esta evaluación se generó en francés/u)).toBeVisible();
@@ -120,7 +120,7 @@ test.describe("Denicheur MV3 interface locales", () => {
     await expect(dashboard.getByText("Raison française immuable.", { exact: true })).toBeVisible();
     await expect(dashboard.getByText("jardin privatif", { exact: true })).toBeVisible();
 
-    await dashboard.getByRole("button", { name: /English/u }).click();
+    await changeLanguage(dashboard, "en");
     await expect(dashboard.getByText(/This evaluation was generated in French/u)).toBeVisible();
     expect(apiRequests).toBe(0);
   });
@@ -188,7 +188,7 @@ async function expectNoHorizontalOverflow(page: import("@playwright/test").Page)
   }));
 }
 
-async function expectKeyboardFocusOnFirstLocaleControl(
+async function expectKeyboardFocusOnSettings(
   page: import("@playwright/test").Page,
   accessibleName: string,
 ): Promise<void> {
@@ -208,4 +208,10 @@ function expectedLocaleFile(locale: string) {
     keys: ["extensionActionTitle", "extensionDescription", "extensionName"],
     hasValues: true,
   };
+}
+
+async function changeLanguage(page: import("@playwright/test").Page, locale: string) {
+  await page.getByRole("button", { name: /^(Paramètres|Configuración|Settings)$/ }).click();
+  await page.getByRole("combobox", { name: /^(Langue|Idioma|Language)$/ }).selectOption(locale);
+  await page.getByRole("button", { name: /^(Fermer les paramètres|Cerrar configuración|Close settings)$/ }).click();
 }

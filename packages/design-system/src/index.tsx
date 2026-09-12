@@ -5,6 +5,9 @@ import type {
   SelectHTMLAttributes,
 } from "react";
 
+export { ApplicationSettings, SettingsDialog, SettingsRow } from "./SettingsDialog";
+export type { ApplicationSettingsProps, SettingsLabels, SettingsSection, ThemePreference } from "./SettingsDialog";
+
 function cx(...parts: Array<string | false | null | undefined>) {
   return parts.filter(Boolean).join(" ");
 }

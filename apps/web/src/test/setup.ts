@@ -19,3 +19,7 @@ if (typeof window !== "undefined") {
 
   Object.defineProperty(window, "localStorage", { configurable: true, value: storage });
 }
+
+// jsdom does not implement the native dialog lifecycle; browser E2E covers focus/inert.
+HTMLDialogElement.prototype.showModal = function () { this.setAttribute("open", ""); };
+HTMLDialogElement.prototype.close = function () { this.removeAttribute("open"); };

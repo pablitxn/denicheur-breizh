@@ -110,7 +110,9 @@ test.describe("Denicheur MV3 native-search runtime", () => {
     const web = await context.newPage();
 
     await web.goto(`${WEB_BASE_URL}/?view=builder`);
-    await web.getByRole("button", { name: /^(French|Français)$/ }).click();
+    await web.getByRole("button", { name: /^(Settings|Paramètres)$/ }).click();
+    await web.getByRole("combobox", { name: /^(Language|Langue)$/ }).selectOption("fr");
+    await web.getByRole("button", { name: "Fermer les paramètres" }).click();
     await expect(web.getByRole("heading", { name: "Atelier de scoring" })).toBeVisible();
     await web.getByRole("button", { name: "Nouvelle recette" }).click();
     await web.getByLabel("Identifiant de recette", { exact: true }).fill(recipeId);

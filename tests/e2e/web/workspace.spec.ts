@@ -23,7 +23,7 @@ test.describe("Denicheur web against the real local API", () => {
     await ingestListings(request, runId, [listing]);
     await page.goto(`/?view=properties&pid=${encodeURIComponent(`leboncoin:${listing.externalId}`)}`);
 
-    await expect(page.getByText("API connectée", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Paramètres", exact: true })).toBeVisible();
     const heading = page.getByRole("heading", { level: 2, name: title, exact: true });
     await expect(heading).toBeVisible();
 
@@ -131,7 +131,7 @@ test.describe("Denicheur web against the real local API", () => {
     await ingestListings(request, `web-map-${token}`, [mapped, coastal, distant, unmapped]);
 
     await page.goto("/?view=map");
-    await expect(page.getByText("API connectée", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Paramètres", exact: true })).toBeVisible();
     await page.getByRole("combobox", { name: "Type de bien", exact: true }).selectOption(propertyType);
 
     const map = page.getByRole("region", { name: "Carte de Bretagne et des biens immobiliers", exact: true });
@@ -367,7 +367,7 @@ test.describe("Denicheur web against the real local API", () => {
     expect(initial.version).toBe(1);
 
     await page.goto(`/?view=builder&brid=${encodeURIComponent(`${recipeId}:1`)}`);
-    await expect(page.getByText("API connectée", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Paramètres", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { level: 2, name: initialName, exact: true })).toBeVisible();
     await expect(page.getByText("Publiée · lecture seule", { exact: true })).toBeVisible();
     await expect(page.getByLabel("Identifiant de recette", { exact: true })).toHaveCount(0);
@@ -470,7 +470,7 @@ test.describe("Denicheur web against the real local API", () => {
     await ingestListings(request, runId, [listing]);
     await page.goto(`/?view=scorings&spid=${encodeURIComponent(`${planId}:1`)}&srun=${encodeURIComponent(runId)}`);
 
-    await expect(page.getByText("API connectée", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Paramètres", exact: true })).toBeVisible();
     await expect(page.getByRole("combobox", { name: "Plan et version", exact: true }))
       .toHaveValue(`${planId}:1`);
     await expect(page.getByRole("combobox", { name: "Run terminé", exact: true })).toHaveValue(runId);

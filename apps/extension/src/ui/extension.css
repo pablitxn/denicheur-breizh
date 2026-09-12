@@ -1257,3 +1257,10 @@ a {
     animation: none;
   }
 }
+
+/* Connection settings live in the shared modal on every extension surface. */
+.settings-dialog .runtime-api-surface { padding: 0; border: 0; background: transparent; }
+.settings-dialog .runtime-api-form { grid-template-columns: minmax(0, 1fr); }
+.settings-dialog .runtime-api-actions { flex-wrap: wrap; }
+.settings-dialog .surface-head { align-items: flex-start; flex-direction: column; }
+.popup-topbar .settings-trigger { flex: 0 0 auto; width: var(--h-target-coarse); padding: 0; }

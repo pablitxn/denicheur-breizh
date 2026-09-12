@@ -1,7 +1,7 @@
 import { AlertTriangle, Database, ExternalLink, LoaderCircle, Play, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Button, Chip } from "@denicheur-breizh/design-system";
-import { LocaleSelector, useExtensionI18n } from "../i18n";
+import { useExtensionI18n } from "../i18n";
 import type { ScrapeRun } from "../lib/types";
 import { CRAWLER_STORAGE_KEYS, IDLE_RUN, loadCrawlerStateFields } from "../storage/chromeStorage";
 import { requestImmediateSync } from "../sync/runtime";
@@ -11,7 +11,8 @@ import {
   SYNC_STORAGE_KEY,
 } from "../sync/storage";
 import type { ExtensionSyncState } from "../sync/types";
-import { useThemePreference, type ThemePreference } from "./theme";
+import type { ThemePreference } from "./theme";
+import { ExtensionSettings } from "./ExtensionSettings";
 import { updateStorageRefreshErrors } from "./storageRefresh";
 
 interface PopupAppProps {
@@ -31,7 +32,6 @@ export function PopupApp({ initialThemePreference = "system" }: PopupAppProps) {
   const [loadError, setLoadError] = useState<unknown>();
   const [refreshErrors, setRefreshErrors] = useState<Partial<Record<"run" | "records" | "sync", string>>>({});
   const [retryToken, setRetryToken] = useState(0);
-  useThemePreference(initialThemePreference);
 
   useEffect(() => {
     let mounted = true;
@@ -159,7 +159,7 @@ export function PopupApp({ initialThemePreference = "system" }: PopupAppProps) {
             <p>{t("app.popupSubtitle")}</p>
           </div>
         </div>
-        <LocaleSelector />
+        <ExtensionSettings initialThemePreference={initialThemePreference} compact />
       </header>
 
       <div className="popup-content">

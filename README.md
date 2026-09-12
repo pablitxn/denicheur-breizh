@@ -49,6 +49,8 @@ The project is intentionally a local application, not a hosted SaaS. SQLite, the
 
 ## Architecture
 
+Global preferences use the [shared settings experience](docs/settings-experience.md) across the web, extension and future application shells.
+
 ```mermaid
 flowchart LR
   subgraph browser["Browser"]

@@ -63,6 +63,7 @@ export function AppIntlProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const setLocale = useCallback((nextLocale: LocaleCode) => {
+    window.localStorage.setItem(localeStorageKey, nextLocale);
     setLocaleState(nextLocale);
   }, []);
 

@@ -112,8 +112,7 @@
   color: var(--color-text);
 }
 
-.tab:focus-visible,
-.localeSwitch button:focus-visible {
+.tab:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
@@ -132,53 +131,6 @@
   min-width: 0;
   margin-left: auto;
   flex-wrap: wrap;
-}
-
-.liveDot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--color-good);
-}
-
-.apiStatus:global(.danger) .liveDot {
-  background: var(--color-danger);
-}
-
-.localeSwitch {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-2);
-  min-height: var(--h-control);
-  padding: 0 var(--space-2);
-  border: 1px solid var(--control-border);
-  border-radius: var(--radius-3);
-  background: var(--color-surface-2);
-  color: var(--color-text-muted);
-}
-
-.localeSwitch button {
-  display: inline-grid;
-  min-width: var(--h-control-sm);
-  min-height: var(--h-control-sm);
-  place-items: center;
-  border: 0;
-  border-radius: var(--radius-2);
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  font-family: var(--font-mono);
-  font-size: var(--fs-mono-sm);
-  font-weight: 600;
-}
-
-.localeSwitch button:hover {
-  color: var(--color-text);
-}
-
-.localeActive {
-  background: var(--cta-soft) !important;
-  color: var(--cta) !important;
 }
 
 @media (max-width: 1100px) {
@@ -207,8 +159,8 @@
 @media (max-width: 640px) {
   .topbar {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto auto;
-    grid-template-rows: repeat(3, auto);
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: repeat(2, auto);
     align-items: center;
     column-gap: var(--space-3);
     row-gap: var(--space-3);
@@ -216,9 +168,9 @@
   }
 
   .brandBlock {
-    grid-column: 1 / -1;
+    grid-column: 1;
     grid-row: 1;
-    justify-content: center;
+    justify-content: start;
     min-width: 0;
   }
 
@@ -234,31 +186,22 @@
   }
 
   .toolbar {
-    display: contents;
-  }
-
-  .apiStatus {
-    grid-column: 1;
-    grid-row: 2;
-    justify-self: start;
-  }
-
-  .localeSwitch {
     grid-column: 2;
-    grid-row: 2;
-    justify-self: end;
-    max-width: 100%;
+    grid-row: 1;
   }
 
-  .themeToggle {
-    grid-column: 3;
-    grid-row: 2;
-    justify-self: end;
+  .toolbar :global(.settings-trigger) {
+    width: var(--h-target-coarse);
+    padding: 0;
+  }
+
+  .toolbar :global(.settings-trigger) span {
+    display: none;
   }
 
   .tabs {
     grid-column: 1 / -1;
-    grid-row: 3;
+    grid-row: 2;
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
     width: 100%;
@@ -302,12 +245,5 @@
 }
 
 @media (pointer: coarse) {
-  .tab,
-  .localeSwitch button {
-    min-height: var(--h-target-coarse);
-  }
-
-  .localeSwitch button {
-    min-width: var(--h-target-coarse);
-  }
+  .tab { min-height: var(--h-target-coarse); }
 }

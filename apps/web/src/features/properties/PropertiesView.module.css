@@ -80,8 +80,12 @@
 
 .body {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 388px;
+  grid-template-columns: minmax(0, 1fr);
   min-height: 0;
+}
+
+.bodyWithDetail {
+  grid-template-columns: minmax(0, 1fr) 388px;
 }
 
 .results {
@@ -328,6 +332,19 @@
   flex-direction: column;
   gap: 16px;
   padding: 18px;
+}
+
+.detailToolbar {
+  position: sticky;
+  top: 0;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3) var(--space-2) var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface);
 }
 
 .detailHeader {

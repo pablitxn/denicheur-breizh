@@ -23,8 +23,7 @@ function getInitialView(): WorkspaceView {
 }
 
 function getInitialTheme(): ThemeMode {
-  if (typeof window === "undefined") return "dark";
-  return window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  return "system";
 }
 
 export const useWorkspaceStore = create<WorkspaceState>()(

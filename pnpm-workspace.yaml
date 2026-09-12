@@ -21,6 +21,8 @@ trustPolicyExclude:
   - "semver@6.3.1"
 
 overrides:
+  # WXT resolves Vite 7; plugin-react 6 requires Vite 8's transform API.
+  "@wxt-dev/module-react>@vitejs/plugin-react": "5.2.0"
   "@webext-core/isolated-element": "1.1.4"
   "ip-address": "10.3.1"
   "node-notifier>uuid": "11.1.1"

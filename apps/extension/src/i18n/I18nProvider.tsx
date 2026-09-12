@@ -112,8 +112,8 @@ export function ExtensionI18nProvider({
   }, [locale, surface, t]);
 
   const setLocale = useCallback(async (nextLocale: LocaleCode) => {
-    setLocaleState(nextLocale);
     await chrome.storage.local.set({ [EXTENSION_LOCALE_STORAGE_KEY]: nextLocale });
+    setLocaleState(nextLocale);
   }, []);
 
   const value = useMemo<ExtensionI18nContextValue>(() => ({

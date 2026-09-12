@@ -289,6 +289,179 @@
   inset: 0;
 }
 
+.markerControl {
+  position: absolute;
+  z-index: 7;
+  bottom: var(--space-5);
+  left: var(--space-4);
+  max-width: calc(100% - 32px);
+}
+
+.markerToggle {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-4);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-popover);
+  color: var(--color-text);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--fs-body-sm);
+  font-weight: 600;
+}
+
+.markerToggle:hover,
+.markerToggle[aria-expanded="true"] {
+  border-color: var(--cta);
+  background: var(--color-surface-2);
+}
+
+.markerToggle:focus-visible,
+.markerOption input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 3px;
+}
+
+.markerCount {
+  padding: 2px var(--space-2);
+  border-radius: var(--radius-pill);
+  background: var(--cta-soft);
+  color: var(--cta);
+  font-family: var(--font-mono);
+  font-size: var(--fs-mono-xs);
+}
+
+.markerChevronOpen {
+  rotate: 180deg;
+}
+
+.markerPanel {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  width: 300px;
+  max-width: calc(100vw - 32px);
+  padding: var(--space-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-5);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-popover);
+}
+
+.markerHint {
+  margin: 0;
+  padding: var(--space-2) var(--space-2) var(--space-3);
+  color: var(--color-text-muted);
+  font-size: var(--fs-body-sm);
+  line-height: 1.45;
+}
+
+.markerTabs {
+  display: flex;
+  gap: var(--space-1);
+  padding: var(--space-1);
+  margin-bottom: var(--space-2);
+  border-radius: var(--radius-3);
+  background: var(--color-surface-2);
+}
+
+.markerTabs button {
+  flex: 1;
+  min-width: 0;
+  min-height: 40px;
+  padding: var(--space-2);
+  border: 0;
+  border-radius: var(--radius-2);
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--fs-body-sm);
+  font-weight: 600;
+}
+
+.markerTabs button[aria-selected="true"] {
+  background: var(--color-surface);
+  color: var(--cta);
+}
+
+.markerTabs button:focus-visible,
+.markerTabPanel:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.markerTabPanel {
+  max-height: min(320px, calc(100dvh - 200px));
+  overflow-y: auto;
+}
+
+.markerOption {
+  display: flex;
+  min-height: 48px;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2);
+  border-radius: var(--radius-3);
+  cursor: pointer;
+  font-size: var(--fs-body-sm);
+}
+
+.markerOption:hover {
+  background: var(--color-surface-2);
+}
+
+.markerIcon {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: var(--radius-3);
+  background: color-mix(in oklab, currentColor 12%, transparent);
+}
+
+.markerIcon_properties { color: var(--cta); }
+.markerIcon_natural { color: var(--color-good); }
+.markerIcon_heritage { color: var(--color-sunset); }
+
+.markerOption input {
+  width: 34px;
+  height: 20px;
+  flex: 0 0 auto;
+  margin: 0 0 0 auto;
+  padding: 2px;
+  appearance: none;
+  border: 1px solid var(--color-text-muted);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface-3);
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.markerOption input::before {
+  display: block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: currentColor;
+  content: "";
+}
+
+.markerOption input:checked {
+  border-color: var(--cta);
+  background: var(--cta);
+  color: var(--color-surface);
+}
+
+.markerOption input:checked::before {
+  translate: 14px 0;
+}
+
 .selectedMarker {
   width: 34px;
   height: 34px;
@@ -510,8 +683,10 @@
 }
 
 .mapKeySection {
-  gap: var(--space-2);
-  padding-block: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-3) var(--space-2);
 }
 
 .scopeNote {

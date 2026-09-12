@@ -1,28 +1,17 @@
 import type { MouseEvent, ReactNode } from "react";
-import { Gauge, Languages, List, Map, Mic2, Moon, SlidersHorizontal, Sun } from "lucide-react";
-import { Button, Chip } from "@denicheur-breizh/design-system";
-import { useHealth } from "../api/hooks";
+import { Gauge, List, Map, Mic2, SlidersHorizontal } from "lucide-react";
 import { features } from "../config/features";
-import { supportedLocales, localeLabels } from "../intl/locales";
 import { useAppIntl } from "../intl/IntlContext";
 import { useWorkspaceStore } from "../state/workspaceStore";
 import type { WorkspaceView } from "../types";
 import { workspaceViewHref } from "../utils/workspaceNavigation";
 import styles from "./Shell.module.css";
+import { WebSettings } from "./WebSettings";
 
 export function Shell({ children }: { children: ReactNode }) {
-  const { locale, localeName, setLocale, t } = useAppIntl();
+  const { t } = useAppIntl();
   const activeView = useWorkspaceStore((state) => state.activeView);
   const setActiveView = useWorkspaceStore((state) => state.setActiveView);
-  const theme = useWorkspaceStore((state) => state.theme);
-  const toggleTheme = useWorkspaceStore((state) => state.toggleTheme);
-  const health = useHealth();
-  const apiConnected = !health.isError && health.data?.status === "ok";
-  const apiStatusLabel = health.isLoading
-    ? t("shell.apiChecking")
-    : apiConnected
-      ? t("shell.liveApi")
-      : t("shell.apiOffline");
   const tabs: Array<{ id: WorkspaceView; label: string; icon: ReactNode }> = [
     { id: "map", label: t("nav.map"), icon: <Map size={16} aria-hidden="true" /> },
     { id: "properties", label: t("nav.properties"), icon: <List size={16} aria-hidden="true" /> },
@@ -78,34 +67,7 @@ export function Shell({ children }: { children: ReactNode }) {
         </nav>
 
         <div className={styles.toolbar}>
-          <Chip className={styles.apiStatus} active tone={apiConnected ? "good" : "danger"} title={health.data && !health.data.openAiConfigured ? t("shell.openAiUnavailable") : undefined}>
-            <span className={styles.liveDot} aria-hidden="true" />
-            {apiStatusLabel}
-          </Chip>
-          <div className={styles.localeSwitch} role="group" aria-label={t("app.language.label")} title={`${t("app.language.label")}: ${localeName}`}>
-            <Languages size={15} aria-hidden="true" />
-            {supportedLocales.map((item) => (
-              <button
-                key={item}
-                type="button"
-                className={locale === item ? styles.localeActive : ""}
-                aria-pressed={locale === item}
-                aria-label={t(`app.language.${item}`)}
-                onClick={() => setLocale(item)}
-              >
-                {localeLabels[item]}
-              </button>
-            ))}
-          </div>
-          <Button
-            className={styles.themeToggle}
-            variant="ghost"
-            iconOnly
-            onClick={toggleTheme}
-            aria-label={t(theme === "dark" ? "shell.theme.toLight" : "shell.theme.toDark")}
-          >
-            {theme === "dark" ? <Sun size={16} aria-hidden="true" /> : <Moon size={16} aria-hidden="true" />}
-          </Button>
+          <WebSettings />
         </div>
       </header>
       {children}

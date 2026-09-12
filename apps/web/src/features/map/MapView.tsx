@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { GeoJSONSource, Map as MapLibreMap, Marker as MapLibreMarker } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import { Button, Chip, EmptyState, SectionLabel, Select } from "@denicheur-breizh/design-system";
-import { ExternalLink, MapPin, X } from "lucide-react";
+import { ChevronDown, ExternalLink, House, Landmark, Layers, MapPin, Trees, X } from "lucide-react";
 import { useListing, useMapListings } from "../../api/hooks";
 import { PropertyVisual } from "../../components/PropertyVisual";
 import { useAppIntl } from "../../intl/IntlContext";
@@ -16,7 +16,7 @@ import {
   summarizeMapCoverage,
   type MapBounds,
 } from "../../utils/mapData";
-import { stringUrlCodec, useUrlState } from "../../utils/useUrlState";
+import { stringArrayUrlCodec, stringUrlCodec, useUrlState } from "../../utils/useUrlState";
 import {
   BRETAGNE,
   BRETAGNE_CAMERA,
@@ -33,6 +33,15 @@ import {
 import styles from "./MapView.module.css";
 
 const emptyListings: PropertyMapListing[] = [];
+const markerTypes = ["properties", "natural", "heritage"] as const;
+type MarkerType = typeof markerTypes[number];
+const markerTypesCodec = stringArrayUrlCodec(markerTypes);
+const defaultMarkerTypes: MarkerType[] = [...markerTypes];
+const markerOptions = [
+  { type: "properties", label: "nav.properties", icon: House },
+  { type: "natural", label: "map.interest.category.natural", icon: Trees },
+  { type: "heritage", label: "map.interest.category.heritage", icon: Landmark },
+] as const;
 
 export function MapView() {
   const { locale, t } = useAppIntl();
@@ -40,6 +49,12 @@ export function MapView() {
   const listings = listingsQuery.data?.items ?? emptyListings;
   const [activeSource, setActiveSource] = useUrlState("msource", "all", stringUrlCodec);
   const [activeType, setActiveType] = useUrlState("mtype", "all", stringUrlCodec);
+  const [visibleMarkerTypes, setVisibleMarkerTypes] = useUrlState("mmarkers", defaultMarkerTypes, markerTypesCodec);
+  const [markerPanelOpen, setMarkerPanelOpen] = useState(false);
+  const [markerTab, setMarkerTab] = useState<"visibility" | "legend">("visibility");
+  const markerControlRef = useRef<HTMLDivElement | null>(null);
+  const markerToggleRef = useRef<HTMLButtonElement | null>(null);
+  const showProperties = visibleMarkerTypes.includes("properties");
   const [selectedKey, setSelectedKey] = useUrlState("pid", "", stringUrlCodec);
   const [selectedInterestId, setSelectedInterestId] = useState<string | null>(null);
   const [viewportBounds, setViewportBounds] = useState<MapBounds | null>(null);
@@ -89,6 +104,20 @@ export function MapView() {
   const selectedInterest = selectedInterestId
     ? INTEREST_PLACES.find((place) => place.id === selectedInterestId)
     : undefined;
+  const visibleSelectedInterest = selectedInterest && visibleMarkerTypes.includes(selectedInterest.category)
+    ? selectedInterest
+    : undefined;
+
+  useEffect(() => {
+    if (!markerPanelOpen) return;
+    const dismiss = (event: PointerEvent) => {
+      if (event.target instanceof Node && !markerControlRef.current?.contains(event.target)) {
+        setMarkerPanelOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", dismiss);
+    return () => document.removeEventListener("pointerdown", dismiss);
+  }, [markerPanelOpen]);
 
   useEffect(() => {
     listingsRef.current = mapped;
@@ -298,7 +327,16 @@ export function MapView() {
   useEffect(() => {
     const source = mapRef.current?.getSource("properties") as GeoJSONSource | undefined;
     source?.setData(propertiesToGeoJson(mapped));
-  }, [mapped]);
+  }, [mapped, mapReady]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!mapReady || !map) return;
+    map.setLayoutProperty("properties-point", "visibility", showProperties ? "visible" : "none");
+    interestMarkersRef.current.forEach((marker, index) => {
+      marker.getElement().style.display = visibleMarkerTypes.includes(INTEREST_PLACES[index].category) ? "" : "none";
+    });
+  }, [mapReady, showProperties, visibleMarkerTypes]);
 
   useEffect(() => {
     selectedMarkerRef.current?.remove();
@@ -306,7 +344,7 @@ export function MapView() {
     const coordinates = selected?.coordinates;
     const map = mapRef.current;
     const Marker = markerConstructorRef.current;
-    if (!mapReady || !coordinates || !map || !Marker || !selected) return;
+    if (!mapReady || !showProperties || !coordinates || !map || !Marker || !selected) return;
 
     const markerElement = document.createElement("div");
     const markerTitle = selected.title ?? selected.location ?? selected.externalId;
@@ -324,7 +362,7 @@ export function MapView() {
       marker.remove();
       if (selectedMarkerRef.current === marker) selectedMarkerRef.current = null;
     };
-  }, [mapReady, selected, t]);
+  }, [mapReady, selected, showProperties, t]);
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -387,57 +425,6 @@ export function MapView() {
           )}
         </div>
 
-        <div className={[styles.panelSection, styles.mapKeySection].join(" ")}>
-          <div>
-            <SectionLabel>{t("map.legendTerritory")}</SectionLabel>
-            <p className={styles.scopeNote}>{t("map.bretagneScope")}</p>
-            <div className={[styles.contextLegend, styles.contextLegendThree].join(" ")}>
-              <span className={styles.legendItem}>
-                <i className={[styles.legendSwatch, styles.outsideSwatch].join(" ")} aria-hidden="true" />
-                {t("map.outsideBretagne")}
-              </span>
-              <span className={styles.legendItem}>
-                <i className={[styles.legendSwatch, styles.finistereSwatch].join(" ")} aria-hidden="true" />
-                {t("map.finistere")}
-              </span>
-              <span className={styles.legendItem}>
-                <i className={[styles.legendSwatch, styles.quimperSwatch].join(" ")} aria-hidden="true" />
-                {t("map.quimper")}
-              </span>
-            </div>
-          </div>
-          <div>
-            <SectionLabel>{t("map.interests")}</SectionLabel>
-            <div className={styles.contextLegend}>
-              <span className={styles.legendItem}>
-                <i className={[styles.legendSwatch, styles.naturalSwatch].join(" ")} aria-hidden="true" />
-                {t("map.interest.category.natural")}
-              </span>
-              <span className={styles.legendItem}>
-                <i className={[styles.legendSwatch, styles.heritageSwatch].join(" ")} aria-hidden="true" />
-                {t("map.interest.category.heritage")}
-              </span>
-            </div>
-          </div>
-          <div>
-            <SectionLabel>{t("map.legendDecision")}</SectionLabel>
-            <div className={[styles.contextLegend, styles.contextLegendThree].join(" ")}>
-              <span className={styles.legendItem}>
-                <i className={[styles.legendSwatch, styles.naturalSwatch].join(" ")} aria-hidden="true" />
-                {t("decision.relevant")}
-              </span>
-              <span className={styles.legendItem}>
-                <i className={[styles.legendSwatch, styles.heritageSwatch].join(" ")} aria-hidden="true" />
-                {t("decision.review")}
-              </span>
-              <span className={styles.legendItem}>
-                <i className={[styles.legendSwatch, styles.dangerSwatch].join(" ")} aria-hidden="true" />
-                {t("decision.not-relevant")}
-              </span>
-            </div>
-          </div>
-        </div>
-
         <div className={[styles.panelSection, styles.resultsSection].join(" ")}>
           <div className={styles.resultsHeader}>
             <SectionLabel>{t("map.results")}</SectionLabel>
@@ -456,6 +443,132 @@ export function MapView() {
 
       <div className={styles.mapStage}>
         <div key={`${locale}-${mapAttempt}`} ref={mapEl} className={styles.mapCanvas} role="region" aria-label={t("map.canvasAria")} aria-busy={!mapReady && !mapFailed} />
+        <div
+          ref={markerControlRef}
+          className={styles.markerControl}
+          onKeyDown={(event) => {
+            if (event.key === "Escape") {
+              setMarkerPanelOpen(false);
+              markerToggleRef.current?.focus();
+            }
+          }}
+        >
+          <button
+            ref={markerToggleRef}
+            type="button"
+            className={styles.markerToggle}
+            aria-expanded={markerPanelOpen}
+            aria-controls="map-marker-options"
+            onClick={() => setMarkerPanelOpen((open) => !open)}
+          >
+            <Layers size={17} aria-hidden="true" />
+            {t("map.markers.title")}
+            <span className={styles.markerCount}>{visibleMarkerTypes.length}/{markerTypes.length}</span>
+            <ChevronDown size={14} className={markerPanelOpen ? styles.markerChevronOpen : ""} aria-hidden="true" />
+          </button>
+          {markerPanelOpen && (
+            <div id="map-marker-options" className={styles.markerPanel} role="group" aria-label={t("map.markers.title")}>
+              <div className={styles.markerTabs} role="tablist" aria-label={t("map.markers.title")}>
+                {(["visibility", "legend"] as const).map((item) => (
+                  <button
+                    key={item}
+                    id={`map-marker-tab-${item}`}
+                    type="button"
+                    role="tab"
+                    aria-selected={markerTab === item}
+                    aria-controls="map-marker-panel"
+                    tabIndex={markerTab === item ? 0 : -1}
+                    onClick={() => setMarkerTab(item)}
+                    onKeyDown={(event) => {
+                      if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
+                      event.preventDefault();
+                      const next = event.key === "Home" ? "visibility" : event.key === "End" ? "legend" : item === "visibility" ? "legend" : "visibility";
+                      setMarkerTab(next);
+                      document.getElementById(`map-marker-tab-${next}`)?.focus();
+                    }}
+                  >
+                    {t(item === "visibility" ? "map.markers.title" : "map.markers.legend")}
+                  </button>
+                ))}
+              </div>
+              <div id="map-marker-panel" className={styles.markerTabPanel} role="tabpanel" aria-labelledby={`map-marker-tab-${markerTab}`} tabIndex={0}>
+                {markerTab === "visibility" ? (
+                  <>
+                    <p className={styles.markerHint}>{t("map.markers.hint")}</p>
+                    {markerOptions.map(({ type, label, icon: Icon }) => (
+                      <label key={type} className={styles.markerOption}>
+                        <span className={[styles.markerIcon, styles[`markerIcon_${type}`]].join(" ")}><Icon size={18} aria-hidden="true" /></span>
+                        <span>{t(label)}</span>
+                        <input
+                          type="checkbox"
+                          role="switch"
+                          checked={visibleMarkerTypes.includes(type)}
+                          onChange={(event) => {
+                            const checked = event.target.checked;
+                            setVisibleMarkerTypes((current) => checked
+                              ? markerTypes.filter((item) => item === type || current.includes(item))
+                              : current.filter((item) => item !== type));
+                          }}
+                        />
+                      </label>
+                    ))}
+                  </>
+                ) : (
+                  <div className={styles.mapKeySection}>
+                    <div>
+                      <SectionLabel>{t("map.legendTerritory")}</SectionLabel>
+                      <p className={styles.scopeNote}>{t("map.bretagneScope")}</p>
+                      <div className={[styles.contextLegend, styles.contextLegendThree].join(" ")}>
+                        <span className={styles.legendItem}>
+                          <i className={[styles.legendSwatch, styles.outsideSwatch].join(" ")} aria-hidden="true" />
+                          {t("map.outsideBretagne")}
+                        </span>
+                        <span className={styles.legendItem}>
+                          <i className={[styles.legendSwatch, styles.finistereSwatch].join(" ")} aria-hidden="true" />
+                          {t("map.finistere")}
+                        </span>
+                        <span className={styles.legendItem}>
+                          <i className={[styles.legendSwatch, styles.quimperSwatch].join(" ")} aria-hidden="true" />
+                          {t("map.quimper")}
+                        </span>
+                      </div>
+                    </div>
+                    <div>
+                      <SectionLabel>{t("map.interests")}</SectionLabel>
+                      <div className={styles.contextLegend}>
+                        <span className={styles.legendItem}>
+                          <i className={[styles.legendSwatch, styles.naturalSwatch].join(" ")} aria-hidden="true" />
+                          {t("map.interest.category.natural")}
+                        </span>
+                        <span className={styles.legendItem}>
+                          <i className={[styles.legendSwatch, styles.heritageSwatch].join(" ")} aria-hidden="true" />
+                          {t("map.interest.category.heritage")}
+                        </span>
+                      </div>
+                    </div>
+                    <div>
+                      <SectionLabel>{t("map.legendDecision")}</SectionLabel>
+                      <div className={[styles.contextLegend, styles.contextLegendThree].join(" ")}>
+                        <span className={styles.legendItem}>
+                          <i className={[styles.legendSwatch, styles.naturalSwatch].join(" ")} aria-hidden="true" />
+                          {t("decision.relevant")}
+                        </span>
+                        <span className={styles.legendItem}>
+                          <i className={[styles.legendSwatch, styles.heritageSwatch].join(" ")} aria-hidden="true" />
+                          {t("decision.review")}
+                        </span>
+                        <span className={styles.legendItem}>
+                          <i className={[styles.legendSwatch, styles.dangerSwatch].join(" ")} aria-hidden="true" />
+                          {t("decision.not-relevant")}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
         <div className={styles.mapNotice} role="status" aria-live="polite">
           {listingsQuery.error
             ? t("map.errorProperties")
@@ -464,7 +577,7 @@ export function MapView() {
               : t("map.visibleResults", { count: visibleMapped.length })}
           {listingsQuery.error && listingsQuery.data && <Button size="sm" disabled={listingsQuery.isFetching} onClick={() => void listingsQuery.refetch()}>{t("common.retry")}</Button>}
         </div>
-        {selectedInterest && (
+        {visibleSelectedInterest && selectedInterest && (
           <aside className={styles.interestDetail} aria-label={t("map.interest.detailAria")}>
             <div className={styles.interestDetailHeader}>
               <div>

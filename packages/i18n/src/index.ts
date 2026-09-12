@@ -1,4 +1,5 @@
 export const SUPPORTED_LOCALES = ["fr", "es", "en"] as const;
+export { SETTINGS_LABELS } from "./settings.js";
 
 export type LocaleCode = (typeof SUPPORTED_LOCALES)[number];
 

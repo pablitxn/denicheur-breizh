@@ -18,7 +18,6 @@ import { FormEvent, memo, useEffect, useMemo, useRef, useState } from "react";
 import { Button, Chip, EmptyState, SectionLabel, Select } from "@denicheur-breizh/design-system";
 import { ScrapeRunner } from "../automation/scrapeRunner";
 import {
-  LocaleSelector,
   extensionMessage,
   filterWarningFieldLabel,
   localeDisplayName,
@@ -72,11 +71,8 @@ import {
   SYNC_STORAGE_KEY,
 } from "../sync/storage";
 import type { ExtensionSyncState } from "../sync/types";
-import {
-  useThemePreference,
-  type ThemePreference,
-} from "./theme";
-import { RuntimeApiSettings } from "./RuntimeApiSettings";
+import type { ThemePreference } from "./theme";
+import { ExtensionSettings } from "./ExtensionSettings";
 import { updateStorageRefreshErrors } from "./storageRefresh";
 
 type NumericFilterKey =
@@ -162,8 +158,6 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
   const [error, setError] = useState<unknown>();
   const [refreshErrors, setRefreshErrors] = useState<Partial<Record<"filters" | "run" | "records" | "plan", string>>>({});
   const visibleError = error ?? Object.values(refreshErrors)[0];
-  const { preference: themePreference, setPreference: setThemePreference } =
-    useThemePreference(initialThemePreference);
   const runnerRef = useRef<ScrapeRunner | undefined>(undefined);
   const startPendingRef = useRef(false);
   const reevaluationPendingRef = useRef(false);
@@ -474,15 +468,6 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
     }
   }
 
-  async function handleThemeChange(nextPreference: ThemePreference) {
-    setActionFeedback(undefined);
-    try {
-      await setThemePreference(nextPreference);
-    } catch {
-      setActionFeedback(t("feedback.themeFailed"));
-    }
-  }
-
   async function handleCopyRequestId(requestId: string) {
     try {
       await navigator.clipboard.writeText(requestId);
@@ -671,19 +656,7 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
           </div>
         </div>
         <div className="extension-toolbar-actions">
-          <label className="theme-selector">
-            <span className="sr-only">{t("appearance.themeLabel")}</span>
-            <Select
-              aria-label={t("appearance.themeLabel")}
-              value={themePreference}
-              onChange={(event) => void handleThemeChange(event.target.value as ThemePreference)}
-            >
-              <option value="system">{t("appearance.themeSystem")}</option>
-              <option value="light">{t("appearance.themeLight")}</option>
-              <option value="dark">{t("appearance.themeDark")}</option>
-            </Select>
-          </label>
-          <LocaleSelector />
+          <ExtensionSettings initialThemePreference={initialThemePreference} />
           <div aria-live={hydrationState === "ready" ? "polite" : undefined}>
             {hydrationState === "loading" ? (
               <Chip tone="sea">
@@ -700,7 +673,6 @@ export function DashboardApp({ initialThemePreference = "system" }: DashboardApp
       </header>
 
       <main id="main-content" className="dashboard-layout" tabIndex={-1}>
-        <RuntimeApiSettings />
         {hydrationState === "loading" && (
           <div className="dashboard-state loading-state" role="status">
             <LoaderCircle className="spin" size={18} />

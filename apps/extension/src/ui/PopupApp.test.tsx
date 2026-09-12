@@ -7,7 +7,7 @@ import { requestImmediateSync } from "../sync/runtime";
 import { EMPTY_SYNC_STATE, SYNC_STORAGE_KEY } from "../sync/storage";
 import { PopupApp } from "./PopupApp";
 
-vi.mock("./theme", () => ({ useThemePreference: vi.fn() }));
+vi.mock("./ExtensionSettings", () => ({ ExtensionSettings: () => null }));
 vi.mock("../sync/runtime", () => ({ requestImmediateSync: vi.fn() }));
 vi.mock("../i18n", () => ({
   LocaleSelector: () => null,

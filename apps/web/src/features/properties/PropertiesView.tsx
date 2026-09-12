@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, ExternalLink, Grid2X2, List } from "lucide-react";
+import { ArrowDown, ArrowUp, ExternalLink, Grid2X2, List, X } from "lucide-react";
 import { Button, Chip, EmptyState, Meter, SectionLabel, Select } from "@denicheur-breizh/design-system";
 import { useListing, useListings, useListingsMetadata } from "../../api/hooks";
 import { isExpiredCursor } from "../../api/denicheurApi";
@@ -31,6 +31,7 @@ export function PropertiesView() {
   const isMobile = useMediaQuery("(max-width: 760px)");
   const shouldScrollToDetail = useMediaQuery("(max-width: 1120px)");
   const detailRef = useRef<HTMLElement | null>(null);
+  const selectionTriggerRef = useRef<HTMLElement | null>(null);
   const [viewMode, setViewMode] = useUrlState<ViewMode>("pmode", isMobile ? "cards" : "table", enumUrlCodec(["table", "cards"] as const));
   const [sortKey, setSortKey] = useUrlState<SortKey>("psort", "updated", enumUrlCodec(sortKeys));
   const [sortDirection, setSortDirection] = useUrlState<"asc" | "desc">("pdir", "desc", enumUrlCodec(["asc", "desc"] as const));
@@ -65,18 +66,22 @@ export function PropertiesView() {
     observedRevision.current = revision;
   }, [currentPage, revision, listingsQuery.refetch]);
 
-  const selectedSummary = sortedListings.find((listing) => listing.key === selectedKey) ?? (selectedKey ? undefined : sortedListings[0]);
+  const selectedSummary = sortedListings.find((listing) => listing.key === selectedKey);
   const separator = selectedKey.indexOf(":");
   const detailSource = selectedSummary?.source ?? (separator > 0 ? selectedKey.slice(0, separator) : undefined);
   const detailId = selectedSummary?.externalId ?? (separator > 0 ? selectedKey.slice(separator + 1) : undefined);
   const detailQuery = useListing(detailSource, detailId);
   const selected = detailQuery.data ?? selectedSummary;
 
-  useEffect(() => {
-    if (selectedSummary && !selectedKey) setSelectedKey(selectedSummary.key);
-  }, [selectedKey, selectedSummary, setSelectedKey]);
+  const detailOpen = Boolean(selected || (detailSource && detailId));
+
+  const closeDetail = () => {
+    setSelectedKey("");
+    selectionTriggerRef.current?.focus({ preventScroll: true });
+  };
 
   const selectListing = (key: string) => {
+    selectionTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     setSelectedKey(key);
     if (shouldScrollToDetail) {
       window.requestAnimationFrame(() => {
@@ -151,7 +156,7 @@ export function PropertiesView() {
         </div>
       </nav>
 
-      <div className={styles.body}>
+      <div className={[styles.body, detailOpen ? styles.bodyWithDetail : ""].join(" ")}>
         <div className={styles.results} aria-busy={listingsQuery.isPlaceholderData}>
           {metadataQuery.error && <RetryNotice message={t("catalog.metadataError")} retrying={metadataQuery.isFetching} onRetry={() => void metadataQuery.refetch()} />}
           {listingsQuery.error && (pageData ? (
@@ -203,8 +208,9 @@ export function PropertiesView() {
             </div>
           )}
         </div>
-        {selected && <ListingDetail detailRef={detailRef} listing={selected} loading={detailQuery.isFetching} error={Boolean(detailQuery.error)} onRetry={() => void detailQuery.refetch()} />}
+        {selected && <ListingDetail detailRef={detailRef} listing={selected} loading={detailQuery.isFetching} error={Boolean(detailQuery.error)} onRetry={() => void detailQuery.refetch()} onClose={closeDetail} />}
         {!selected && detailSource && detailId && <aside ref={detailRef} className={styles.detail} aria-busy={detailQuery.isFetching}>
+          <DetailPanelHeader onClose={closeDetail} />
           {detailQuery.error
             ? <RetryNotice message={t("properties.detailError")} retrying={detailQuery.isFetching} onRetry={() => void detailQuery.refetch()} />
             : <EmptyState role="status">{t("common.loading")}</EmptyState>}
@@ -288,11 +294,24 @@ function ListingTable({ listings, selectedKey, locale, sortKey, sortDirection, o
   );
 }
 
-function ListingDetail({ listing, loading, error, onRetry, detailRef }: { listing: PropertyListing; loading: boolean; error: boolean; onRetry: () => void; detailRef: RefObject<HTMLElement | null> }) {
+function DetailPanelHeader({ onClose }: { onClose: () => void }) {
+  const { t } = useAppIntl();
+  return (
+    <div className={styles.detailToolbar}>
+      <SectionLabel>{t("properties.detailTitle")}</SectionLabel>
+      <Button variant="ghost" iconOnly onClick={onClose} aria-label={t("properties.closeDetail")} title={t("properties.closeDetail")}>
+        <X size={18} aria-hidden="true" />
+      </Button>
+    </div>
+  );
+}
+
+function ListingDetail({ listing, loading, error, onRetry, onClose, detailRef }: { listing: PropertyListing; loading: boolean; error: boolean; onRetry: () => void; onClose: () => void; detailRef: RefObject<HTMLElement | null> }) {
   const { locale, t } = useAppIntl();
   const evaluation = listing.evaluation;
   return (
     <aside ref={detailRef} className={styles.detail} aria-busy={loading}>
+      <DetailPanelHeader onClose={onClose} />
       <PropertyVisual key={listing.key} property={listing} size="lg" navigation />
       <div className={styles.detailBody}>
         {error && <RetryNotice message={t("properties.detailError")} retrying={loading} onRetry={onRetry} />}

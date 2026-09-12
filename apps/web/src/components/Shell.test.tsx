@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { denicheurApi } from "../api/denicheurApi";
 import { queryKeys } from "../api/queryKeys";
@@ -23,6 +23,9 @@ describe("Shell API status", () => {
     window.localStorage.setItem(localeStorageKey, "fr");
     const view = render(<QueryClientProvider client={client}><AppIntlProvider><Shell><p>Workspace</p></Shell></AppIntlProvider></QueryClientProvider>);
 
+    expect(screen.queryByText("API connectée")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Paramètres" }));
+    fireEvent.click(screen.getByRole("button", { name: "Développement" }));
     expect(await screen.findByText("API connectée")).toBeInTheDocument();
     health.mockRejectedValueOnce(new Error("Connection lost"));
     await act(async () => {

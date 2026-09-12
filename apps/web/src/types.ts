@@ -188,7 +188,7 @@ export interface HealthStatus {
 }
 
 export type WorkspaceView = "map" | "properties" | "scorings" | "builder" | "realtime";
-export type ThemeMode = "dark" | "light";
+export type ThemeMode = "system" | "dark" | "light";
 export type AccentMode = "lavender" | "sunset" | "sea";
 export type DensityMode = "comfortable" | "compact";
 

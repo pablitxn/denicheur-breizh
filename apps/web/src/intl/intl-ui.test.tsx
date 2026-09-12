@@ -124,7 +124,8 @@ describe("intl UI", () => {
 
     expect(await screen.findByRole("navigation", { name: "Vue principale" })).toHaveTextContent("Carte");
     expect((await screen.findAllByText("Maison collectée")).length).toBeGreaterThan(0);
-    expect(await screen.findByText("API connectée")).toBeInTheDocument();
+    expect(screen.queryByText("API connectée")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^Maison collectée/u }));
     expect(await screen.findByRole("link", { name: /Ouvrir l’annonce source/u })).toHaveAttribute(
       "href",
       "https://www.leboncoin.fr/ad/ventes_immobilieres/listing-1",
@@ -136,7 +137,9 @@ describe("intl UI", () => {
     expect(store.get(localeStorageKey)).toBe("fr");
     expect(store.has("denicheur.locale")).toBe(false);
 
-    fireEvent.click(screen.getByRole("button", { name: "Espagnol" }));
+    fireEvent.click(screen.getByRole("button", { name: "Paramètres" }));
+    await act(async () => fireEvent.change(screen.getByRole("combobox", { name: "Langue" }), { target: { value: "es" } }));
+    fireEvent.click(screen.getByRole("button", { name: "Cerrar configuración" }));
 
     expect(await screen.findByRole("navigation", { name: "Vista principal" })).toHaveTextContent("Mapa");
     expect((await screen.findAllByText("Maison collectée")).length).toBeGreaterThan(0);
@@ -144,7 +147,9 @@ describe("intl UI", () => {
     expect(document.documentElement.lang).toBe("es-ES");
     expect(document.title).toBe("dénicheur·breizh — Decisión inmobiliaria en Bretaña");
 
-    fireEvent.click(screen.getByRole("button", { name: "Inglés" }));
+    fireEvent.click(screen.getByRole("button", { name: "Configuración" }));
+    await act(async () => fireEvent.change(screen.getByRole("combobox", { name: "Idioma" }), { target: { value: "en" } }));
+    fireEvent.click(screen.getByRole("button", { name: "Close settings" }));
 
     expect(await screen.findByRole("navigation", { name: "Primary view" })).toHaveTextContent("Map");
     expect((await screen.findAllByText("Maison collectée")).length).toBeGreaterThan(0);
