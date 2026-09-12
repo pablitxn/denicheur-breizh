@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "target": "ES2022", "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "useDefineForClassFields": true, "skipLibCheck": true,
+    "esModuleInterop": true, "allowSyntheticDefaultImports": true,
+    "strict": true, "noUnusedLocals": true, "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true, "module": "ESNext", "moduleResolution": "Bundler",
+    "isolatedModules": true, "noEmit": true, "jsx": "react-jsx", "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "@denicheur-breizh/collector-contracts": ["../../packages/collector-contracts/src/index.ts"],
+      "@denicheur-breizh/design-system": ["../../packages/design-system/src/index.tsx"],
+      "@denicheur-breizh/i18n": ["../../packages/i18n/src/index.ts"]
+    }
+  },
+  "include": ["src", "vite.config.ts"]
+}

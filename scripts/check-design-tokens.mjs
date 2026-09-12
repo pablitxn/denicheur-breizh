@@ -4,6 +4,7 @@ import { extname, join, relative } from "node:path";
 const workspaceRoot = process.cwd();
 const sourceRoots = [
   "apps/web/src",
+  "apps/collector-web/src",
   "apps/extension/src",
   "packages/design-system/src",
 ];

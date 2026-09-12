@@ -89,6 +89,10 @@ The local API is the only owner of SQLite. Browser clients never open the databa
 
 ## Quick start
 
+### Independent capture laboratory
+
+The xAI / Firecrawl laboratory has its own frontend (`5175`), API (`4315`), SQLite and evidence store. Start it with `pnpm dev:collector`. It compares independent captures against a complete extension reference and never treats a successful request or 99% recall as complete coverage. See the [collector setup, demo and adapter guide](docs/collector-lab.md) and [evaluation methodology](docs/collector-evaluation.md). Existing development commands keep their current applications.
+
 ### Requirements
 
 | Tool | Version |

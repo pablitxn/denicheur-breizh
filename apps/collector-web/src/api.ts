@@ -1,0 +1,43 @@
+import type { CaptureObservation, CaptureRequest, CaptureRun, ComparisonRequest, EvaluationReport, EvaluationReview, LabMetadata, Page, ReferenceImport, ReferenceRecord, RunEvent, RunEvaluation } from "@denicheur-breizh/collector-contracts";
+
+export interface EvaluationReportSummary {
+  id: string; referenceId: string; referenceName: string; createdAt: string;
+  results: Array<Pick<RunEvaluation, "runId" | "provider" | "verdict">>;
+}
+
+export const API_BASE = "/api/v1";
+export class ApiError extends Error { constructor(message: string, public status: number, public code: string) { super(message); } }
+export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...options, headers: { "Content-Type": "application/json", ...options.headers },
+  });
+  const data: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const error = (data as { error?: { code?: string; message?: string } } | null)?.error;
+    throw new ApiError(error?.message ?? `HTTP ${response.status}`, response.status, error?.code ?? "request_failed");
+  }
+  return data as T;
+}
+const post = <T>(path: string, body: unknown = {}) => request<T>(path, { method: "POST", body: JSON.stringify(body) });
+export const api = {
+  refreshBalances: () => post<LabMetadata>("/balances/refresh"),
+  unknownUsage: () => request<{ items: Array<{ id: string; run_id: string; provider: "xai" | "firecrawl"; status: string }> }>("/usage/unknown"),
+  reconcileUsage: (id: string, body: { amount: number; note: string; evidenceUrl: string }) => post<LabMetadata>(`/usage/${encodeURIComponent(id)}/reconcile`, body),
+  metadata: () => request<LabMetadata>("/meta"),
+  runs: (offset = 0) => request<Page<CaptureRun>>(`/runs?offset=${offset}&limit=25`),
+  run: (id: string) => request<CaptureRun>(`/runs/${encodeURIComponent(id)}`),
+  create: (body: CaptureRequest, key: string) => request<CaptureRun>("/runs", { method: "POST", body: JSON.stringify(body), headers: { "Idempotency-Key": key } }),
+  observations: (id: string, offset = 0) => request<Page<CaptureObservation>>(`/runs/${encodeURIComponent(id)}/observations?offset=${offset}&limit=24`),
+  events: (id: string) => request<{ items: RunEvent[] }>(`/runs/${encodeURIComponent(id)}/events`),
+  cancel: (id: string) => post<CaptureRun>(`/runs/${encodeURIComponent(id)}/cancel`),
+  resume: (id: string) => post<CaptureRun>(`/runs/${encodeURIComponent(id)}/resume`),
+  references: () => request<{ items: ReferenceRecord[] }>("/references"),
+  importReference: (reference: ReferenceImport) => post<ReferenceRecord>("/references", reference),
+  importExtension: (reference: Omit<ReferenceImport, "records"> & { records: unknown[] }) => post<ReferenceRecord>("/references/extension", reference),
+  reports: (offset = 0) => request<Page<EvaluationReportSummary>>(`/evaluations?offset=${offset}&limit=12`),
+  report: (id: string) => request<EvaluationReport>(`/evaluations/${encodeURIComponent(id)}`),
+  evaluate: (comparison: ComparisonRequest) => post<EvaluationReport>("/evaluations", comparison),
+  review: (review: EvaluationReview) => post<EvaluationReview>("/reviews", review),
+};
+export const runExportUrl = (id: string) => `${API_BASE}/runs/${encodeURIComponent(id)}/export`;
+export const reportExportUrl = (id: string, format: "json" | "markdown") => `${API_BASE}/evaluations/${encodeURIComponent(id)}/export?format=${format}`;

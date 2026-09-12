@@ -4,6 +4,7 @@ dist
 .turbo
 .output
 .output-e2e
+.output-collector-reference
 .wxt
 .env
 .env.*
