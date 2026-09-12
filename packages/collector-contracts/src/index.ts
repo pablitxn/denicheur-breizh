@@ -3,7 +3,7 @@ import { z } from "zod";
 export const providerIds = ["xai", "firecrawl"] as const;
 export const providerIdSchema = z.enum(providerIds);
 export type ProviderId = z.infer<typeof providerIdSchema>;
-export const captureStrategyIds = ["xai-web-search-v1", "firecrawl-agent-scrape-v1", "firecrawl-agent-native-v2", "firecrawl-agent-expanded-v3", "firecrawl-detail-repair-v4"] as const;
+export const captureStrategyIds = ["xai-web-search-v1", "firecrawl-agent-scrape-v1", "firecrawl-agent-native-v2", "firecrawl-agent-expanded-v3", "firecrawl-detail-repair-v4", "firecrawl-native-inventory-v5", "firecrawl-gallery-audit-v6", "firecrawl-gallery-walk-v7"] as const;
 export const captureStrategySchema = z.enum(captureStrategyIds);
 export type CaptureStrategyId = z.infer<typeof captureStrategySchema>;
 export const httpsUrlSchema = z.string().url().refine((value) => {

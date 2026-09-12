@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button, Chip, Select } from "@denicheur-breizh/design-system";
 import { captureRequestSchema, type CaptureRequest, type CaptureRun, type LabMetadata, type SearchFilters } from "@denicheur-breizh/collector-contracts";
@@ -19,6 +19,9 @@ export function CaptureForm({ metadata, onCreated }: { metadata?: LabMetadata; o
   const dispatch = useRef<{ serialized: string; key: string } | null>(null);
   const client = useQueryClient();
   const provider = metadata?.providers.find((item) => item.id === draft.provider);
+  useEffect(() => {
+    if (!draft.strategy && provider?.strategy) update({ strategy: provider.strategy as CaptureRequest["strategy"] });
+  }, [draft.strategy, provider?.strategy, update]);
   const budget = metadata?.budgets.find((item) => item.provider === draft.provider);
   const strategies = provider?.strategies ?? (provider ? [{ id: provider.strategy, label: provider.strategy }] : []);
   const selectedStrategy = draft.strategy ?? provider?.strategy;
@@ -65,6 +68,9 @@ export function CaptureForm({ metadata, onCreated }: { metadata?: LabMetadata; o
         </Select><small>{t("strategyHelp")}</small></div>}
         {strategyUnavailable && <p className="workflow-notice">{t("strategyUnavailable")}</p>}
         {selectedStrategy === "firecrawl-detail-repair-v4" && <p className="muted">{t("strategyRepairHelp")}</p>}
+        {selectedStrategy === "firecrawl-native-inventory-v5" && <p className="muted">{t("strategyInventoryHelp")}</p>}
+        {selectedStrategy === "firecrawl-gallery-audit-v6" && <p className="muted">{t("strategyGalleryAuditHelp")}</p>}
+        {selectedStrategy === "firecrawl-gallery-walk-v7" && <p className="muted">{t("strategyGalleryWalkHelp")}</p>}
       </section>
       <section className="panel">
         <div className="section-heading"><span className="step">02</span><h2>{t("capture")}</h2></div>

@@ -9,7 +9,7 @@ import { referenceRecords } from "./Evaluation";
 
 const metadata: LabMetadata = {
   live: false, sources: [{ id: "leboncoin", label: "Leboncoin", domains: ["leboncoin.fr"], fields: [] }],
-  providers: ["xai", "firecrawl"].map((id) => ({ id: id as "xai" | "firecrawl", label: id, model: "test", strategy: id === "xai" ? "xai-web-search-v1" : "firecrawl-agent-scrape-v1", strategies: id === "firecrawl" ? [{ id: "firecrawl-agent-scrape-v1", label: "Agent + scrape" }, { id: "firecrawl-agent-native-v2", label: "Native navigation" }, { id: "firecrawl-detail-repair-v4", label: "Targeted details" }] : undefined, configured: true })),
+  providers: ["xai", "firecrawl"].map((id) => ({ id: id as "xai" | "firecrawl", label: id, model: "test", strategy: id === "xai" ? "xai-web-search-v1" : "firecrawl-agent-scrape-v1", strategies: id === "firecrawl" ? [{ id: "firecrawl-agent-scrape-v1", label: "Agent + scrape" }, { id: "firecrawl-agent-native-v2", label: "Native navigation" }, { id: "firecrawl-detail-repair-v4", label: "Targeted details" }, { id: "firecrawl-native-inventory-v5", label: "Native inventory" }, { id: "firecrawl-gallery-audit-v6", label: "Gallery verification" }, { id: "firecrawl-gallery-walk-v7", label: "Gallery walkthrough" }] : undefined, configured: true })),
   budgets: ["xai", "firecrawl"].map((provider) => ({ provider: provider as "xai" | "firecrawl", unit: provider === "xai" ? "usd" : "credits", limit: provider === "xai" ? 25 : 5000, spent: 0, reserved: 0, remaining: provider === "xai" ? 25 : 5000, unknownCalls: 0, configured: true, balance: null, expiresAt: null, checkedAt: null, note: "" })),
 };
 const run: CaptureRun = {
@@ -54,7 +54,7 @@ describe("collector user flow", () => {
     expect(screen.getByText("Simulated data · no live results")).toBeVisible();
   });
 
-  it.each(["firecrawl-agent-native-v2", "firecrawl-detail-repair-v4"])("dispatches the explicitly selected %s strategy without falling back to page jobs", async selected => {
+  it.each(["firecrawl-agent-native-v2", "firecrawl-detail-repair-v4", "firecrawl-native-inventory-v5"])("dispatches the explicitly selected %s strategy without falling back to page jobs", async selected => {
     const fetcher = setupFetch(); mount();
     fireEvent.click(screen.getByRole("radio", { name: /Firecrawl Agent/ }));
     const strategy = await screen.findByRole("combobox", { name: "Capture strategy" });
@@ -74,6 +74,45 @@ describe("collector user flow", () => {
     expect(screen.queryByText("Complete coverage verified")).not.toBeInTheDocument();
     expect(screen.getByText("101", { selector: ".stat strong" })).toBeVisible();
     expect(screen.getAllByText("Execution finished").length).toBeGreaterThan(0);
+  });
+
+  it("offers newer gallery strategies without changing an explicitly saved v4 draft or dispatching it", async () => {
+    useDraft.setState({ draft: { ...initialDraft, provider: "firecrawl", strategy: "firecrawl-detail-repair-v4", filters: { ...initialDraft.filters } } });
+    const fetcher = setupFetch(); mount();
+    const strategy = await screen.findByRole("combobox", { name: "Capture strategy" });
+    expect(strategy).toHaveValue("firecrawl-detail-repair-v4");
+    expect(await within(strategy).findByRole("option", { name: "Native detail and complete gallery (v5)" })).toHaveValue("firecrawl-native-inventory-v5");
+    expect(within(strategy).getByRole("option", { name: "Gallery verification (v6)" })).toHaveValue("firecrawl-gallery-audit-v6");
+    fireEvent.change(strategy, { target: { value: "firecrawl-native-inventory-v5" } });
+    expect(screen.getByText(/The gallery is considered complete only when its image count matches the source/)).toBeVisible();
+    fireEvent.change(strategy, { target: { value: "firecrawl-gallery-audit-v6" } });
+    expect(screen.getByText(/Any unresolved mismatch prevents declaring the gallery complete/)).toBeVisible();
+    expect(within(strategy).getByRole("option", { name: "Gallery walkthrough (v7)" })).toHaveValue("firecrawl-gallery-walk-v7");
+    fireEvent.change(strategy, { target: { value: "firecrawl-gallery-walk-v7" } });
+    expect(screen.getByText(/An interrupted or stalled traversal leaves the gallery unverified/)).toBeVisible();
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(0);
+  });
+
+  it("retains v1 for a legacy saved Firecrawl draft when the backend default changes to v7", async () => {
+    const legacy = { ...initialDraft, provider: "firecrawl", name: "Saved before gallery strategies", urlsText: "https://www.leboncoin.fr/ad/ventes_immobilieres/1", filters: { ...initialDraft.filters } };
+    localStorage.setItem("denicheur:collector-draft", JSON.stringify({ version: 0, state: { draft: legacy } }));
+    await useDraft.persist.rehydrate();
+    setupFetch(path => path.endsWith("/meta") ? new Response(JSON.stringify({ ...metadata, providers: metadata.providers.map(provider => provider.id === "firecrawl" ? { ...provider, strategy: "firecrawl-gallery-walk-v7" } : provider) })) : undefined);
+    mount();
+    const strategy = await screen.findByRole("combobox", { name: "Capture strategy" });
+    await within(strategy).findByRole("option", { name: "Gallery walkthrough (v7)" });
+    expect(strategy).toHaveValue("firecrawl-agent-scrape-v1");
+    expect(screen.getByRole("textbox", { name: "Capture name" })).toHaveValue(legacy.name);
+    expect(useDraft.getState().draft.urlsText).toBe(legacy.urlsText);
+    expect(JSON.parse(localStorage.getItem("denicheur:collector-draft")!).version).toBe(1);
+  });
+
+  it("pins a newly selected provider's effective default into the draft", async () => {
+    setupFetch(path => path.endsWith("/meta") ? new Response(JSON.stringify({ ...metadata, providers: metadata.providers.map(provider => provider.id === "firecrawl" ? { ...provider, strategy: "firecrawl-gallery-walk-v7" } : provider) })) : undefined);
+    mount();
+    fireEvent.click(screen.getByRole("radio", { name: /Firecrawl Agent/ }));
+    await waitFor(() => expect(useDraft.getState().draft.strategy).toBe("firecrawl-gallery-walk-v7"));
+    expect(screen.getByRole("combobox", { name: "Capture strategy" })).toHaveValue("firecrawl-gallery-walk-v7");
   });
 
   it("keeps appearance and language in the shared Settings modal, with technical details in Development", async () => {

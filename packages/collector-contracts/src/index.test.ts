@@ -2,6 +2,14 @@ import {describe,expect,it} from "vitest";
 import {captureRequestSchema,listingDataSchema,observationInputSchema,observationSchema,referenceImportSchema,repairRequestSchema,searchFiltersSchema,workItemSchema} from "./index.js";
 
 describe("collector contracts",()=>{
+  it("keeps native inventory v5 explicit and preserves independent historical v4 requests",()=>{
+    const base={name:"Native inventory",provider:"firecrawl",mode:"urls",urls:["https://www.leboncoin.fr/ad/ventes_immobilieres/123"]};
+    for(const strategy of ["firecrawl-detail-repair-v4","firecrawl-native-inventory-v5","firecrawl-gallery-audit-v6", "firecrawl-gallery-walk-v7"]){
+      expect(captureRequestSchema.parse({...base,strategy}).strategy).toBe(strategy);
+      expect(()=>captureRequestSchema.parse({...base,provider:"xai",strategy})).toThrow();
+    }
+    expect(captureRequestSchema.parse(base).strategy).toBeUndefined();
+  });
   it("accepts complete collections beyond extension and image limits without truncation",()=>{
     const urls=Array.from({length:1101},(_,i)=>`https://www.leboncoin.fr/ad/ventes_immobilieres/${10000+i}`);
     expect(captureRequestSchema.parse({name:"Full source",provider:"xai",mode:"urls",urls}).urls).toEqual(urls);

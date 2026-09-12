@@ -1,7 +1,7 @@
 import type { CaptureObservation, CaptureRequest, CaptureRun, ComparisonRequest, DataField, EvaluationReport, EvaluationReview, FieldStates, LabMetadata, Page, ReferenceImport, ReferenceRecord, RepairRequest, RunEvent, RunEvaluation } from "@denicheur-breizh/collector-contracts";
 
 export interface RepairPlan {
-  runId: string; provider: "firecrawl"; strategy: "firecrawl-detail-repair-v4";
+  runId: string; provider: "firecrawl"; strategy: "firecrawl-detail-repair-v4" | "firecrawl-native-inventory-v5" | "firecrawl-gallery-audit-v6" | "firecrawl-gallery-walk-v7";
   eligible: boolean; reason?: string; total: number; requiresCapture: number;
   items: Array<{ listingId: string; url: string; title: string; fields: DataField[]; fieldStates: FieldStates; locallyResolved: DataField[] }>;
 }

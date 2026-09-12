@@ -6,7 +6,7 @@ import { normalizeScrapeDescription, scrapeEvidenceWarnings } from "./scrape-qua
 import { repairObservationFromEvidence } from "../detail-repair-evidence.js";
 import { dataFields } from "@denicheur-breizh/collector-contracts";
 
-export type FirecrawlStrategy = "firecrawl-agent-scrape-v1" | "firecrawl-agent-native-v2" | "firecrawl-agent-expanded-v3" | "firecrawl-detail-repair-v4";
+export type FirecrawlStrategy = "firecrawl-agent-scrape-v1" | "firecrawl-agent-native-v2" | "firecrawl-agent-expanded-v3" | "firecrawl-detail-repair-v4" | "firecrawl-native-inventory-v5" | "firecrawl-gallery-audit-v6" | "firecrawl-gallery-walk-v7";
 export interface FirecrawlProviderOptions { apiKey: string; fetcher?: FetchLike; pollIntervalMs?: number; strategy?: FirecrawlStrategy }
 const baseUrl = "https://api.firecrawl.dev/v2";
 
@@ -34,14 +34,24 @@ export function createFirecrawlProvider(options: FirecrawlProviderOptions): Capt
     const before = await balanceEvidence(context);
     const resumed = context.remoteJobId?.startsWith("scrape:") === true;
     const prepare = strategy === "firecrawl-agent-expanded-v3";
-    const repair = strategy === "firecrawl-detail-repair-v4";
+    const walk = strategy === "firecrawl-gallery-walk-v7";
+    const gallery = strategy === "firecrawl-gallery-audit-v6" || walk;
+    const galleryScripts = walk ? context.source.detailGalleryWalkScripts : context.source.detailGalleryAuditScripts;
+    const inventory = strategy === "firecrawl-native-inventory-v5" || gallery;
+    const repair = strategy === "firecrawl-detail-repair-v4" || inventory;
+    const observationScript = inventory ? context.source.detailInventoryEvidenceScript : context.source.detailRepairEvidenceScript;
     if (prepare && !context.source.detailPreparationScript) throw new ProviderError("strategy_source_unsupported", "The selected source has no native detail preparation for this strategy.");
-    if (repair && (!context.source.detailRepairScript || !context.source.detailRepairEvidenceScript)) throw new ProviderError("strategy_source_unsupported", "The selected source has no native detail repair and evidence scripts.");
+    if (repair && (!context.source.detailRepairScript || !observationScript)) throw new ProviderError("strategy_source_unsupported", "The selected source has no native detail repair and evidence scripts.");
+    if (gallery && !galleryScripts) throw new ProviderError("strategy_source_unsupported", "The selected source has no native gallery audit scripts.");
     const body = {
-      url: context.work.urls[0], formats: ["markdown", "links", ...(repair ? ["html"] : []), { type: "json", schema: repair ? captureRepairOutputJsonSchema : captureOutputJsonSchema, prompt: providerPrompt(context, "page", repair ? context.work.repairFields ?? dataFields : undefined) }],
+      url: context.work.urls[0], formats: ["markdown", "links", ...(repair ? ["html"] : []), { type: "json", schema: repair ? captureRepairOutputJsonSchema : captureOutputJsonSchema, prompt: providerPrompt(context, "page", repair ? context.work.repairFields ?? dataFields : undefined, inventory, gallery, walk) }],
       maxAge: 0, storeInCache: false, location: { country: "FR", languages: ["fr-FR", "fr"] }, timeout: 300000,
       ...(prepare ? { actions: [{ type: "executeJavascript", script: context.source.detailPreparationScript }, { type: "wait", milliseconds: 750 }] } : {}),
-      ...(repair ? { actions: [{ type: "executeJavascript", script: context.source.detailRepairScript }, { type: "wait", milliseconds: 750 }, { type: "executeJavascript", script: context.source.detailRepairEvidenceScript }] } : {}),
+      ...(repair ? { actions: [{ type: "executeJavascript", script: context.source.detailRepairScript }, { type: "wait", milliseconds: 750 }, ...(gallery ? [
+        { type: "executeJavascript", script: galleryScripts!.open }, { type: "wait", milliseconds: 750 },
+        { type: "executeJavascript", script: galleryScripts!.observeAndClose }, { type: "wait", milliseconds: 500 },
+        { type: "executeJavascript", script: galleryScripts!.verifyClosed },
+      ] : [{ type: "executeJavascript", script: observationScript }])] } : {}),
     };
     if(!resumed) await recordProviderRequest(context, options.apiKey, { endpoint: `${baseUrl}/scrape`, model: null, strategy, body });
     const raw = resumed
@@ -66,7 +76,7 @@ export function createFirecrawlProvider(options: FirecrawlProviderOptions): Capt
     const result = repair ? parseRepairCaptureOutput(data?.json, usage, context.work.urls[0]!) : parseCaptureOutput(data?.json, usage);
     result.observations = result.observations.map(observation => normalizeScrapeDescription(observation, raw, context.work.urls[0]));
     if (repair) result.observations = result.observations.map(observation => {
-      const repaired = repairObservationFromEvidence(observation, raw, context.work.urls[0]!);
+      const repaired = repairObservationFromEvidence(observation, raw, context.work.urls[0]!, {nativeInventory:inventory});
       for (const field of ["energyClass", "gesClass"] as const) {
         const before = observation.data[field], after = repaired.data[field];
         if (typeof before === "string" && before.trim() && before !== after && repaired.fieldStates?.[field]?.status !== "unresolved") result.warnings.push(`Native source evidence corrected ${field} from model value ${before} to ${after ?? repaired.fieldStates?.[field]?.status} for ${observation.url}.`);
@@ -84,7 +94,7 @@ export function createFirecrawlProvider(options: FirecrawlProviderOptions): Capt
     if (jobId?.startsWith("scrape:")) throw new ProviderError("provider_work_invalid", "A scrape job cannot resume discovery work.");
     if (!jobId) {
       if(strategy === "firecrawl-agent-native-v2" && context.source.id !== "leboncoin") throw new ProviderError("strategy_source_unsupported", "The native-home strategy currently supports Leboncoin only.");
-      const prompt = providerPrompt(context, strategy === "firecrawl-agent-native-v2" ? "native-session" : strategy === "firecrawl-detail-repair-v4" ? "cards-only" : "page");
+      const prompt = providerPrompt(context, strategy === "firecrawl-agent-native-v2" ? "native-session" : ["firecrawl-detail-repair-v4", "firecrawl-native-inventory-v5", "firecrawl-gallery-audit-v6", "firecrawl-gallery-walk-v7"].includes(strategy) ? "cards-only" : "page", undefined, ["firecrawl-native-inventory-v5", "firecrawl-gallery-audit-v6", "firecrawl-gallery-walk-v7"].includes(strategy), ["firecrawl-gallery-audit-v6", "firecrawl-gallery-walk-v7"].includes(strategy), strategy === "firecrawl-gallery-walk-v7");
       if (prompt.length > 10000) throw new ProviderError("provider_work_invalid", "The Firecrawl Agent prompt exceeds its documented 10,000-character limit.");
       const body = {
         prompt, ...(strategy === "firecrawl-agent-native-v2" ? { urls: ["https://www.leboncoin.fr/"] } : context.work.urls.length ? { urls: context.work.urls } : {}),

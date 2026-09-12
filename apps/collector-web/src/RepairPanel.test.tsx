@@ -11,7 +11,7 @@ import { usePreferences } from "./preferences";
 const parent: CaptureRun = { id: "parent", request: { ...initialDraft, provider: "firecrawl", name: "Original search" }, status: "partial", strategy: "firecrawl-agent-expanded-v3", model: "test", coverage: "incomplete", discovered: 3, captured: 1, failed: 2, pending: 0, pagesVisited: 1, observedEnd: true, duplicates: 0, warnings: [], cost: 3, costUnknown: false, unit: "credits", createdAt: "2026-09-12T12:00:00.000Z", updatedAt: "2026-09-12T12:01:00.000Z" };
 const url = (id: number) => `https://www.leboncoin.fr/ad/ventes_immobilieres/${id}`;
 const unresolved = { status: "unresolved" as const, reason: "Provider did not recover this field.", evidence: [] };
-const plan: RepairPlan = { runId: parent.id, provider: "firecrawl", strategy: "firecrawl-detail-repair-v4", eligible: true, total: 2, requiresCapture: 2, items: [
+const plan: RepairPlan = { runId: parent.id, provider: "firecrawl", strategy: "firecrawl-gallery-walk-v7", eligible: true, total: 2, requiresCapture: 2, items: [
   { listingId: "leboncoin:1", url: url(1), title: "House one", fields: ["description", "imageUrls"], locallyResolved: ["description"], fieldStates: { description: unresolved, imageUrls: unresolved } },
   { listingId: "leboncoin:2", url: url(2), title: "House two", fields: ["rooms"], locallyResolved: [], fieldStates: { rooms: unresolved } },
 ] };
@@ -35,6 +35,7 @@ describe("targeted repair", () => {
     fireEvent.click(screen.getByRole("button", { name: "Review fields to repair" }));
     const all = await screen.findByRole("checkbox", { name: "Select all listings to repair" });
     expect(all).toBeChecked();
+    expect(screen.getByText("Capture strategy: Gallery walkthrough (v7)")).toBeVisible();
     expect(screen.getByRole("checkbox", { name: /House one/ })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: /House two/ })).toBeChecked();
     fireEvent.click(screen.getByRole("checkbox", { name: /House two/ }));
@@ -72,6 +73,20 @@ describe("targeted repair", () => {
     expect(screen.getByRole("button", { name: "Create repair capture" })).toBeEnabled();
     fireEvent.click(within(screen.getByRole("group", { name: "Fields to repair" })).getByRole("checkbox", { name: "Description" }));
     expect(screen.getByRole("button", { name: "Create repair capture" })).toBeDisabled();
+  });
+
+  it("keeps a conflicting saved intent explicit without generating a replacement request key", async () => {
+    const fetcher = fetchPlan(metadata, plan, () => response({ error: { code: "idempotency_conflict", message: "Saved strategy differs from this request." } }, 409));
+    const { onCreated } = mount(); fireEvent.click(screen.getByRole("button", { name: "Review fields to repair" }));
+    const start = await screen.findByRole("button", { name: "Create repair capture" });
+    await waitFor(() => expect(start).toBeEnabled()); fireEvent.click(start);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Saved strategy differs");
+    expect(screen.getByText(/Check capture history and the original repair before starting a new attempt/)).toBeVisible();
+    fireEvent.click(start);
+    await waitFor(() => expect(fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(2));
+    const posts = fetcher.mock.calls.filter(([, init]) => init?.method === "POST");
+    expect(posts[0][1]!.headers).toEqual(posts[1][1]!.headers);
+    expect(onCreated).not.toHaveBeenCalled();
   });
 
   it("does not offer completed listings or create work when the plan has no gaps", async () => {

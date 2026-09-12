@@ -6,7 +6,7 @@ import { asRecord } from "./providers/http.js";
 import { canonicalIdentity } from "./sources.js";
 import type { CollectorStore } from "./store.js";
 
-export const REPAIR_STRATEGY = "firecrawl-detail-repair-v4" as const;
+export const REPAIR_STRATEGY = "firecrawl-gallery-walk-v7" as const;
 
 /** Only selected fields can change. Older source observations stay available in the lineage artifact. */
 export function mergeRepairFields(base: CaptureObservation, candidate: ObservationInput, fields: readonly DataField[], observedAt = base.observedAt): CaptureObservation {
@@ -65,6 +65,29 @@ function observedContradictions(base: CaptureObservation, candidate: Observation
   });
 }
 
+function evidencedDegradations(base: CaptureObservation, candidate: ObservationInput): DataField[] {
+  const before = detailFieldStates(base);
+  return dataFields.filter(field => before[field].status !== "unresolved" && candidate.fieldStates?.[field]?.status === "unresolved" && candidate.fieldStates[field]!.evidence.some(item => {
+    try { return item.text.trim() && canonicalIdentity(base.source, item.url).id === base.id; } catch { return false; }
+  }));
+}
+
+/** Keep the old value and its timestamp, but do not hide new source evidence of incompleteness. */
+function retainPendingEvidence(snapshot: CaptureObservation, candidate: ObservationInput, fields: readonly DataField[], at: string): CaptureObservation {
+  for (const field of fields) {
+    const state = candidate.fieldStates?.[field];
+    if (state?.status !== "unresolved") continue;
+    const evidence = state.evidence.filter(item => { try { return item.text.trim() && canonicalIdentity(snapshot.source, item.url).id === snapshot.id; } catch { return false; } });
+    if (!evidence.length) continue;
+    snapshot.fieldStates![field] = { ...state, evidence, observedAt: state.observedAt ?? at };
+    snapshot.evidence = [...new Map([...snapshot.evidence, ...evidence].map(item => [JSON.stringify(item), item])).values()];
+  }
+  snapshot.missingFields = detailGaps(snapshot);
+  snapshot.detailStatus = snapshot.missingFields.length ? "failed" : "captured";
+  snapshot.error = snapshot.missingFields.length ? `Unresolved detail fields: ${snapshot.missingFields.join(", ")}.` : undefined;
+  return snapshot;
+}
+
 /** Read-only inspection. It never mutates snapshots, enqueues work, or calls a provider. */
 export function prepareRepair(store: CollectorStore, runId: string) {
   const run = store.getRun(runId);
@@ -111,11 +134,13 @@ export function prepareRepair(store: CollectorStore, runId: string) {
     if (raw) {
       const candidate = repairObservationFromEvidence(observation, raw.payload, observation.url);
       const contradictions = observedContradictions(observation, candidate);
-      fields = [...new Set([...fields, ...contradictions])];
+      const degraded = evidencedDegradations(observation, candidate);
+      fields = [...new Set([...fields, ...contradictions, ...degraded])];
       for (const field of contradictions) fieldStates[field] = { status: "unresolved",
-        reason: `This run's saved source evidence contradicts the retained ${field} value or state; the proposed local repair preserves the original snapshot.`,
+        reason: `Saved native evidence differs from the retained ${field} value or state. Review the proposed correction or enrichment; the original snapshot is preserved.`,
         evidence: candidate.fieldStates![field]!.evidence, observedAt: raw.at };
-      repaired = mergeRepairFields(observation, candidate, fields,raw.at);
+      for (const field of degraded) fieldStates[field] = { ...candidate.fieldStates![field]!, observedAt: raw.at };
+      repaired = retainPendingEvidence(mergeRepairFields(observation, candidate, fields,raw.at), candidate, fields, raw.at);
       repaired.observedAt=Date.parse(raw.at)>Date.parse(observation.observedAt)?raw.at:observation.observedAt;
       supportingArtifacts.push(raw.reference);
     }
@@ -151,7 +176,7 @@ export function createRepair(store: CollectorStore, runId: string, input: Repair
     for (const item of selected) {
       const original = store.observation(runId, item.listingId)!;
       const candidate = candidates.get(item.listingId)!.observation;
-      const observation = { ...mergeRepairFields(original, candidate, item.fields,candidate.observedAt), runId: child.id,observedAt:candidate.observedAt };
+      const observation = { ...retainPendingEvidence(mergeRepairFields(original, candidate, item.fields,candidate.observedAt), candidate, item.fields, candidate.observedAt), runId: child.id,observedAt:candidate.observedAt };
       for(const field of item.locallyResolved.filter(field=>item.fields.includes(field))){
         const timestamp=candidate.fieldObservedAt?.[field]??candidate.observedAt;
         observation.fieldObservedAt![field]=timestamp;

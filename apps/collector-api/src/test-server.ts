@@ -79,7 +79,7 @@ function provider(id: ProviderId, strategy = id === "xai" ? "xai-web-search-v1" 
 }
 
 const store = new CollectorStore(config.dbPath, join(directory, "evidence"));
-const fixtures = new Map([provider("xai"), provider("firecrawl"), provider("firecrawl", "firecrawl-detail-repair-v4")].map(item => [item.strategy, item]));
+const fixtures = new Map([provider("xai"), provider("firecrawl"), provider("firecrawl", "firecrawl-detail-repair-v4"), provider("firecrawl", "firecrawl-native-inventory-v5"), provider("firecrawl", "firecrawl-gallery-audit-v6"), provider("firecrawl", "firecrawl-gallery-walk-v7")].map(item => [item.strategy, item]));
 const worker = new CaptureWorker(store, new Map<ProviderId, CaptureProvider>([["xai", fixtures.get("xai-web-search-v1")!], ["firecrawl", fixtures.get("firecrawl-agent-scrape-v1")!]]), config, {
   choices: id => [...fixtures.values()].filter(item => item.id === id).map(item => ({ id: item.strategy, label: `Offline ${item.strategy}` })),
   resolve(id, strategy) {

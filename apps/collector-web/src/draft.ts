@@ -10,7 +10,14 @@ export const initialDraft: CaptureDraft = {
 export const useDraft = create<{ draft: CaptureDraft; update: (patch: Partial<CaptureDraft>) => void }>()(persist((set) => ({
   draft: initialDraft,
   update: (patch) => set((state) => ({ draft: { ...state.draft, ...patch } })),
-}), { name: "denicheur:collector-draft", partialize: ({ draft }) => ({ draft }) }));
+}), {
+  name: "denicheur:collector-draft", version: 1, partialize: ({ draft }) => ({ draft }),
+  migrate: (persisted) => {
+    const draft = persisted && typeof persisted === "object" && "draft" in persisted ? (persisted as { draft: CaptureDraft }).draft : initialDraft;
+    // Before strategy defaults changed, a saved Firecrawl draft without an explicit strategy meant v1.
+    return { draft: draft.provider === "firecrawl" && !draft.strategy ? { ...draft, strategy: "firecrawl-agent-scrape-v1" as const } : draft };
+  },
+}));
 
 export function draftRequest(draft: CaptureDraft): CaptureRequest {
   const { urlsText, ...request } = draft;

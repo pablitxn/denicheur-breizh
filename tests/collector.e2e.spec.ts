@@ -189,7 +189,7 @@ test("repairs a selected detail gap in a linked capture while preserving the ori
   const child = await repairResponse.json() as CaptureRun;
   expect(child.id).not.toBe(parent.id);
   expect(child.request.mode).toBe("urls");
-  expect(child.strategy).toBe("firecrawl-detail-repair-v4");
+  expect(child.strategy).toBe("firecrawl-gallery-walk-v7");
   expect(child.request.repair).toEqual({ parentRunId: parent.id, targets: [{ listingId: "leboncoin:1", fields: ["description"] }] });
   await completed(request, child.id);
   await expect(page).toHaveURL(new RegExp(`run=${child.id}`));

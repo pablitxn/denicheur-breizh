@@ -92,6 +92,63 @@ describe("xAI adapter", () => {
 });
 
 describe("Firecrawl adapter", () => {
+  it.each(["native_complete","walk_complete","walk_stalled"] as const)("keeps v7 %s grounded in native inventory or actual traversed positions",async scenario=>{
+    const urls=["https://img.leboncoin.fr/api/v1/lbcpb1/images/one.jpg?rule=ad-large","https://img.leboncoin.fr/api/v1/lbcpb1/images/two.jpg?rule=ad-large"];
+    const nativeComplete=scenario==="native_complete",walkComplete=scenario==="walk_complete";
+    const observe={preparation:"leboncoin-gallery-walk-v7",phase:"observe",url:listingUrl,listingId:"123",blocked:false,criteria:[],fields:{},features:[],structuredData:[],inventory:{listingId:"123",images:{urls,declaredCount:2,observedCount:2,inventoryComplete:nativeComplete},galleryControl:{observed:!nativeComplete,declaredCount:nativeComplete?null:3},attributes:[]}};
+    const positions=[...urls.map((url,index)=>({position:index+1,total:3,counterText:`${index+1}/3`,activeImages:[{url,alt:`Photo ${index+1}`}],mediaKinds:["photo"]})),{position:3,total:3,counterText:"3/3",activeImages:[],mediaKinds:["contact"],nonPhotoEvidence:{kind:"contact",text:"Cette annonce vous intéresse ? Envoyer un message",selector:'[aria-roledescription="slide"][aria-current="true"]'}}];
+    const audit={preparation:"leboncoin-gallery-walk-v7",phase:"gallery",stage:"restored",url:listingUrl,listingId:"123",openedByOwnControl:true,dialogFound:true,closed:true,restoredDetail:true,walk:{positions:walkComplete?positions:positions.slice(0,1),declaredTotal:3,visitedPositions:walkComplete?[1,2,3]:[1],complete:walkComplete,stopReason:walkComplete?"all_positions_observed":"stalled"}};
+    const raw={success:true,creditsUsed:5,data:{json:null,metadata:{sourceURL:listingUrl},actions:{javascriptReturns:[{value:observe},...nativeComplete?[]:[{value:audit}]]}}};
+    const fetcher=fetchQueue(json({data:{remainingCredits:100}}),json(raw),json({data:{remainingCredits:95}}));
+    const result=await createFirecrawlProvider({apiKey:"test-secret",strategy:"firecrawl-gallery-walk-v7",fetcher}).step({...context("firecrawl"),source:leboncoinSource});
+    const body=JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body));
+    expect(body.actions[2].script).toBe(leboncoinSource.detailGalleryWalkScripts!.open);
+    expect(body.actions[4].script).toBe(leboncoinSource.detailGalleryWalkScripts!.observeAndClose);
+    expect(body.actions[6].script).toBe(leboncoinSource.detailGalleryWalkScripts!.verifyClosed);
+    expect(body.formats.at(-1).prompt).toContain("GALLERY WALK v7");
+    expect(result.observations[0]?.data.imageUrls).toEqual(urls);
+    expect(result.observations[0]?.fieldStates?.imageUrls?.status).toBe(scenario==="walk_stalled"?"unresolved":"observed");
+    expect(fetcher.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1);
+    expect(result.usage.amount).toBe(5);
+  });
+  it("uses v6 gallery stages in one request and reconciles the actual dialog count instead of the prior button",async()=>{
+    const urls=Array.from({length:11},(_,i)=>`https://img.leboncoin.fr/api/v1/lbcpb1/images/own-${i}.jpg?rule=ad-large`);
+    const raw={success:true,creditsUsed:5,data:{json:null,metadata:{sourceURL:listingUrl},actions:{javascriptReturns:[{value:{preparation:"leboncoin-gallery-audit-v6",phase:"observe",url:listingUrl,listingId:"123",blocked:false,criteria:[],fields:{},features:[],structuredData:[],inventory:{listingId:"123",images:{urls,declaredCount:11,observedCount:11,inventoryComplete:false},galleryControl:{observed:true,declaredCount:12},attributes:[]}}},{value:{preparation:"leboncoin-gallery-audit-v6",phase:"gallery",stage:"restored",url:listingUrl,listingId:"123",openedByOwnControl:true,dialogFound:true,closed:true,restoredDetail:true,counters:[{kind:"photo-count",text:"Photos (11)",total:11}],images:urls.map(url=>({url:url.replace("ad-large","ad-thumb"),alt:"Photo"})),mediaKinds:["photo"]}}]}}};
+    const ctx={...context("firecrawl"),source:leboncoinSource};
+    const fetcher=fetchQueue(json({data:{remainingCredits:100}}),json(raw),json({data:{remainingCredits:95}}));
+    const result=await createFirecrawlProvider({apiKey:"test-secret",strategy:"firecrawl-gallery-audit-v6",fetcher}).step(ctx);
+    const body=JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body));
+    expect(body.actions).toEqual([{type:"executeJavascript",script:leboncoinSource.detailRepairScript},{type:"wait",milliseconds:750},{type:"executeJavascript",script:leboncoinSource.detailGalleryAuditScripts!.open},{type:"wait",milliseconds:750},{type:"executeJavascript",script:leboncoinSource.detailGalleryAuditScripts!.observeAndClose},{type:"wait",milliseconds:500},{type:"executeJavascript",script:leboncoinSource.detailGalleryAuditScripts!.verifyClosed}]);
+    expect(body.formats.at(-1).prompt).toContain("GALLERY AUDIT v6");
+    expect(result.observations[0]?.data.imageUrls).toEqual(urls);
+    expect(result.observations[0]?.fieldStates?.imageUrls?.status).toBe("observed");
+    expect(result.observations[0]?.fieldStates?.imageUrls?.evidence.map(e=>e.text).join(" ")).toContain("12");
+    expect(fetcher.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1);
+    expect(result.usage.amount).toBe(5);
+    expect(ctx.onEvidence).toHaveBeenCalledWith("firecrawl_scrape",raw);
+  });
+  it("uses v5 native inventory in one scrape while preserving the v4 observation action", async () => {
+    const urls=Array.from({length:17},(_,i)=>`https://img.leboncoin.fr/own-${i}.jpg`);
+    const raw={success:true,creditsUsed:5,data:{json:null,metadata:{sourceURL:listingUrl},actions:{javascriptReturns:[{value:{preparation:"leboncoin-native-inventory-v5",phase:"observe",url:listingUrl,listingId:"123",blocked:false,criteria:[],fields:{},features:[],structuredData:[],inventory:{listingId:"123",price:[227900],images:{urls,declaredCount:17,observedCount:17,inventoryComplete:true},galleryControl:{observed:true,declaredCount:17},attributes:[],attributesComplete:true}}}]}}};
+    const ctx={...context("firecrawl"),source:leboncoinSource};
+    const fetcher=fetchQueue(json({data:{remainingCredits:100}}),json(raw),json({data:{remainingCredits:95}}));
+    const result=await createFirecrawlProvider({apiKey:"test-secret",strategy:"firecrawl-native-inventory-v5",fetcher}).step(ctx);
+    const body=JSON.parse(String(fetcher.mock.calls[1]?.[1]?.body));
+    expect(body.actions).toEqual([{type:"executeJavascript",script:leboncoinSource.detailRepairScript},{type:"wait",milliseconds:750},{type:"executeJavascript",script:leboncoinSource.detailInventoryEvidenceScript}]);
+    expect(body.formats.at(-1).prompt).toContain("NATIVE INVENTORY v5");
+    expect(body.formats.at(-1).schema).toEqual(captureRepairOutputJsonSchema);
+    expect(result.observations[0]?.data).toMatchObject({priceEuros:227900,imageUrls:urls});
+    expect(result.observations[0]?.fieldStates?.imageUrls?.status).toBe("observed");
+    expect(result.observations[0]?.missingFields).not.toContain("imageUrls");
+    expect(result.usage.amount).toBe(5);
+    expect(fetcher.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1);
+    expect(ctx.onEvidence).toHaveBeenCalledWith("firecrawl_scrape",raw);
+    const legacyFetch=fetchQueue(json({data:{remainingCredits:100}}),json({success:true,creditsUsed:5,data:{json:output(),metadata:{sourceURL:listingUrl}}}),json({data:{remainingCredits:95}}));
+    await createFirecrawlProvider({apiKey:"test-secret",strategy:"firecrawl-detail-repair-v4",fetcher:legacyFetch}).step(ctx);
+    const legacyBody=JSON.parse(String(legacyFetch.mock.calls[1]?.[1]?.body));
+    expect(legacyBody.actions.at(-1).script).toBe(leboncoinSource.detailRepairEvidenceScript);
+    expect(legacyBody.formats.at(-1).prompt).not.toContain("NATIVE INVENTORY");
+  });
   it("recovers the selected native GES despite empty model field-state reasons and exposes the disagreement", async () => {
     const payload = output();
     const observation = { ...payload.observations[0]!, data: { ...payload.observations[0]!.data, gesClass: "G" },

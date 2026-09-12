@@ -1,6 +1,6 @@
 import {createHash} from "node:crypto";
 import {dataFields,type CaptureRequest,type DataField,type SourceDescriptor,type WorkItem} from "@denicheur-breizh/collector-contracts";
-import {leboncoinExpandDescription,leboncoinPrepareDetailRepair,leboncoinObserveDetailRepair} from "./leboncoin-detail.js";
+import {leboncoinExpandDescription,leboncoinPrepareDetailRepair,leboncoinObserveDetailRepair,leboncoinObserveNativeInventory,leboncoinOpenGalleryAudit,leboncoinObserveAndCloseGallery,leboncoinVerifyGalleryClosed,leboncoinOpenGalleryWalk,leboncoinWalkAndCloseGallery,leboncoinVerifyGalleryWalkClosed} from "./leboncoin-detail.js";
 
 export interface SourceAdapter extends SourceDescriptor {
   accepts(url:string):boolean;
@@ -9,6 +9,9 @@ export interface SourceAdapter extends SourceDescriptor {
   detailPreparationScript?:string;
   detailRepairScript?:string;
   detailRepairEvidenceScript?:string;
+  detailInventoryEvidenceScript?:string;
+  detailGalleryAuditScripts?:{open:string;observeAndClose:string;verifyClosed:string};
+  detailGalleryWalkScripts?:{open:string;observeAndClose:string;verifyClosed:string};
   instructions(request:CaptureRequest, work:WorkItem, knownIds:string[]):string;
 }
 export const leboncoinSource:SourceAdapter = {
@@ -18,6 +21,9 @@ export const leboncoinSource:SourceAdapter = {
   detailPreparationScript:leboncoinExpandDescription,
   detailRepairScript:leboncoinPrepareDetailRepair,
   detailRepairEvidenceScript:leboncoinObserveDetailRepair,
+  detailInventoryEvidenceScript:leboncoinObserveNativeInventory,
+  detailGalleryAuditScripts:{open:leboncoinOpenGalleryAudit,observeAndClose:leboncoinObserveAndCloseGallery,verifyClosed:leboncoinVerifyGalleryClosed},
+  detailGalleryWalkScripts:{open:leboncoinOpenGalleryWalk,observeAndClose:leboncoinWalkAndCloseGallery,verifyClosed:leboncoinVerifyGalleryWalkClosed},
   accepts(value) {try {const u=new URL(value);return u.protocol==="https:"&&!u.username&&!u.password&&(u.hostname==="leboncoin.fr"||u.hostname.endsWith(".leboncoin.fr"));}catch{return false;}},
   identity(value) {
     if(!this.accepts(value)) throw new Error("Listing URL is outside the source domains.");
@@ -32,7 +38,7 @@ export const leboncoinSource:SourceAdapter = {
       "Images must belong to the current listing's own gallery or native ad data. Exclude recommendations, other listings, banners, logos and interface assets. Preserve every actual gallery image; do not collect all images indiscriminately from the page.",
       `A captured detail must account for EVERY field: ${dataFields.join(", ")}. Supply the observed value, or put the field in absentFields only after confirming it does not exist on the fully opened detail page. Otherwise put it in missingFields and use pending/failed detailStatus. Null or empty arrays without an explicit absence assertion are unknown, not complete.`,
       "Expand description controls such as Voir plus to retrieve the full text. An ellipsis from a collapsed description is not the full description; mark description missing if expansion fails. energyClass and gesClass are single letters A–G; navigation labels such as En savoir plus are not ratings.",
-      ...(request.strategy==="firecrawl-detail-repair-v4"&&work.kind==="details" ? ["In v4, preserve an explicitly observed diagnostic exemption in fieldStates for that field, with its source wording and null rating. Open the additional-criteria disclosure before deciding a requested attribute is absent. An unreadable scale or hidden criterion remains unresolved."] : []),
+      ...(["firecrawl-detail-repair-v4","firecrawl-native-inventory-v5","firecrawl-gallery-audit-v6","firecrawl-gallery-walk-v7"].includes(request.strategy??"")&&work.kind==="details" ? [`In ${request.strategy==="firecrawl-gallery-walk-v7"?"v7":request.strategy==="firecrawl-gallery-audit-v6"?"v6":request.strategy==="firecrawl-native-inventory-v5"?"v5":"v4"}, preserve an explicitly observed diagnostic exemption in fieldStates for that field, with its source wording and null rating. Open the additional-criteria disclosure before deciding a requested attribute is absent. An unreadable scale or hidden criterion remains unresolved.`] : []),
       work.kind==="discover" ? "Enumerate the COMPLETE native search, following pagination. Return the listings you can observe in this step and explicit next page URLs. If more work remains, say exhausted=false. Search snippets and the absence of more search-engine results do NOT prove that the native search is exhausted." : "Open every supplied listing URL and retrieve its full detail. A restricted, deleted or inaccessible page is failed, never a captured listing. Do not substitute a different property.",
       `Filters (authoritative): ${JSON.stringify(request.filters)}. Native search reference: ${request.searchUrl??"none"}.`,
       `Current URLs: ${JSON.stringify(work.urls)}. Continuation: ${work.cursor??"initial"}.`,

@@ -109,7 +109,7 @@ export class CaptureWorker {
           if(work.kind==="details"&&!requestedIds.has(identity.id)){invalid++;continue;}
           receivedIds.add(identity.id);
           let observation:CaptureObservation={...parsed.data,...identity,source:source.id,runId,provider:provider.id,observedAt};
-          if(work.kind==="discover"&&run.strategy===REPAIR_STRATEGY)observation.detailStatus="pending";
+          if(work.kind==="discover"&&["firecrawl-detail-repair-v4","firecrawl-native-inventory-v5","firecrawl-gallery-audit-v6",REPAIR_STRATEGY].includes(run.strategy))observation.detailStatus="pending";
           const repairBase=work.repairFields?this.store.observation(runId,identity.id):undefined;
           if(work.repairFields&&repairBase){
             observation={...mergeRepairFields(repairBase,observation,work.repairFields,observedAt),observedAt};

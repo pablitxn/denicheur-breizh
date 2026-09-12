@@ -15,7 +15,7 @@
     "report:collector": "node scripts/collector-report.mjs",
     "build:collector": "turbo run build --filter=@denicheur-breizh/collector-api --filter=@denicheur-breizh/collector-web",
     "typecheck:collector": "turbo run typecheck --filter=@denicheur-breizh/collector-api --filter=@denicheur-breizh/collector-web",
-    "test:collector": "turbo run test:run --filter=@denicheur-breizh/collector-api --filter=@denicheur-breizh/collector-web --filter=@denicheur-breizh/collector-contracts",
+    "test:collector": "turbo run test:run --filter=@denicheur-breizh/collector-api --filter=@denicheur-breizh/collector-web --filter=@denicheur-breizh/collector-contracts && node --test scripts/collector-native-audit.test.mjs",
     "test:e2e:collector": "pnpm build:collector && playwright test --config=playwright.collector.config.ts",
     "check:collector": "pnpm typecheck:collector && pnpm check:tokens && pnpm test:collector && pnpm build:collector && pnpm test:e2e:collector",
     "dev:all": "turbo run dev --filter=@denicheur-breizh/api --filter=@denicheur-breizh/web --filter=@denicheur-breizh/extension",

@@ -7,6 +7,9 @@ export function strategyLabel(id: string, t: (key: CopyKey) => string, fallback?
     "firecrawl-agent-native-v2": "strategyNative",
     "firecrawl-agent-expanded-v3": "strategyExpanded",
     "firecrawl-detail-repair-v4": "strategyRepair",
+    "firecrawl-native-inventory-v5": "strategyInventory",
+    "firecrawl-gallery-audit-v6": "strategyGalleryAudit",
+    "firecrawl-gallery-walk-v7": "strategyGalleryWalk",
   };
   return labels[id] ? t(labels[id]) : fallback ?? id;
 }

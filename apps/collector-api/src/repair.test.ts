@@ -8,7 +8,7 @@ import { readConfig } from "./config.js";
 import { CollectorStore } from "./store.js";
 import { CaptureWorker } from "./worker.js";
 import { canonicalIdentity } from "./sources.js";
-import { mergeRepairFields, REPAIR_STRATEGY } from "./repair.js";
+import { createRepair, mergeRepairFields, REPAIR_STRATEGY } from "./repair.js";
 
 const url = "https://www.leboncoin.fr/ad/ventes_immobilieres/123456";
 const resources: Array<{ store: CollectorStore; worker: CaptureWorker; dir: string }> = [];
@@ -54,11 +54,27 @@ describe("targeted Firecrawl repairs", () => {
     store.artifact(run.id,"firecrawl_scrape",diagnosticRaw("C"));
     const before={run:store.getRun(run.id),events:store.events(run.id),observation:store.observation(run.id,observation.id)};
     const plan=worker.repairPlan(run.id);
-    expect(plan).toMatchObject({eligible:true,requiresCapture:0,items:[{fields:["energyClass"],locallyResolved:["energyClass"],fieldStates:{energyClass:{status:"unresolved",reason:expect.stringContaining("contradicts")}}}]});
+    expect(plan).toMatchObject({eligible:true,requiresCapture:0,items:[{fields:["energyClass"],locallyResolved:["energyClass"],fieldStates:{energyClass:{status:"unresolved",reason:expect.stringContaining("differs")}}}]});
     expect({run:store.getRun(run.id),events:store.events(run.id),observation:store.observation(run.id,observation.id)}).toEqual(before);
     const child=worker.repair(run.id,{fields:["energyClass"]},"correct-dpe"),duplicate=worker.repair(run.id,{fields:["energyClass"]},"correct-dpe");await worker.drain();
     expect(child.id).toBe(duplicate.id);expect(step).not.toHaveBeenCalled();expect(store.getRun(child.id)).toMatchObject({status:"completed",cost:0,captured:1});
     expect(store.observation(child.id,observation.id)).toMatchObject({data:{title:"Original title",energyClass:"C"},missingFields:[],fieldStates:{energyClass:{status:"observed"}}});
+    expect(store.observation(run.id,observation.id)).toEqual(original);
+  });
+  it("surfaces source-proven partial images despite a previously filled snapshot, preserving values and their original timestamps", () => {
+    const {store,worker,run,observation,step}=fixture([]);
+    const urls=[1,2,3].map(i=>`https://img.leboncoin.fr/api/v1/lbcpb1/images/${i}.jpg`);
+    const original={...observation,data:{...observation.data,imageUrls:urls},absentFields:observation.absentFields.filter(field=>field!=="imageUrls"),fieldStates:{imageUrls:{status:"observed" as const,reason:"Earlier image URLs were cited",evidence:[{url,kind:"page" as const,text:urls.join("\n")}]}}};
+    store.saveObservation(original,{replaceSnapshot:true});store.updateRun(run.id,{status:"completed"});
+    store.artifact(run.id,"firecrawl_scrape",{success:true,data:{metadata:{sourceURL:url},actions:{javascriptReturns:[{value:{preparation:"leboncoin-native-inventory-v5",phase:"observe",url,listingId:"123456",inventory:{listingId:"123456",images:{urls,declaredCount:12,observedCount:3,inventoryComplete:false}}}}]}}});
+    const before={run:store.getRun(run.id),events:store.events(run.id),observation:store.observation(run.id,observation.id)};
+    expect(worker.repairPlan(run.id)).toMatchObject({eligible:true,requiresCapture:1,items:[{fields:["imageUrls"],locallyResolved:[],fieldStates:{imageUrls:{status:"unresolved"}}}]});
+    expect({run:store.getRun(run.id),events:store.events(run.id),observation:store.observation(run.id,observation.id)}).toEqual(before);
+    // Use the store-level constructor so the assertion is about preparation, with no worker dispatch.
+    const child=createRepair(store,run.id,{fields:["imageUrls"]},"partial-evidence","synthetic");
+    const pending=store.observation(child.id,observation.id)!;
+    expect(pending.data.imageUrls).toEqual(urls);expect(pending.missingFields).toContain("imageUrls");expect(pending.fieldStates?.imageUrls?.status).toBe("unresolved");
+    expect(pending.fieldObservedAt?.imageUrls).toBe(original.observedAt);expect(store.getRun(child.id).pending).toBe(1);expect(step).not.toHaveBeenCalled();
     expect(store.observation(run.id,observation.id)).toEqual(original);
   });
 

@@ -3,10 +3,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@denicheur-breizh/design-system";
 import { dataFields, repairRequestSchema, type CaptureRun, type DataField, type RepairRequest } from "@denicheur-breizh/collector-contracts";
 import { ArrowRight, RefreshCw } from "lucide-react";
-import { api, type RepairPlan } from "./api";
+import { api, ApiError, type RepairPlan } from "./api";
 import { ErrorNotice } from "./components";
 import { useCopy } from "./copy";
 import { fieldLabel, FieldStateList } from "./fields";
+import { strategyLabel } from "./strategies";
 
 interface RepairIntents { last?: RepairRequest; keys: Record<string, string> }
 const intentKey = (id: string) => `denicheur:collector-repair:${id}`;
@@ -66,6 +67,10 @@ function RepairSelection({ run, plan, onCreated }: { run: CaptureRun; plan: Repa
   });
   const toggleListing = (id: string, checked: boolean) => setListingIds(current => checked ? [...current, id] : current.filter(item => item !== id));
   return <form onSubmit={event => { event.preventDefault(); if (selected.length && !paidBlocked && !mutation.isPending) mutation.mutate(); }}>
+    <p className="run-strategy"><span>{t("strategy")}: {strategyLabel(plan.strategy, t)}</span><code>{plan.strategy}</code></p>
+    {plan.strategy === "firecrawl-native-inventory-v5" && <p className="muted">{t("strategyInventoryHelp")}</p>}
+    {plan.strategy === "firecrawl-gallery-audit-v6" && <p className="muted">{t("strategyGalleryAuditHelp")}</p>}
+    {plan.strategy === "firecrawl-gallery-walk-v7" && <p className="muted">{t("strategyGalleryWalkHelp")}</p>}
     <fieldset disabled={mutation.isPending}><legend>{t("repairFields")}</legend><div className="inline-options repair-field-options">{availableFields.map(field => <label key={field}><input type="checkbox" checked={fields.includes(field)} onChange={event => setFields(current => event.target.checked ? [...current, field] : current.filter(item => item !== field))} />{fieldLabel(field, t)}</label>)}</div></fieldset>
     <fieldset className="repair-listings" disabled={mutation.isPending}><legend>{t("repairListings")} ({plan.total})</legend><label className="checkbox-line"><input type="checkbox" checked={plan.items.every(item => listingIds.includes(item.listingId))} onChange={event => setListingIds(event.target.checked ? plan.items.map(item => item.listingId) : [])} />{t("repairSelectAll")}</label>
       {plan.items.map(item => {
@@ -80,7 +85,7 @@ function RepairSelection({ run, plan, onCreated }: { run: CaptureRun; plan: Repa
     {paidCount === 0 && selected.length > 0 && <p className="muted">{t("repairLocalOnly")}</p>}
     {paidBlocked && <p className="workflow-notice">{t(!provider?.configured ? "configurationNeeded" : (budget?.unknownCalls ?? 0) > 0 ? "unknownConsumption" : "repairBudgetBlocked")}</p>}
     <ErrorNotice error={metadata.error} /><ErrorNotice error={mutation.error} />
-    {mutation.isError && <p className="muted">{t("repairRetryHelp")}</p>}
+    {mutation.isError && <p className="muted">{t(mutation.error instanceof ApiError && mutation.error.status === 409 ? "repairConflictHelp" : "repairRetryHelp")}</p>}
     <Button type="submit" variant="primary" disabled={!selected.length || paidBlocked || mutation.isPending}>{t(mutation.isPending ? "loading" : "repairStart")}<ArrowRight size={16} aria-hidden /></Button>
   </form>;
 }
