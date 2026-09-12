@@ -39,9 +39,9 @@ async function holdFirstDispatch(context: ProviderStepContext) {
     if (context.signal.aborted) abort();
   });
 }
-function provider(id: ProviderId): CaptureProvider {
+function provider(id: ProviderId, strategy = id === "xai" ? "xai-web-search-v1" : "firecrawl-agent-scrape-v1"): CaptureProvider {
   return {
-    id, model: "offline-fixture", strategy: id === "xai" ? "xai-web-search-v1" : "firecrawl-agent-scrape-v1", configured: true,
+    id, model: "offline-fixture", strategy, configured: true,
     balance: async () => ({ remaining: id === "xai" ? 25 : 5000, expiresAt: null, note: "Simulated credit balance. No live provider calls." }),
     async step(context) {
       steps[id]++;
@@ -51,6 +51,15 @@ function provider(id: ProviderId): CaptureProvider {
       let exhausted = false;
       if (context.work.kind === "details") {
         observations = context.work.urls.map((url) => observation(Number(new URL(url).pathname.split("/").pop())));
+        if (context.request.repair) observations = observations.map(item => ({ ...item, evidence: [...item.evidence, { url: item.url, kind: "page", text: `Description: ${item.data.description}\nImages: ${item.data.imageUrls?.join("\n")}` }] }));
+        if (context.request.name.includes("[repair-fixture]") && !context.request.repair) {
+          observations = observations.map(item => {
+            const field = item.url === listingUrl(1) ? "description" : item.url === listingUrl(2) ? "imageUrls" : undefined;
+            if (!field) return item;
+            const data = { ...item.data }; delete data[field];
+            return { ...item, data, detailStatus: "failed", missingFields: [field], fieldStates: { [field]: { status: "unresolved", reason: "Deliberately missing in this offline repair fixture.", evidence: [] } } };
+          });
+        }
       } else {
         const page = new URL(context.work.urls[0] ?? context.request.searchUrl ?? "https://www.leboncoin.fr/recherche?category=9");
         const secondPage = page.searchParams.get("page") === "2";
@@ -70,7 +79,15 @@ function provider(id: ProviderId): CaptureProvider {
 }
 
 const store = new CollectorStore(config.dbPath, join(directory, "evidence"));
-const worker = new CaptureWorker(store, new Map<ProviderId, CaptureProvider>([["xai", provider("xai")], ["firecrawl", provider("firecrawl")]]), config);
+const fixtures = new Map([provider("xai"), provider("firecrawl"), provider("firecrawl", "firecrawl-detail-repair-v4")].map(item => [item.strategy, item]));
+const worker = new CaptureWorker(store, new Map<ProviderId, CaptureProvider>([["xai", fixtures.get("xai-web-search-v1")!], ["firecrawl", fixtures.get("firecrawl-agent-scrape-v1")!]]), config, {
+  choices: id => [...fixtures.values()].filter(item => item.id === id).map(item => ({ id: item.strategy, label: `Offline ${item.strategy}` })),
+  resolve(id, strategy) {
+    const selected = fixtures.get(strategy);
+    if (!selected || selected.id !== id) throw new ProviderError("strategy_unavailable", "Offline strategy is not registered.");
+    return selected;
+  },
+});
 const app = createApp(worker);
 // Mounted ahead of the application's fallback in a separate outer server; unavailable in production.
 const express = (await import("express")).default;

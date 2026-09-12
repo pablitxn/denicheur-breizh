@@ -9,7 +9,7 @@ import { referenceRecords } from "./Evaluation";
 
 const metadata: LabMetadata = {
   live: false, sources: [{ id: "leboncoin", label: "Leboncoin", domains: ["leboncoin.fr"], fields: [] }],
-  providers: ["xai", "firecrawl"].map((id) => ({ id: id as "xai" | "firecrawl", label: id, model: "test", strategy: id === "xai" ? "xai-web-search-v1" : "firecrawl-agent-scrape-v1", strategies: id === "firecrawl" ? [{ id: "firecrawl-agent-scrape-v1", label: "Agent + scrape" }, { id: "firecrawl-agent-native-v2", label: "Native navigation" }] : undefined, configured: true })),
+  providers: ["xai", "firecrawl"].map((id) => ({ id: id as "xai" | "firecrawl", label: id, model: "test", strategy: id === "xai" ? "xai-web-search-v1" : "firecrawl-agent-scrape-v1", strategies: id === "firecrawl" ? [{ id: "firecrawl-agent-scrape-v1", label: "Agent + scrape" }, { id: "firecrawl-agent-native-v2", label: "Native navigation" }, { id: "firecrawl-detail-repair-v4", label: "Targeted details" }] : undefined, configured: true })),
   budgets: ["xai", "firecrawl"].map((provider) => ({ provider: provider as "xai" | "firecrawl", unit: provider === "xai" ? "usd" : "credits", limit: provider === "xai" ? 25 : 5000, spent: 0, reserved: 0, remaining: provider === "xai" ? 25 : 5000, unknownCalls: 0, configured: true, balance: null, expiresAt: null, checkedAt: null, note: "" })),
 };
 const run: CaptureRun = {
@@ -54,18 +54,18 @@ describe("collector user flow", () => {
     expect(screen.getByText("Simulated data · no live results")).toBeVisible();
   });
 
-  it("dispatches the explicitly selected native Agent strategy without falling back to page jobs", async () => {
+  it.each(["firecrawl-agent-native-v2", "firecrawl-detail-repair-v4"])("dispatches the explicitly selected %s strategy without falling back to page jobs", async selected => {
     const fetcher = setupFetch(); mount();
     fireEvent.click(screen.getByRole("radio", { name: /Firecrawl Agent/ }));
     const strategy = await screen.findByRole("combobox", { name: "Capture strategy" });
-    fireEvent.change(strategy, { target: { value: "firecrawl-agent-native-v2" } });
+    fireEvent.change(strategy, { target: { value: selected } });
     fireEvent.change(screen.getByLabelText("Capture name"), { target: { value: "Native Quimper" } });
     fireEvent.change(screen.getByLabelText("Location", { exact: true }), { target: { value: "Quimper" } });
     fireEvent.click(screen.getByRole("button", { name: "Start capture" }));
     await waitFor(() => expect(fetcher.mock.calls.some(([, init]) => init?.method === "POST")).toBe(true));
     const posts = fetcher.mock.calls.filter(([, init]) => init?.method === "POST");
     expect(posts).toHaveLength(1);
-    expect(JSON.parse(posts[0][1]!.body as string)).toMatchObject({ provider: "firecrawl", strategy: "firecrawl-agent-native-v2" });
+    expect(JSON.parse(posts[0][1]!.body as string)).toMatchObject({ provider: "firecrawl", strategy: selected });
   });
 
   it("does not call a finished execution complete coverage and keeps all 101 results visible in counts", async () => {

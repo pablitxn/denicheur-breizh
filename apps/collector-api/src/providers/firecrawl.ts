@@ -1,10 +1,12 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { ProviderError, type CaptureProvider, type ProviderStepContext, type ProviderStepResult, type ProviderUsage } from "../adapter.js";
 import { asRecord, nonNegativeNumber, ProviderTransportError, requestJson, type FetchLike } from "./http.js";
-import { captureOutputJsonSchema, parseCaptureOutput, providerPrompt, recordProviderRequest, rethrowProviderError } from "./output.js";
+import { captureOutputJsonSchema, captureRepairOutputJsonSchema, parseCaptureOutput, parseRepairCaptureOutput, providerPrompt, recordProviderRequest, rethrowProviderError } from "./output.js";
 import { normalizeScrapeDescription, scrapeEvidenceWarnings } from "./scrape-quality.js";
+import { repairObservationFromEvidence } from "../detail-repair-evidence.js";
+import { dataFields } from "@denicheur-breizh/collector-contracts";
 
-export type FirecrawlStrategy = "firecrawl-agent-scrape-v1" | "firecrawl-agent-native-v2" | "firecrawl-agent-expanded-v3";
+export type FirecrawlStrategy = "firecrawl-agent-scrape-v1" | "firecrawl-agent-native-v2" | "firecrawl-agent-expanded-v3" | "firecrawl-detail-repair-v4";
 export interface FirecrawlProviderOptions { apiKey: string; fetcher?: FetchLike; pollIntervalMs?: number; strategy?: FirecrawlStrategy }
 const baseUrl = "https://api.firecrawl.dev/v2";
 
@@ -32,11 +34,14 @@ export function createFirecrawlProvider(options: FirecrawlProviderOptions): Capt
     const before = await balanceEvidence(context);
     const resumed = context.remoteJobId?.startsWith("scrape:") === true;
     const prepare = strategy === "firecrawl-agent-expanded-v3";
+    const repair = strategy === "firecrawl-detail-repair-v4";
     if (prepare && !context.source.detailPreparationScript) throw new ProviderError("strategy_source_unsupported", "The selected source has no native detail preparation for this strategy.");
+    if (repair && (!context.source.detailRepairScript || !context.source.detailRepairEvidenceScript)) throw new ProviderError("strategy_source_unsupported", "The selected source has no native detail repair and evidence scripts.");
     const body = {
-      url: context.work.urls[0], formats: ["markdown", "links", { type: "json", schema: captureOutputJsonSchema, prompt: providerPrompt(context) }],
+      url: context.work.urls[0], formats: ["markdown", "links", ...(repair ? ["html"] : []), { type: "json", schema: repair ? captureRepairOutputJsonSchema : captureOutputJsonSchema, prompt: providerPrompt(context, "page", repair ? context.work.repairFields ?? dataFields : undefined) }],
       maxAge: 0, storeInCache: false, location: { country: "FR", languages: ["fr-FR", "fr"] }, timeout: 300000,
       ...(prepare ? { actions: [{ type: "executeJavascript", script: context.source.detailPreparationScript }, { type: "wait", milliseconds: 750 }] } : {}),
+      ...(repair ? { actions: [{ type: "executeJavascript", script: context.source.detailRepairScript }, { type: "wait", milliseconds: 750 }, { type: "executeJavascript", script: context.source.detailRepairEvidenceScript }] } : {}),
     };
     if(!resumed) await recordProviderRequest(context, options.apiKey, { endpoint: `${baseUrl}/scrape`, model: null, strategy, body });
     const raw = resumed
@@ -58,8 +63,16 @@ export function createFirecrawlProvider(options: FirecrawlProviderOptions): Capt
         before, after, publishedTariffCredits: 5, note: "Conservative account usage during request; may include other activity." } };
     await context.onUsage(usage);
     if (response?.success === false) throw new ProviderError("provider_output_invalid", "Firecrawl could not scrape the requested listing.");
-    const result = parseCaptureOutput(data?.json, usage);
+    const result = repair ? parseRepairCaptureOutput(data?.json, usage, context.work.urls[0]!) : parseCaptureOutput(data?.json, usage);
     result.observations = result.observations.map(observation => normalizeScrapeDescription(observation, raw, context.work.urls[0]));
+    if (repair) result.observations = result.observations.map(observation => {
+      const repaired = repairObservationFromEvidence(observation, raw, context.work.urls[0]!);
+      for (const field of ["energyClass", "gesClass"] as const) {
+        const before = observation.data[field], after = repaired.data[field];
+        if (typeof before === "string" && before.trim() && before !== after && repaired.fieldStates?.[field]?.status !== "unresolved") result.warnings.push(`Native source evidence corrected ${field} from model value ${before} to ${after ?? repaired.fieldStates?.[field]?.status} for ${observation.url}.`);
+      }
+      return repaired;
+    });
     result.warnings.push(...scrapeEvidenceWarnings(raw, context.work.urls[0]));
     result.nextPages = []; result.exhausted = false;
     if (balanceDelta !== null && reported === null) result.warnings.push("Firecrawl scrape usage is estimated from the account balance change.");
@@ -71,7 +84,7 @@ export function createFirecrawlProvider(options: FirecrawlProviderOptions): Capt
     if (jobId?.startsWith("scrape:")) throw new ProviderError("provider_work_invalid", "A scrape job cannot resume discovery work.");
     if (!jobId) {
       if(strategy === "firecrawl-agent-native-v2" && context.source.id !== "leboncoin") throw new ProviderError("strategy_source_unsupported", "The native-home strategy currently supports Leboncoin only.");
-      const prompt = providerPrompt(context, strategy === "firecrawl-agent-native-v2" ? "native-session" : "page");
+      const prompt = providerPrompt(context, strategy === "firecrawl-agent-native-v2" ? "native-session" : strategy === "firecrawl-detail-repair-v4" ? "cards-only" : "page");
       if (prompt.length > 10000) throw new ProviderError("provider_work_invalid", "The Firecrawl Agent prompt exceeds its documented 10,000-character limit.");
       const body = {
         prompt, ...(strategy === "firecrawl-agent-native-v2" ? { urls: ["https://www.leboncoin.fr/"] } : context.work.urls.length ? { urls: context.work.urls } : {}),

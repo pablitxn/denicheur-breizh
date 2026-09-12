@@ -11,7 +11,7 @@ export interface ProviderStepResult {
 }
 export interface ProviderStepContext {
   request:CaptureRequest;
-  source:SourceDescriptor & {detailPreparationScript?:string};
+  source:SourceDescriptor & {detailPreparationScript?:string;detailRepairScript?:string;detailRepairEvidenceScript?:string};
   work:WorkItem;
   instructions:string;
   remainingBudget:number;

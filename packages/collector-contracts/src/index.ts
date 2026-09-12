@@ -3,7 +3,7 @@ import { z } from "zod";
 export const providerIds = ["xai", "firecrawl"] as const;
 export const providerIdSchema = z.enum(providerIds);
 export type ProviderId = z.infer<typeof providerIdSchema>;
-export const captureStrategyIds = ["xai-web-search-v1", "firecrawl-agent-scrape-v1", "firecrawl-agent-native-v2", "firecrawl-agent-expanded-v3"] as const;
+export const captureStrategyIds = ["xai-web-search-v1", "firecrawl-agent-scrape-v1", "firecrawl-agent-native-v2", "firecrawl-agent-expanded-v3", "firecrawl-detail-repair-v4"] as const;
 export const captureStrategySchema = z.enum(captureStrategyIds);
 export type CaptureStrategyId = z.infer<typeof captureStrategySchema>;
 export const httpsUrlSchema = z.string().url().refine((value) => {
@@ -26,20 +26,28 @@ export const searchFiltersSchema = z.object({
   }
 });
 export type SearchFilters = z.infer<typeof searchFiltersSchema>;
+export const dataFields = ["title","priceEuros","propertyType","location","surfaceM2","landSurfaceM2","rooms","bedrooms","description","energyClass","gesClass","sellerName","sellerType","postedAt","features","imageUrls"] as const;
+export type DataField = typeof dataFields[number];
+const repairFieldsSchema = z.array(z.enum(dataFields)).min(1);
+export const repairRequestSchema = z.object({ listingIds: z.array(z.string().min(1)).min(1).optional(), fields: repairFieldsSchema.optional(), name: z.string().trim().min(1).max(200).optional() }).strict();
+export type RepairRequest = z.infer<typeof repairRequestSchema>;
+export const captureRepairSchema = z.object({ parentRunId: z.string().uuid(), targets: z.array(z.object({ listingId: z.string().min(1), fields: repairFieldsSchema }).strict()).min(1) }).strict();
+export type CaptureRepair = z.infer<typeof captureRepairSchema>;
 export const captureRequestSchema = z.object({
   provider: providerIdSchema, source: z.string().regex(/^[a-z][a-z0-9-]*$/).default("leboncoin"),
   strategy: captureStrategySchema.optional(),
   mode: z.enum(["urls", "search"]), name: z.string().trim().min(1).max(200),
   urls: z.array(httpsUrlSchema).default([]), searchUrl: httpsUrlSchema.optional(),
   filters: searchFiltersSchema.default(() => searchFiltersSchema.parse({})),
+  repair: captureRepairSchema.optional(),
 }).strict().superRefine((value, ctx) => {
   if (value.strategy && !value.strategy.startsWith(`${value.provider}-`)) ctx.addIssue({code:"custom",path:["strategy"],message:"Strategy does not belong to the selected provider."});
   if (value.mode === "urls" && !value.urls.length) ctx.addIssue({code:"custom",path:["urls"],message:"At least one listing URL is required."});
   if (value.mode === "search" && !value.searchUrl && !value.filters.location.trim() && !value.filters.text.trim()) ctx.addIssue({code:"custom",path:["filters","location"],message:"Provide a location, query or native search URL."});
+  if (value.repair && value.mode !== "urls") ctx.addIssue({code:"custom",path:["repair"],message:"A repair must target known listing URLs."});
+  if (value.repair && new Set(value.repair.targets.map(target => target.listingId)).size !== value.repair.targets.length) ctx.addIssue({code:"custom",path:["repair","targets"],message:"Each repair listing must occur only once."});
 });
 export type CaptureRequest = z.infer<typeof captureRequestSchema>;
-export const dataFields = ["title","priceEuros","propertyType","location","surfaceM2","landSurfaceM2","rooms","bedrooms","description","energyClass","gesClass","sellerName","sellerType","postedAt","features","imageUrls"] as const;
-export type DataField = typeof dataFields[number];
 const text = z.string().nullable().optional();
 const number = z.number().finite().nonnegative().nullable().optional();
 export const listingDataSchema = z.object({
@@ -51,19 +59,25 @@ export const listingDataSchema = z.object({
 export type ListingData = z.infer<typeof listingDataSchema>;
 export const evidenceSchema = z.object({url: httpsUrlSchema, text: z.string(), kind: z.enum(["page","citation","trace","manual"]).default("citation")});
 export type Evidence = z.infer<typeof evidenceSchema>;
+export const fieldStateSchema = z.object({ status: z.enum(["observed", "absent", "not_applicable", "unresolved"]), reason: z.string().trim().min(1), evidence: z.array(evidenceSchema), observedAt: z.string().datetime({offset:true}).optional() }).strict();
+export type FieldState = z.infer<typeof fieldStateSchema>;
+export const fieldStatesSchema = z.partialRecord(z.enum(dataFields), fieldStateSchema);
+export type FieldStates = z.infer<typeof fieldStatesSchema>;
 export const observationInputSchema = z.object({
   url: httpsUrlSchema, data: listingDataSchema.default({}),
   detailStatus: z.enum(["pending","captured","failed"]).default("pending"),
   missingFields: z.array(z.enum(dataFields)).default([]), absentFields: z.array(z.enum(dataFields)).default([]),
   evidence: z.array(evidenceSchema).default([]), error: z.string().optional(),
+  fieldStates: fieldStatesSchema.optional(),
 });
 export type ObservationInput = z.infer<typeof observationInputSchema>;
 export const observationSchema = observationInputSchema.extend({
   id: z.string(), externalId: z.string(), source: z.string(), runId: z.string(), provider: providerIdSchema,
   observedAt: z.string().datetime(),
+  fieldObservedAt: z.partialRecord(z.enum(dataFields), z.string().datetime({offset:true})).optional(),
 });
 export type CaptureObservation = z.infer<typeof observationSchema>;
-export const workItemSchema = z.object({id:z.string(),kind:z.enum(["discover","details"]),urls:z.array(httpsUrlSchema),cursor:z.string().optional()});
+export const workItemSchema = z.object({id:z.string(),kind:z.enum(["discover","details"]),urls:z.array(httpsUrlSchema),cursor:z.string().optional(),repairFields:repairFieldsSchema.optional()});
 export type WorkItem = z.infer<typeof workItemSchema>;
 export const runStatuses = ["queued","running","completed","partial","blocked","budget_exhausted","cancelled","interrupted"] as const;
 export const captureRunSchema = z.object({

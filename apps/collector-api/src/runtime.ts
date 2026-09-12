@@ -9,9 +9,9 @@ import type {FirecrawlStrategy} from "./providers/firecrawl.js";
 export function createProviderStrategyRegistry(config:CollectorConfig):ProviderStrategyRegistry {
   const cache=new Map<string,CaptureProvider>();
   return {
-    choices(id){return id==="xai"?[{id:"xai-web-search-v1",label:"Hosted web search (v1)"}]:[{id:"firecrawl-agent-scrape-v1",label:"Agent + scrape (v1)"},{id:"firecrawl-agent-native-v2",label:"Native homepage flow (v2)"},{id:"firecrawl-agent-expanded-v3",label:"Agent + expanded detail (v3)"}];},
+    choices(id){return id==="xai"?[{id:"xai-web-search-v1",label:"Hosted web search (v1)"}]:[{id:"firecrawl-agent-scrape-v1",label:"Agent + scrape (v1)"},{id:"firecrawl-agent-native-v2",label:"Native homepage flow (v2)"},{id:"firecrawl-agent-expanded-v3",label:"Agent + expanded detail (v3)"},{id:"firecrawl-detail-repair-v4",label:"Dedicated details and field repair (v4)"}];},
     resolve(id,strategy,model){
-      const supported=id==="xai"?strategy==="xai-web-search-v1":["firecrawl-agent-scrape-v1","firecrawl-agent-native-v2","firecrawl-agent-expanded-v3"].includes(strategy);
+      const supported=id==="xai"?strategy==="xai-web-search-v1":["firecrawl-agent-scrape-v1","firecrawl-agent-native-v2","firecrawl-agent-expanded-v3","firecrawl-detail-repair-v4"].includes(strategy);
       if(!supported)throw new ProviderError("strategy_unavailable","The selected strategy does not belong to this provider.");
       const selectedModel=model??(id==="xai"?config.xaiModel:"spark-2");
       if(id==="firecrawl"&&selectedModel!=="spark-2")throw new ProviderError("model_unavailable","The saved Firecrawl model is unavailable; it will not be replaced silently.");

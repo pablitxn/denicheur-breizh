@@ -4,6 +4,7 @@ import { detailGaps } from "./capture-quality.js";
 import { canonicalIdentity, getSource } from "./sources.js";
 import type { CollectorStore } from "./store.js";
 import { normalizeScrapeDescription, scrapeDescription, scrapeEvidenceWarnings } from "./providers/scrape-quality.js";
+import { mergeRepairFields } from "./repair.js";
 
 /** Rebuild existing snapshots from this execution's immutable responses, without dispatching work. */
 export function reprocessStoredEvidence(store: CollectorStore, runId: string) {
@@ -94,8 +95,13 @@ export function reprocessStoredEvidence(store: CollectorStore, runId: string) {
   store.transaction(() => {
     const snapshots = [...latest.values()].map(({ observation }) => store.observation(runId, observation.id)!);
     if (snapshots.length) store.artifact(runId, "snapshots_before_evidence_reprocess", { observations: snapshots });
-    for (const { observation, artifactId } of latest.values()) {
+    for (const candidate of latest.values()) {
+      let { observation } = candidate; const { artifactId } = candidate;
       const previous = store.observation(runId, observation.id)!;
+      if(run.request.repair){
+        const fields=run.request.repair.targets.find(target=>target.listingId===observation.id)?.fields??[];
+        observation=mergeRepairFields(previous,observation,fields,observation.observedAt);
+      }
       const before = JSON.stringify(previous);
       store.saveObservation(observation, { replaceDetailStatus: true, replaceSnapshot: true });
       if (JSON.stringify(store.observation(runId, observation.id)) !== before) {

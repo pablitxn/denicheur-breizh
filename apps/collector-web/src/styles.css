@@ -239,3 +239,35 @@ td { overflow-wrap: anywhere; }
 .saved-report-providers { display: flex; flex-wrap: wrap; gap: var(--space-3); }
 .saved-report-providers > span { display: inline-flex; gap: var(--space-3); align-items: center; font-size: var(--fs-body-sm); }
 .saved-report-open { color: var(--link); font-size: var(--fs-body-sm); margin-top: var(--space-2); }
+.repair-panel .section-toolbar p { margin-bottom: 0; max-width: 66ch; }
+.repair-panel form { margin-top: var(--space-6); }
+.repair-field-options { margin-bottom: var(--space-6); }
+.repair-field-options label { min-height: var(--h-target-coarse); }
+.repair-listings { margin-bottom: var(--space-6); }
+.repair-listing { border-top: 1px solid var(--color-border-soft); padding: var(--space-5) 0; }
+.repair-listing-choice { display: flex; align-items: center; gap: var(--space-3); min-height: var(--h-target-coarse); flex-wrap: wrap; }
+.repair-listing-choice strong { flex: 1; min-width: min(100%, 180px); }
+.repair-listing-choice code { font-size: var(--fs-mono-xs); color: var(--color-text-muted); overflow-wrap: anywhere; }
+.repair-listing-info { margin-left: var(--space-8); font-size: var(--fs-body-sm); }
+.repair-listing-info > p { margin: var(--space-3) 0; }
+.repair-listing-info > p > span { color: var(--color-text-muted); }
+.repair-listing-info > details { margin-top: var(--space-4); }
+.repair-summary { display: flex; flex-wrap: wrap; gap: var(--space-4) var(--space-6); padding: var(--space-5); border-radius: var(--radius-3); background: var(--color-surface-2); margin-bottom: var(--space-5); }
+.repair-summary > span { display: block; font-size: var(--fs-body-sm); }
+.repair-summary strong { font-size: var(--fs-body-lg); }
+.repair-lineage { border-left: 3px solid var(--cta); padding: var(--space-3) var(--space-5); margin-bottom: var(--space-6); }
+.repair-lineage p { font-size: var(--fs-body-sm); color: var(--color-text-muted); margin: var(--space-3) 0 var(--space-4); }
+.field-state-list { margin: var(--space-5) 0; }
+.field-state { padding: var(--space-5) 0; border-bottom: 1px solid var(--color-border-soft); }
+.field-state dt { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); }
+.field-state dd { margin: var(--space-3) 0 0; overflow-wrap: anywhere; }
+.field-state dd > p { margin-bottom: var(--space-3); }
+.field-observed-at { display: block; color: var(--color-text-muted); font-size: var(--fs-body-sm); font-weight: 400; margin: var(--space-2) 0 var(--space-3); }
+.field-state blockquote { margin: var(--space-4) 0; padding-left: var(--space-4); border-left: 2px solid var(--color-border-soft); }
+.field-state blockquote p { white-space: pre-wrap; margin: var(--space-3) 0; }
+@media (max-width: 720px) {
+  .repair-panel { padding: var(--space-5); }
+  .repair-panel .section-toolbar { align-items: flex-start; }
+  .repair-listing-choice code { margin-left: var(--space-8); }
+  .repair-summary { flex-direction: column; }
+}

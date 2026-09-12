@@ -2,7 +2,7 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import {z} from "zod";
-import {captureRequestSchema,comparisonRequestSchema,providerIdSchema,referenceImportSchema,reviewSchema} from "@denicheur-breizh/collector-contracts";
+import {captureRequestSchema,comparisonRequestSchema,providerIdSchema,referenceImportSchema,reviewSchema,repairRequestSchema} from "@denicheur-breizh/collector-contracts";
 import {CaptureWorker} from "./worker.js";
 import {ProviderError} from "./adapter.js";
 import {assertIndependentReference,evaluateRuns,importExtensionReference,reportMarkdown} from "./evaluation.js";
@@ -42,6 +42,11 @@ export function createApp(worker:CaptureWorker):express.Express{
   app.post("/v1/runs/:id/cancel",async(req,res)=>res.json(await worker.cancel(String(req.params.id))));
   app.post("/v1/runs/:id/resume",(req,res)=>res.json(worker.resume(String(req.params.id))));
   app.post("/v1/runs/:id/reprocess",(req,res)=>{z.object({}).strict().parse(req.body??{});res.json(worker.reprocessEvidence(String(req.params.id)));});
+  app.get("/v1/runs/:id/repair-plan",(req,res)=>res.json(worker.repairPlan(String(req.params.id))));
+  app.post("/v1/runs/:id/repair",(req,res)=>{
+    const input=repairRequestSchema.parse(req.body),key=z.string().min(8).max(200).parse(req.header("Idempotency-Key"));
+    res.status(202).json(worker.repair(String(req.params.id),input,key));
+  });
   app.get("/v1/runs/:id/export",(req,res)=>{const id=String(req.params.id),run=worker.store.getRun(id),events=worker.store.events(id);const artifactIds=[...new Set(events.flatMap(event=>event.artifactId?[event.artifactId]:[]))];res.attachment(`capture-${id}.json`).json({run,observations:worker.store.observations(id).items,events,artifacts:artifactIds.map(artifactId=>({id:artifactId,...worker.store.readArtifact(id,artifactId) as Record<string,unknown>}))});});
   app.get("/v1/references",(_req,res)=>res.json({items:worker.store.references()}));
   app.post("/v1/references",(req,res)=>{assertIndependentReference(req.body);const input=referenceImportSchema.parse(req.body);for(const record of input.records)canonicalIdentity(input.source,record.url);res.status(201).json(worker.store.importReference(input));});

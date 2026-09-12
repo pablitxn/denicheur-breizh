@@ -21,6 +21,44 @@ function result(value = fixture(), reviews: EvaluationReview[] = []) {
 const review = (patch: Partial<EvaluationReview> = {}): EvaluationReview => ({ referenceId: "reference", runId: "run", listingId: "leboncoin:1", field: "identity", resolution: "source_changed", note: "Listing was removed between reference and provider runs; page now reports unavailable.", evidenceUrl: url(1), reviewedAt: at, ...patch });
 
 describe("complete coverage evaluation", () => {
+  it("accepts matching explicitly evidenced inapplicability without requiring a fabricated A-G rating",()=>{
+    const value=fixture(1),state={status:"not_applicable" as const,reason:"The listing explicitly states the DPE exemption",evidence:[{url:url(1),kind:"page" as const,text:"Bien non soumis au DPE."}]};
+    value.reference.requiredFields.push("energyClass");value.reference.records[0]!.fieldStates={energyClass:state};value.observations[0]!.fieldStates={energyClass:structuredClone(state)};
+    const evaluated=result(value);expect(evaluated.verdict).toBe("verified_complete");expect(evaluated.discrepancies).toEqual([]);
+    value.observations[0]!.data.energyClass="A";expect(result(value).verdict).toBe("incomplete");expect(result(value).discrepancies).toContainEqual(expect.objectContaining({field:"energyClass",expected:null,actual:"A"}));
+  });
+  it("requires a matching evidenced field status for explicit source absence or inapplicability",()=>{
+    const value=fixture(1);
+    value.reference.records[0]!.fieldStates={energyClass:{status:"not_applicable",reason:"Explicit exemption",evidence:[{url:url(1),kind:"page",text:"DPE non soumis"}]}};
+    expect(result(value).verdict).toBe("incomplete");
+    value.observations[0]!.fieldStates={energyClass:{status:"absent",reason:"Explicit nonpublication",evidence:[{url:url(1),kind:"page",text:"DPE non renseigné"}]}};
+    const evaluated=result(value);expect(evaluated.verdict).toBe("incomplete");expect(evaluated.discrepancies).toContainEqual(expect.objectContaining({field:"fieldState.energyClass",expected:"not_applicable",actual:"absent"}));
+  });
+  it("does not hide an unresolved field state behind captured status and an empty missingFields list",()=>{
+    const value=fixture(1);value.observations[0]!.fieldStates={title:{status:"unresolved",reason:"Title not confirmed",evidence:[]}};
+    const evaluated=result(value);expect(evaluated.verdict).toBe("incomplete");expect(evaluated.fieldCompleteness.numerator).toBe(5);expect(evaluated.fieldCompleteness.denominator).toBe(6);expect(evaluated.costPerUsefulListing).toBeNull();
+    expect(evaluated.discrepancies).toContainEqual(expect.objectContaining({field:"missingFields",actual:["title"]}));
+    const referenceUnknown=fixture(1);referenceUnknown.reference.records[0]!.fieldStates={title:{status:"unresolved",reason:"Unconfirmed reference title",evidence:[]}};
+    expect(result(referenceUnknown).verdict).toBe("inconclusive");
+  });
+  it("requires same-listing evidence for declared observed values and does not count unsupported values as recovered",()=>{
+    const value=fixture(1);value.reference.records[0]!.data.gesClass="C";value.observations[0]!.data.gesClass="C";
+    value.observations[0]!.fieldStates={gesClass:{status:"observed",reason:"Claimed GES",evidence:[{url:url(999),kind:"page",text:"GES: C"}]}};
+    const evaluated=result(value);expect(evaluated.verdict).toBe("incomplete");expect(evaluated.fieldCompleteness.numerator).toBe(6);expect(evaluated.fieldCompleteness.denominator).toBe(7);
+    value.observations[0]!.fieldStates!.gesClass!.evidence[0]!.url=url(1);expect(result(value).verdict).toBe("verified_complete");
+  });
+  it("clears stale missing flags only when a field's new value and evidence prove its resolution",()=>{
+    const value=fixture(1),state={status:"observed" as const,reason:"Observed exact title",evidence:[{url:url(1),kind:"page" as const,text:"Titre: Maison 1"}]};
+    value.observations[0]!.missingFields=["title"];value.observations[0]!.fieldStates={title:state};
+    value.reference.records[0]!.missingFields=["title"];value.reference.records[0]!.fieldStates={title:structuredClone(state)};
+    expect(result(value).verdict).toBe("verified_complete");
+    value.observations[0]!.fieldStates!.title!.evidence=[];expect(result(value).verdict).toBe("incomplete");
+  });
+  it("does not reconcile conflicting source status assertions merely because both have no numeric value",()=>{
+    const value=fixture(1);value.reference.records[0]!.fieldStates={energyClass:{status:"not_applicable",reason:"Explicit exemption",evidence:[{url:url(1),kind:"page",text:"DPE non soumis"}]}};
+    const duplicate=structuredClone(value.reference.records[0]!);duplicate.fieldStates={energyClass:{status:"absent",reason:"Explicit missing label",evidence:[{url:url(1),kind:"page",text:"DPE non renseigné"}]}};value.reference.records.push(duplicate);
+    expect(result(value).verdict).toBe("inconclusive");
+  });
   it("verifies every identity beyond the extension 100-result limit", () => {
     const evaluated = result(fixture(151));
     expect(evaluated.verdict).toBe("verified_complete");
@@ -215,6 +253,15 @@ describe("audited discrepancy reviews", () => {
 });
 
 describe("extension reference import", () => {
+  it("preserves per-field states, exact evidence and observation times instead of silently stripping them",()=>{
+    const value=fixture(1);
+    const fieldStates={energyClass:{status:"not_applicable" as const,reason:"Explicit DPE exemption",observedAt:at,evidence:[{url:url(1),kind:"page" as const,text:"DPE non soumis"}]}};
+    value.reference.records[0]!.fieldStates=fieldStates;
+    const imported=importExtensionReference(value.reference);
+    expect(imported.records[0]!.fieldStates).toEqual(fieldStates);
+    expect(imported.records[0]!.evidence.some(item=>item.text.includes('"status":"not_applicable"'))).toBe(true);
+    expect(()=>importExtensionReference({...value.reference,records:[{...value.reference.records[0],fieldStates:{energyClass:{status:"absent",reason:"",evidence:[]}}}]})).toThrow();
+  });
   it("imports uncapped extension records and preserves original text, photos and unknown fields", () => {
     const description = "Texte de description. ".repeat(2000);
     const images = Array.from({ length: 500 }, (_, i) => `https://img.leboncoin.fr/${i}.jpg`);

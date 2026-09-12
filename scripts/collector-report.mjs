@@ -23,7 +23,15 @@ const referenceRoot=join(root,".data/collector-reference");
 try{for(const entry of await readdir(referenceRoot,{withFileTypes:true})){if(!entry.isDirectory())continue;try{const latest=JSON.parse(await readFile(join(referenceRoot,entry.name,"latest.json"),"utf8"));referenceSessions.push({session:entry.name,runId:latest.runId,status:latest.status,records:latest.records,complete:latest.complete});}catch{}}}catch{}
 let balanceObservation=null;
 try{balanceObservation=JSON.parse(await readFile(join(root,"apps/collector-api/.data/console-balance-observation.json"),"utf8"));}catch{}
-const report={generatedAt:new Date().toISOString(),metadata,balanceObservation,references:references.items,referenceSessions,captures,evaluations,
+const repairs=captures.filter(capture=>capture.run.request.repair).map(capture=>{
+  const selection=capture.run.request.repair;
+  const fields=selection.targets.flatMap(target=>target.fields.map(field=>{
+    const observation=capture.observations.find(item=>item.id===target.listingId),state=observation?.fieldStates?.[field];
+    return {listingId:target.listingId,field,resolved:Boolean(state&&state.status!=="unresolved"&&!observation.missingFields.includes(field)),state:state?.status??"unresolved",observedAt:observation?.fieldObservedAt?.[field]??state?.observedAt??observation?.observedAt};
+  }));
+  return {runId:capture.run.id,parentRunId:selection.parentRunId,selectedListings:selection.targets.length,fields,resolvedFields:fields.filter(field=>field.resolved).length,remainingFields:fields.filter(field=>!field.resolved).length};
+});
+const report={generatedAt:new Date().toISOString(),metadata,balanceObservation,references:references.items,referenceSessions,captures,evaluations,repairs,
   conclusion:{verifiedRunIds:runs.filter(r=>r.coverage==="verified_complete").map(r=>r.id),
     verdict:runs.some(r=>r.coverage==="verified_complete")?"See individual independently verified evaluations":"No complete provider capture has been verified",
     limitations:["A finished request or provider-reported result total does not certify full coverage.","Known-URL extraction and complete-search discovery are different experiments.","References marked incomplete or historical cannot establish current native-search coverage.","Simulated tests are software evidence, not live provider capability evidence."]}};
@@ -38,6 +46,9 @@ const lines=["# Evaluación real del laboratorio", "",`Generado: ${report.genera
 for(const r of runs)lines.push(`| ${[r.request.provider,r.request.mode,r.strategy,r.request.name,r.status,r.discovered,r.captured,r.pending,amount(r.cost,r.unit),amount(r.costEstimated??0,r.unit),r.coverage].map(cell).join(" | ")} |`);
 lines.push("","## Presupuesto acumulado","","| Proveedor | Autorizado | Confirmado | Estimado | Comprometido | Disponible | Inciertas |","|---|---|---|---|---|---|---:|");
 for(const b of metadata.budgets)lines.push(`| ${[b.provider,amount(b.limit,b.unit),amount(b.spent,b.unit),amount(b.estimated??0,b.unit),amount(b.reserved,b.unit),amount(b.remaining,b.unit),b.unknownCalls].map(cell).join(" | ")} |`);
+if(repairs.length){lines.push("","## Reparaciones dirigidas","","Cada reparación conserva su ejecución de origen. Los recuentos son por selección; una ficha puede aparecer en varias reparaciones y no se deben sumar como anuncios distintos.","","| Reparación | Origen | Anuncios seleccionados | Campos resueltos | Campos pendientes |","|---|---|---:|---:|---:|");
+  for(const repair of repairs)lines.push(`| [${repair.runId}](capture-${repair.runId}.json) | [${repair.parentRunId}](capture-${repair.parentRunId}.json) | ${repair.selectedListings} | ${repair.resolvedFields} | ${repair.remainingFields} |`);
+}
 lines.push("","## Evidencias e incidencias","");
 for(const r of runs){lines.push(`### ${r.request.provider}: ${r.request.name}`,"",`ID: \`${r.id}\`. Inicio: ${r.startedAt??r.createdAt}; fin: ${r.endedAt??"en curso"}. Modelo: ${r.model}.`,"",`[Exportación con evidencias](capture-${r.id}.json).`);if(r.error)lines.push("",`Error: ${r.error}`);if(r.warnings.length)lines.push("","Advertencias conservadas literalmente; las afirmaciones del proveedor requieren contraste:","");for(const warning of [...new Set(r.warnings)])lines.push(`- ${warning}`);lines.push("");}
 lines.push("## Referencias","");

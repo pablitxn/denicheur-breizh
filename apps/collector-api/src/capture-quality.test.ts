@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { captureRequestSchema, type CaptureObservation, type ObservationInput, type ProviderId } from "@denicheur-breizh/collector-contracts";
-import { detailGaps } from "./capture-quality.js";
+import { detailFieldStates, detailGaps } from "./capture-quality.js";
 import { type CaptureProvider, type ProviderStepContext, type ProviderStepResult } from "./adapter.js";
 import { readConfig } from "./config.js";
 import { canonicalIdentity } from "./sources.js";
@@ -34,6 +34,30 @@ function fixture(provider: ProviderId = "firecrawl") {
 }
 
 describe("source detail completeness", () => {
+  it("requires field-specific proof for new states and never converts string null or an unrelated number into an observation",()=>{
+    const observation=complete();
+    observation.fieldStates={landSurfaceM2:{status:"observed",reason:"Claimed land area",evidence:[{url,kind:"page",text:"Prix du bien: 500 €. Surface habitable: 100 m²."}]}};
+    expect(detailFieldStates(observation).landSurfaceM2.status).toBe("unresolved");expect(detailGaps(observation)).toContain("landSurfaceM2");
+    observation.fieldStates.landSurfaceM2!.evidence=[{url,kind:"page",text:"Surface totale du terrain: 500 m²"}];observation.missingFields=["landSurfaceM2"];
+    expect(detailGaps(observation)).not.toContain("landSurfaceM2");
+    observation.data.energyClass="null";expect(detailGaps(observation)).toContain("energyClass");
+  });
+  it("accepts explicit same-listing DPE exemption without inventing a rating or exempting GES",()=>{
+    const observation=complete();delete observation.data.energyClass;delete observation.data.gesClass;
+    observation.missingFields=["energyClass","gesClass"];
+    observation.fieldStates={energyClass:{status:"not_applicable",reason:"Explicit exemption",evidence:[{url,kind:"page",text:"Ce bien est non soumis au DPE."}]},gesClass:{status:"not_applicable",reason:"Assumed same",evidence:[{url,kind:"page",text:"Ce bien est non soumis au DPE."}]}};
+    expect(detailFieldStates(observation).energyClass.status).toBe("not_applicable");expect(detailFieldStates(observation).gesClass.status).toBe("unresolved");
+    expect(detailGaps(observation)).toEqual(["gesClass"]);
+    observation.data.energyClass="A";expect(detailGaps(observation)).toContain("energyClass");
+  });
+  it("rejects claimed absence inferred from an apartment, unrelated URL, or an empty source",()=>{
+    const observation=complete();delete observation.data.landSurfaceM2;
+    for(const evidence of [[{url,kind:"page" as const,text:"Appartement 3 pièces"}],[{url:"https://www.leboncoin.fr/ad/ventes_immobilieres/999999",kind:"page" as const,text:"Surface du terrain: non renseigné"}],[]]){
+      observation.fieldStates={landSurfaceM2:{status:"absent",reason:"Claimed missing land",evidence}};expect(detailGaps(observation)).toContain("landSurfaceM2");
+    }
+    observation.fieldStates={landSurfaceM2:{status:"absent",reason:"Explicit source statement",evidence:[{url,kind:"page",text:"Surface du terrain: non renseigné"}]}};
+    expect(detailGaps(observation)).not.toContain("landSurfaceM2");
+  });
   it("requires field presence or explicit observed absence rather than silently interpreting null as absent", () => {
     const observation = complete(); delete observation.data.sellerName;
     expect(detailGaps(observation)).toEqual(["sellerName"]);

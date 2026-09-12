@@ -1,4 +1,4 @@
-import {observationInputSchema,type CaptureObservation,type CaptureRequest,type CaptureRun,type LabMetadata,type ProviderId,type WorkItem} from "@denicheur-breizh/collector-contracts";
+import {observationInputSchema,type CaptureObservation,type CaptureRequest,type CaptureRun,type LabMetadata,type ProviderId,type WorkItem,type RepairRequest} from "@denicheur-breizh/collector-contracts";
 import {ProviderError,type CaptureProvider,type ProviderUsage,type ProviderStrategyRegistry} from "./adapter.js";
 import type {CollectorConfig} from "./config.js";
 import {CollectorStore} from "./store.js";
@@ -6,6 +6,7 @@ import {canonicalIdentity,fingerprint,getSource,pageKey,sourceRegistry,validateS
 import {detailGaps} from "./capture-quality.js";
 import {SOURCE_DESCRIPTION_COLLAPSED} from "./providers/scrape-quality.js";
 import {reprocessStoredEvidence} from "./reprocess-evidence.js";
+import {createRepair,mergeRepairFields,prepareRepair,REPAIR_STRATEGY} from "./repair.js";
 
 export class CaptureWorker {
   private active=new Map<ProviderId,{runId:string;controller:AbortController;promise:Promise<void>}>();
@@ -23,7 +24,18 @@ export class CaptureWorker {
   budget(provider:ProviderId){return this.store.budget(provider,provider==="xai"?this.config.xaiBudget:this.config.firecrawlBudget,Boolean(this.providers.get(provider)?.configured),provider==="xai"?this.config.xaiExpiresAt:this.config.firecrawlExpiresAt);}
   metadata():LabMetadata{return {sources:[...sourceRegistry.values()].map(({id,label,domains,fields})=>({id,label,domains,fields})),providers:[...this.providers.values()].map(({id,model,strategy,configured})=>({id,label:id==="xai"?"xAI":"Firecrawl",model,strategy,strategies:this.strategies?.choices(id)??[{id:strategy,label:strategy}],configured})),budgets:[this.budget("xai"),this.budget("firecrawl")],live:this.config.live};}
   async refreshBalances(){for(const provider of this.providers.values()){if(!provider.configured||!provider.balance)continue;try{this.store.saveBalance(provider.id,await provider.balance());}catch{this.store.saveBalance(provider.id,{remaining:null,expiresAt:null,note:"Unable to verify provider balance. Check the provider console."});}}return this.metadata();}
-  create(request:CaptureRequest,key:string):CaptureRun {validateSourceRequest(request);const provider=this.resolveStrategy(request.provider,request.strategy);if(!provider.configured)throw new ProviderError("provider_unconfigured","Configure this provider on the collector backend first.");const result=this.store.createRun(request,key,provider.strategy,provider.model);this.wake();return result.run;}
+  create(request:CaptureRequest,key:string):CaptureRun {if(request.repair)throw new ProviderError("repair_endpoint_required","Create linked repairs through the source run's repair endpoint.");validateSourceRequest(request);const provider=this.resolveStrategy(request.provider,request.strategy);if(!provider.configured)throw new ProviderError("provider_unconfigured","Configure this provider on the collector backend first.");const result=this.store.createRun(request,key,provider.strategy,provider.model);this.wake();return result.run;}
+  repairPlan(id:string){return prepareRepair(this.store,id).plan;}
+  repair(id:string,input:RepairRequest,key:string):CaptureRun {
+    const parent=this.store.getRun(id);
+    if([...this.active.values()].some(active=>active.runId===id))throw new ProviderError("repair_unavailable","Wait for the source worker to finish before creating a repair.");
+    if(parent.request.provider!=="firecrawl")throw new ProviderError("repair_unavailable","Only Firecrawl observations can use the Firecrawl repair strategy.");
+    const provider=this.resolveStrategy("firecrawl",REPAIR_STRATEGY);
+    const plan=this.repairPlan(id);
+    const paid=plan.items.some(item=>(!input.listingIds||input.listingIds.includes(item.listingId))&&item.fields.some(field=>(!input.fields||input.fields.includes(field))&&!item.locallyResolved.includes(field)));
+    if(paid&&!provider.configured)throw new ProviderError("provider_unconfigured","Configure Firecrawl on the collector backend first.");
+    const run=createRepair(this.store,id,input,key,provider.model);this.wake();return run;
+  }
   start(){this.store.recover();this.timer=setInterval(()=>this.wake(),1000);this.timer.unref();this.wake();}
   wake(){if(this.stopped)return;for(const base of this.providers.values()){if(this.active.has(base.id)||!base.configured)continue;const run=this.store.runnable(base.id);if(!run)continue;let provider:CaptureProvider;try{provider=this.resolveStrategy(base.id,run.strategy,run.model);}catch(error){this.store.updateRun(run.id,{status:"blocked",coverage:"incomplete",error:error instanceof Error?error.message:"Saved strategy is unavailable."});this.store.event(run.id,"strategy_unavailable","The saved strategy/model was not replaced by the current default.");continue;}const controller=new AbortController();const promise=this.execute(run.id,provider,controller.signal).catch(error=>{this.store.updateRun(run.id,{status:"interrupted",coverage:"incomplete",error:"Worker stopped unexpectedly; inspect events before resuming."});this.store.event(run.id,"worker_error",error instanceof Error?error.message:String(error));}).finally(()=>{this.active.delete(provider.id);if(!this.stopped)this.wake();});this.active.set(provider.id,{runId:run.id,controller,promise});}}
   async drain(){this.wake();while(this.active.size)await Promise.all([...this.active.values()].map(a=>a.promise));}
@@ -58,6 +70,20 @@ export class CaptureWorker {
     while(!signal.aborted){
       run=this.store.getRun(runId);if(run.status==="cancelled")break;
       const work=this.store.nextWork(runId);if(!work)break;
+      if(run.request.repair){
+        const target=work.kind==="details"&&work.urls.length===1?run.request.repair.targets.find(item=>item.listingId===canonicalIdentity(run.request.source,work.urls[0]!).id):undefined;
+        if(!target)throw new ProviderError("repair_target_invalid","Persisted repair work is outside this execution's immutable target selection.");
+        work.repairFields=(work.repairFields??target.fields).filter(field=>target.fields.includes(field));
+        if(!work.repairFields.length){this.store.setWorkStatus(work.id,"done");continue;}
+        this.store.updateWork(work);
+      }
+      if(work.repairFields){
+        const snapshot=this.store.observation(runId,canonicalIdentity(run.request.source,work.urls[0]!).id);
+        if(snapshot){const gaps=detailGaps(snapshot);const remaining=work.repairFields.filter(field=>gaps.includes(field));
+          if(!remaining.length){this.store.setWorkStatus(work.id,"done");continue;}
+          if(remaining.length!==work.repairFields.length){work.repairFields=remaining;this.store.updateWork(work);}
+        }
+      }
       if(provider.id==="firecrawl"&&provider.balance&&!run.remoteJobId){try{this.store.saveBalance(provider.id,await provider.balance());}catch{this.store.event(runId,"balance_warning","Balance could not be refreshed; local budget remains enforced.");}}
       const budget=this.budget(provider.id);
       const isRemoteResume=Boolean(run.remoteJobId&&run.activeWork?.id===work.id);
@@ -82,11 +108,18 @@ export class CaptureWorker {
           let identity;try{identity=canonicalIdentity(source.id,parsed.data.url);}catch{invalid++;continue;}
           if(work.kind==="details"&&!requestedIds.has(identity.id)){invalid++;continue;}
           receivedIds.add(identity.id);
-          const observation:CaptureObservation={...parsed.data,...identity,source:source.id,runId,provider:provider.id,observedAt};
+          let observation:CaptureObservation={...parsed.data,...identity,source:source.id,runId,provider:provider.id,observedAt};
+          if(work.kind==="discover"&&run.strategy===REPAIR_STRATEGY)observation.detailStatus="pending";
+          const repairBase=work.repairFields?this.store.observation(runId,identity.id):undefined;
+          if(work.repairFields&&repairBase){
+            observation={...mergeRepairFields(repairBase,observation,work.repairFields,observedAt),observedAt};
+            this.store.artifact(runId,"repair_field_result",{listingId:identity.id,parentRunId:run.request.repair?.parentRunId,requestedFields:work.repairFields,remainingFields:observation.missingFields,observedAt});
+          }
           if(observation.detailStatus==="captured"&&!observation.evidence.some(e=>{try{return canonicalIdentity(source.id,e.url).id===identity.id&&e.text.trim().length>0;}catch{return false;}})){
             observation.detailStatus="failed";observation.error="No detail-page evidence was supplied.";
           }
-          const gaps=detailGaps(observation,source.detailFields,result.warnings);
+          const qualityWarnings=work.repairFields&&!work.repairFields.includes("description")?result.warnings.filter(warning=>!warning.startsWith(SOURCE_DESCRIPTION_COLLAPSED)):result.warnings;
+          const gaps=detailGaps(observation,source.detailFields,qualityWarnings);
           if(observation.detailStatus==="captured"&&gaps.length){
             observation.missingFields=gaps;observation.detailStatus=work.kind==="discover"?"pending":"failed";
             observation.error=`Full detail ${work.kind==="details"?"still missing after targeted extraction":"not recovered"}: ${gaps.join(", ")}.`;
@@ -95,10 +128,13 @@ export class CaptureWorker {
           if(work.kind==="details"&&observation.detailStatus!=="captured")detailsIncomplete=true;
           const previous=this.store.observation(runId,identity.id);
           const previousIncomplete=previous?.detailStatus==="captured"&&detailGaps(previous,source.detailFields,this.store.getRun(runId).warnings.filter(warning=>!warning.startsWith(SOURCE_DESCRIPTION_COLLAPSED))).length>0;
-          const fresh=this.store.saveObservation(observation,{replaceDetailStatus:previousIncomplete});if(fresh)added++;else duplicateCount++;
+          const fresh=this.store.saveObservation(observation,{replaceDetailStatus:previousIncomplete||Boolean(work.repairFields),replaceSnapshot:Boolean(work.repairFields)});if(fresh)added++;else duplicateCount++;
           if(this.store.observation(runId,identity.id)?.detailStatus!=="captured"&&work.kind==="discover")this.store.enqueue(runId,"details",[identity.url],`details:${identity.id}`);
         }
-        if(work.kind==="details")for(const url of work.urls){const identity=canonicalIdentity(source.id,url);if(!receivedIds.has(identity.id)){detailsIncomplete=true;this.store.saveObservation({...identity,runId,source:source.id,provider:provider.id,observedAt:new Date().toISOString(),data:{},detailStatus:"failed",missingFields:[],absentFields:[],evidence:[],error:"Provider omitted the requested listing."});}}
+        if(work.kind==="details")for(const url of work.urls){const identity=canonicalIdentity(source.id,url);if(!receivedIds.has(identity.id)){
+          detailsIncomplete=true;const baseline=work.repairFields?this.store.observation(runId,identity.id):undefined;
+          this.store.saveObservation(baseline?{...baseline,detailStatus:"failed",error:"Provider omitted the requested listing; previous evidence and unresolved fields are retained."}:{...identity,runId,source:source.id,provider:provider.id,observedAt:new Date().toISOString(),data:{},detailStatus:"failed",missingFields:[],absentFields:[],evidence:[],error:"Provider omitted the requested listing."},{replaceSnapshot:Boolean(baseline),replaceDetailStatus:Boolean(baseline)});
+        }}
         let enqueued=0,repeated=false;
         if(work.kind==="discover")for(const url of result.nextPages){if(!source.accepts(url)){invalid++;continue;}const key=pageKey(url);if(this.store.enqueue(runId,"discover",[url],`discover:${key}`))enqueued++;else repeated=true;}
         let stalled=false;
@@ -106,7 +142,7 @@ export class CaptureWorker {
           if(added>0&&!repeated){const ids=this.store.observations(runId).items.map(o=>o.id).sort();const cursor=`Continue after the ${ids.length} already discovered listings. Last discovery step: ${work.id}`;enqueued+=Number(this.store.enqueue(runId,"discover",work.urls,`continue:${fingerprint(ids)}`,cursor));}
           else stalled=true;
         }
-        if((result.incomplete||detailsIncomplete)&&work.kind==="details")stalled=true;
+        if(((!work.repairFields&&result.incomplete)||detailsIncomplete)&&work.kind==="details")stalled=true;
         if(repeated)stalled=true;
         const current=this.store.getRun(runId);const warnings=[...current.warnings,...result.warnings,...(invalid?[`${invalid} invalid/off-source observations or page URLs rejected.`]:[]),...(stalled?["Discovery or extraction stopped making progress; completeness is not established."]:[]),...(repeated?["Provider repeated an already visited page."]:[])];
         this.store.setWorkStatus(work.id,stalled||invalid?"failed":"done");

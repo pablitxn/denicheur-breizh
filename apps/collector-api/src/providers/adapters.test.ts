@@ -4,7 +4,7 @@ import type { ProviderStepContext } from "../adapter.js";
 import { createFirecrawlProvider } from "./firecrawl.js";
 import { detailGaps } from "../capture-quality.js";
 import { redactProviderValue } from "./http.js";
-import { CAPTURE_POLICY_VERSION, parseCaptureOutput } from "./output.js";
+import { CAPTURE_POLICY_VERSION, captureOutputJsonSchema, captureRepairOutputJsonSchema, parseCaptureOutput } from "./output.js";
 import { createXaiProvider } from "./xai.js";
 import { leboncoinSource } from "../sources.js";
 
@@ -92,6 +92,98 @@ describe("xAI adapter", () => {
 });
 
 describe("Firecrawl adapter", () => {
+  it("recovers the selected native GES despite empty model field-state reasons and exposes the disagreement", async () => {
+    const payload = output();
+    const observation = { ...payload.observations[0]!, data: { ...payload.observations[0]!.data, gesClass: "G" },
+      fieldStates: Object.fromEntries(dataFields.map(field => [field, { status: "observed", reason: "", evidence: [{ url: listingUrl, kind: "page", text: "GES: G" }] }])),
+    };
+    const raw = { success: true, creditsUsed: 5, data: { json: { ...payload, observations: [observation] }, metadata: { sourceURL: listingUrl }, actions: { javascriptReturns: [{ value: {
+      preparation: "leboncoin-detail-repair-v4", phase: "observe", url: listingUrl, blocked: false,
+      fields: { gesClass: { value: "C", selected: true, evidence: "GES: C; selected native grade", selector: '[data-qa-id="criteria_item_ges"]' } },
+    } }] } } };
+    const fetcher = fetchQueue(json({ data: { remainingCredits: 100 } }), json(raw), json({ data: { remainingCredits: 95 } }));
+    const ctx = { ...context("firecrawl"), source: leboncoinSource };
+    const result = await createFirecrawlProvider({ apiKey: "test-secret", strategy: "firecrawl-detail-repair-v4", fetcher }).step(ctx);
+    expect(result.observations).toHaveLength(1);
+    expect(result.observations[0]?.data.gesClass).toBe("C");
+    expect(result.observations[0]?.fieldStates?.gesClass?.status).toBe("observed");
+    expect(result.observations[0]?.fieldStates?.title).toMatchObject({ status: "unresolved", reason: expect.stringContaining("quarantined"), evidence: [] });
+    expect(detailGaps(result.observations[0]!)).toContain("title");
+    expect(detailGaps(result.observations[0]!)).not.toContain("gesClass");
+    expect(result.warnings).toContain(`Native source evidence corrected gesClass from model value G to C for ${listingUrl}.`);
+    expect(result.warnings.join(" ")).toContain("Quarantined invalid fieldStates");
+    expect(result.incomplete).toBe(true);
+    expect(result.exhausted).toBe(false);
+    expect(ctx.onEvidence).toHaveBeenCalledWith("firecrawl_scrape", raw);
+    expect(ctx.onUsage).toHaveBeenCalledWith(expect.objectContaining({ amount: 5 }));
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+  });
+  it.each([
+    ["malformed JSON", '{"observations":'],
+    ["omitted listing", { observations: [], nextPages: [], exhausted: true }],
+    ["rejected listing", { observations: [{ url: listingUrl, data: { priceEuros: "wrong type" } }], nextPages: [] }],
+    ["foreign listing", { observations: [{ ...output().observations[0], url: "https://www.leboncoin.fr/ad/ventes_immobilieres/999" }], nextPages: [] }],
+  ])("recovers only same-URL raw facts from %s without another paid request", async (_label, payload) => {
+    const raw = { success: true, creditsUsed: 5, data: { json: payload, metadata: { sourceURL: listingUrl }, actions: { javascriptReturns: [{ value: {
+      preparation: "leboncoin-detail-repair-v4", phase: "observe", url: listingUrl, blocked: false,
+      fields: { gesClass: { value: "C", selected: true, evidence: "GES: C; selected native grade", selector: '[data-qa-id="criteria_item_ges"]' } },
+    } }] } } };
+    const fetcher = fetchQueue(json({ data: { remainingCredits: 100 } }), json(raw), json({ data: { remainingCredits: 95 } }));
+    const ctx = { ...context("firecrawl"), source: leboncoinSource };
+    const result = await createFirecrawlProvider({ apiKey: "test-secret", strategy: "firecrawl-detail-repair-v4", fetcher }).step(ctx);
+    expect(result.observations).toHaveLength(1);
+    expect(result.observations[0]).toMatchObject({ url: listingUrl, data: { gesClass: "C" }, detailStatus: "failed", error: expect.stringContaining("No valid model observation") });
+    expect(result.observations[0]?.data.title).toBeUndefined();
+    expect(result.observations[0]?.missingFields).toEqual(dataFields.filter(field => field !== "gesClass"));
+    expect(result.incomplete).toBe(true);
+    expect(result.warnings.join(" ")).toContain("No valid model observation");
+    expect(ctx.onEvidence).toHaveBeenCalledWith("firecrawl_scrape", raw);
+    expect(ctx.onUsage).toHaveBeenCalledWith(expect.objectContaining({ amount: 5 }));
+    expect(fetcher.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+  });
+  it("leaves a v4 fallback unresolved when its saved raw evidence belongs to another listing", async () => {
+    const foreign = "https://www.leboncoin.fr/ad/ventes_immobilieres/999";
+    const raw = { success: true, creditsUsed: 5, data: { json: null, metadata: { sourceURL: foreign }, actions: { javascriptReturns: [{ value: {
+      preparation: "leboncoin-detail-repair-v4", phase: "observe", url: foreign,
+      fields: { gesClass: { value: "C", selected: true, evidence: "GES: C", selector: '[data-qa-id="criteria_item_ges"]' } },
+    } }] } } };
+    const fetcher = fetchQueue(json({ data: { remainingCredits: 100 } }), json(raw), json({ data: { remainingCredits: 95 } }));
+    const result = await createFirecrawlProvider({ apiKey: "test-secret", strategy: "firecrawl-detail-repair-v4", fetcher }).step({ ...context("firecrawl"), source: leboncoinSource });
+    expect(result.observations[0]?.data).toEqual({});
+    expect(result.observations[0]?.missingFields).toEqual(dataFields);
+    expect(result.observations[0]?.fieldStates?.gesClass?.status).toBe("unresolved");
+  });
+  it("uses v4 targeted scripts and field-state schema while reconciling the same single scrape charge", async () => {
+    const payload=output();
+    const observation={...payload.observations[0]!,data:{...payload.observations[0]!.data,gesClass:null,landSurfaceM2:null},missingFields:["gesClass","landSurfaceM2"]};
+    const raw={success:true,creditsUsed:5,data:{json:{...payload,observations:[observation]},html:'<main>Native source evidence</main>',metadata:{sourceURL:listingUrl},actions:{javascriptReturns:[{type:"object",value:{preparation:"leboncoin-detail-repair-v4",phase:"observe",url:listingUrl,criteria:[{label:"Surface totale du terrain",value:"581 m²"}],fields:{gesClass:{value:"B",selected:true,evidence:"GES: B; selected native grade",selector:'[data-qa-id="criteria_item_ges"]'}}}}]}}};
+    const fetcher=fetchQueue(json({data:{remainingCredits:100}}),json(raw),json({data:{remainingCredits:95}}));
+    const ctx={...context("firecrawl"),source:leboncoinSource,work:{...context("firecrawl").work,repairFields:["gesClass","landSurfaceM2"] as const}};
+    const result=await createFirecrawlProvider({apiKey:"test-secret",strategy:"firecrawl-detail-repair-v4",fetcher}).step({...ctx,work:{...ctx.work,repairFields:[...ctx.work.repairFields]}});
+    const body=JSON.parse(String(fetcher.mock.calls.find(([,init])=>init?.method==="POST")?.[1]?.body));
+    expect(body.formats).toContain("html");
+    expect(body.formats.at(-1).schema).toEqual(captureRepairOutputJsonSchema);
+    expect(body.formats.at(-1).prompt).toContain("requested fields: gesClass, landSurfaceM2");
+    expect(body.actions).toEqual([{type:"executeJavascript",script:leboncoinSource.detailRepairScript},{type:"wait",milliseconds:750},{type:"executeJavascript",script:leboncoinSource.detailRepairEvidenceScript}]);
+    expect(result.observations[0]!.data).toMatchObject({gesClass:"B",landSurfaceM2:581});
+    expect(result.observations[0]!.fieldStates?.gesClass?.status).toBe("observed");
+    expect(result.usage.amount).toBe(5);
+    expect(fetcher.mock.calls.filter(([,init])=>init?.method==="POST")).toHaveLength(1);
+    expect(captureOutputJsonSchema.properties.observations.items.properties).not.toHaveProperty("fieldStates");
+  });
+  it("supports all-field v4 URL capture and keeps v4 discovery focused on identities/cards", async()=>{
+    const details=fetchQueue(json({data:{remainingCredits:100}}),json({success:true,creditsUsed:5,data:{json:output(),metadata:{sourceURL:listingUrl}}}),json({data:{remainingCredits:95}}));
+    await createFirecrawlProvider({apiKey:"test-secret",strategy:"firecrawl-detail-repair-v4",fetcher:details}).step({...context("firecrawl"),source:leboncoinSource});
+    const detailBody=JSON.parse(String(details.mock.calls[1]?.[1]?.body));
+    expect(detailBody.formats.at(-1).prompt).toContain(`requested fields: ${dataFields.join(", ")}`);
+    const discovery=fetchQueue(json({id:"v4-discovery"}),json({status:"completed",creditsUsed:8,data:output()}),json({events:[]}));
+    await createFirecrawlProvider({apiKey:"test-secret",strategy:"firecrawl-detail-repair-v4",fetcher:discovery}).step(context("firecrawl","discover"));
+    const discoveryBody=JSON.parse(String(discovery.mock.calls[0]?.[1]?.body));
+    expect(discoveryBody.prompt).toContain("Every observation must remain pending");
+    expect(discoveryBody.prompt).toContain("Do not open listing details");
+    expect(discoveryBody.schema).toEqual(captureOutputJsonSchema);
+    expect(discoveryBody.urls).toEqual([searchUrl]);
+  });
   it.each(["firecrawl-agent-scrape-v1", "firecrawl-agent-expanded-v3"] as const)("only expands source detail controls when %s explicitly enables it", async strategy => {
     const fetcher = fetchQueue(json({ data: { remainingCredits: 100 } }), json({ success: true, data: { json: output(), metadata: { creditsUsed: 5, scrapeId: "detail-1" } } }), json({ data: { remainingCredits: 95 } }));
     const ctx = { ...context("firecrawl"), source: leboncoinSource };

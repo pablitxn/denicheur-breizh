@@ -159,6 +159,56 @@ test("cancels and resumes from persisted work without an unknown bill", async ({
   expect(events.items.some((event: { kind: string }) => event.kind === "resumed")).toBe(true);
 });
 
+test("repairs a selected detail gap in a linked capture while preserving the original SQLite snapshot", async ({ page, request }) => {
+  const name = `[repair-fixture] Original ${randomUUID()}`;
+  const created = await request.post(`${api}/v1/runs`, { data: { name, provider: "firecrawl", source: "leboncoin", mode: "urls", urls: [listingUrl(1), listingUrl(2), listingUrl(3)] }, headers: { "Idempotency-Key": randomUUID() } });
+  expect(created.status()).toBe(202);
+  const parent = await created.json() as CaptureRun;
+  await expect.poll(async () => (await (await request.get(`${api}/v1/runs/${parent.id}`)).json() as CaptureRun).status).toBe("partial");
+  const original = await (await request.get(`${api}/v1/runs/${parent.id}/export`)).json() as { run: CaptureRun; observations: CaptureObservation[] };
+  expect(original.observations).toHaveLength(3);
+  const before = await (await request.get(`${api}/__test/state`)).json();
+  await openEnglish(page);
+  await page.goto(`/?view=history&run=${parent.id}`);
+  await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
+  const repair = page.getByRole("region", { name: "Repair details", exact: true });
+  await repair.getByRole("button", { name: "Review fields to repair", exact: true }).click();
+  await expect(repair.getByRole("checkbox", { name: /Synthetic house 1/ })).toBeChecked();
+  await expect(repair.getByRole("checkbox", { name: /Synthetic house 2/ })).toBeChecked();
+  await expect(repair.getByRole("checkbox", { name: /Synthetic house 3/ })).toHaveCount(0);
+  await repair.getByRole("checkbox", { name: /Synthetic house 2/ }).uncheck();
+  const fields = repair.getByRole("group", { name: "Fields to repair", exact: true });
+  await fields.getByRole("checkbox", { name: "Images", exact: true }).uncheck();
+  await page.setViewportSize({ width: 375, height: 800 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(375);
+  await page.screenshot({ path: test.info().outputPath("repair-mobile.png"), fullPage: true });
+  const dispatched = page.waitForResponse(response => response.url().endsWith(`/runs/${parent.id}/repair`) && response.request().method() === "POST");
+  await repair.getByRole("button", { name: "Create repair capture", exact: true }).click();
+  const repairResponse = await dispatched;
+  expect(repairResponse.status()).toBe(202);
+  const child = await repairResponse.json() as CaptureRun;
+  expect(child.id).not.toBe(parent.id);
+  expect(child.request.mode).toBe("urls");
+  expect(child.strategy).toBe("firecrawl-detail-repair-v4");
+  expect(child.request.repair).toEqual({ parentRunId: parent.id, targets: [{ listingId: "leboncoin:1", fields: ["description"] }] });
+  await completed(request, child.id);
+  await expect(page).toHaveURL(new RegExp(`run=${child.id}`));
+  await expect(page.getByText("Repair linked to an earlier capture", { exact: true })).toBeVisible();
+  await expect(page.getByText(/This subset does not certify coverage of the original search/).first()).toBeVisible();
+  const after = await (await request.get(`${api}/v1/runs/${parent.id}/export`)).json();
+  expect(after).toEqual(original);
+  const repaired = await (await request.get(`${api}/v1/runs/${child.id}/export`)).json() as { observations: CaptureObservation[] };
+  expect(repaired.observations).toHaveLength(1);
+  expect(repaired.observations[0]!.data.description).toContain("Synthetic offline evidence for house 1");
+  expect(repaired.observations[0]!.fieldStates?.description?.status).toBe("observed");
+  const end = await (await request.get(`${api}/__test/state`)).json();
+  expect(end.steps.firecrawl - before.steps.firecrawl).toBe(1);
+  expect(end.steps.xai).toBe(before.steps.xai);
+  await page.getByRole("button", { name: "Open original capture", exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`run=${parent.id}`));
+  await expect(page.getByRole("heading", { name, exact: true })).toBeVisible();
+});
+
 test("shared Settings owns appearance/language and preserves keyboard focus on a small screen", async ({ page }) => {
   await openEnglish(page);
   await page.setViewportSize({ width: 375, height: 720 });

@@ -39,7 +39,7 @@ export class CollectorStore {
   }
   close(){this.db.close();}
   transaction<T>(fn:()=>T):T {this.db.exec("BEGIN IMMEDIATE");try{const result=fn();this.db.exec("COMMIT");return result;}catch(e){this.db.exec("ROLLBACK");throw e;}}
-  createRun(request:CaptureRequest,key:string,strategy:string,model:string):{run:CaptureRun;created:boolean} {
+  createRun(request:CaptureRequest,key:string,strategy:string,model:string,initialize?:(run:CaptureRun)=>void):{run:CaptureRun;created:boolean} {
     return this.transaction(()=>{
       const old=this.db.prepare("SELECT data,request_hash FROM runs WHERE idempotency_key=?").get(key) as Row|undefined;
       if(old){if(old.request_hash!==fingerprint(request))throw new Error("IDEMPOTENCY_CONFLICT");return{run:JSON.parse(String(old.data)),created:false};}
@@ -47,6 +47,7 @@ export class CollectorStore {
       this.db.prepare("INSERT INTO runs VALUES(?,?,?,?,?,?)").run(run.id,request.provider,run.status,JSON.stringify(run),key,fingerprint(request));
       if(request.mode==="urls")for(const url of [...new Set(request.urls)])this.enqueue(run.id,"details",[url],`details:${url}`);
       else this.enqueue(run.id,"discover",request.searchUrl?[request.searchUrl]:[],request.searchUrl?`discover:${pageKey(request.searchUrl)}`:"discover:initial");
+      initialize?.(run);
       this.event(run.id,"created","Capture queued.");return {run:this.refresh(run.id),created:true};
     });
   }
@@ -57,6 +58,7 @@ export class CollectorStore {
   enqueue(runId:string,kind:WorkItem["kind"],urls:string[],key:string,cursor?:string):boolean {const work:WorkItem={id:randomUUID(),kind,urls,...(cursor?{cursor}:{})};return this.db.prepare("INSERT OR IGNORE INTO work(id,run_id,work_key,status,data) VALUES(?,?,?,'pending',?)").run(work.id,runId,key,JSON.stringify(work)).changes>0;}
   nextWork(runId:string):WorkItem|undefined {const row=this.db.prepare("SELECT data FROM work WHERE run_id=? AND status IN ('active','pending') ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END,seq LIMIT 1").get(runId) as Row|undefined;return row?JSON.parse(String(row.data)):undefined;}
   setWorkStatus(workId:string,status:"active"|"done"|"failed"|"pending"){this.db.prepare("UPDATE work SET status=? WHERE id=?").run(status,workId);}
+  updateWork(work:WorkItem){this.db.prepare("UPDATE work SET data=? WHERE id=?").run(JSON.stringify(work),work.id);}
   retryFailed(runId:string){this.db.prepare("UPDATE work SET status='pending' WHERE run_id=? AND status='failed'").run(runId);}
   saveObservation(value:CaptureObservation,options:{replaceDetailStatus?:boolean;replaceSnapshot?:boolean}={}):boolean {
     const row=this.db.prepare("SELECT data FROM observations WHERE run_id=? AND id=?").get(value.runId,value.id) as Row|undefined;

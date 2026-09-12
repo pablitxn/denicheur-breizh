@@ -64,6 +64,7 @@ export function CaptureForm({ metadata, onCreated }: { metadata?: LabMetadata; o
           {strategies.map((strategy) => <option key={strategy.id} value={strategy.id}>{strategyLabel(strategy.id, t, strategy.label)}</option>)}
         </Select><small>{t("strategyHelp")}</small></div>}
         {strategyUnavailable && <p className="workflow-notice">{t("strategyUnavailable")}</p>}
+        {selectedStrategy === "firecrawl-detail-repair-v4" && <p className="muted">{t("strategyRepairHelp")}</p>}
       </section>
       <section className="panel">
         <div className="section-heading"><span className="step">02</span><h2>{t("capture")}</h2></div>

@@ -7,6 +7,7 @@ import {
 } from "@denicheur-breizh/collector-contracts";
 import { canonicalIdentity, getSource } from "./sources.js";
 import { ProviderError } from "./adapter.js";
+import { detailFieldStates } from "./capture-quality.js";
 
 const requiredDefaults: DataField[] = ["title", "priceEuros", "propertyType", "location", "surfaceM2"];
 const metric = (numerator: number, denominator: number): Metric => ({ numerator, denominator, ratio: denominator ? numerator / denominator : null });
@@ -25,7 +26,7 @@ function sameValue(field: DataField, expected: unknown, actual: unknown): boolea
   return JSON.stringify(normalized(expected)) === JSON.stringify(normalized(actual));
 }
 function sourceEvidence(item: ObservationInput, source: string): boolean {
-  return item.evidence.some((evidence) => {
+  return [...item.evidence, ...Object.values(item.fieldStates ?? {}).flatMap(state => state.evidence)].some((evidence) => {
     if (!evidence.text.trim()) return false;
     try { return canonicalIdentity(source, evidence.url).id === canonicalIdentity(source, item.url).id; }
     catch { return false; }
@@ -75,6 +76,7 @@ export function importExtensionReference(input: unknown): ReferenceImport {
       url: identity.url, data,
       detailStatus: record.detailStatus ?? (record.status === "detailed" ? "captured" : record.status === "failed" ? "failed" : "pending"),
       missingFields: record.missingFields ?? [], absentFields: record.absentFields ?? [],
+      ...(record.fieldStates !== undefined ? { fieldStates: record.fieldStates } : {}),
       evidence: [...existingEvidence,
         ...(rawText ? [{ url: identity.url, text: rawText, kind: "page" }] : []),
         { url: identity.url, kind: "manual", text: `Original imported reference record (not an independent page verification):\n${JSON.stringify(raw)}` },
@@ -108,6 +110,13 @@ export function evaluateRuns(
   reviews: EvaluationReview[] = [],
 ): EvaluationReport {
   const expected = new Map<string, ObservationInput>();
+  const statesCache = new WeakMap<ObservationInput, ReturnType<typeof detailFieldStates>>();
+  const statesOf = (item: ObservationInput) => { let states = statesCache.get(item); if (!states) { states = detailFieldStates(item); statesCache.set(item, states); } return states; };
+  const stateSignature = (item: ObservationInput) => stable(Object.fromEntries(dataFields.map(field => [field, statesOf(item)[field].status])));
+  const declaredGaps = (item: ObservationInput): DataField[] => {
+    const states = statesOf(item);
+    return [...new Set([...item.missingFields.filter(field => !item.fieldStates?.[field] || states[field].status === "unresolved"), ...dataFields.filter(field => item.fieldStates?.[field] && states[field].status === "unresolved")])];
+  };
   const referenceIssues: string[] = [];
   if (!reference.complete) referenceIssues.push("Reference search exhaustion is not attested.");
   if (!reference.pages.length || !reference.notes.trim()) referenceIssues.push("Reference completeness requires page URLs and a review note.");
@@ -116,10 +125,11 @@ export function evaluateRuns(
   for (const record of reference.records) {
     const id = canonicalIdentity(reference.source, record.url).id;
     const previous = expected.get(id);
-    if (previous && stable(previous.data) !== stable(record.data)) referenceIssues.push(`Conflicting reference observations for ${id}; import a reconciled snapshot.`);
+    if (previous && (stable(previous.data) !== stable(record.data) || stateSignature(previous) !== stateSignature(record))) referenceIssues.push(`Conflicting reference observations for ${id}; import a reconciled snapshot.`);
     if (!previous || record.detailStatus === "captured") expected.set(id, record);
     if (!sourceEvidence(record, reference.source)) referenceIssues.push(`Reference ${id} has no attributable evidence.`);
-    for (const field of reference.requiredFields) if (!present(record.data[field]) && !record.absentFields.includes(field)) referenceIssues.push(`Reference ${id} does not establish whether ${field} is present or absent.`);
+    for (const field of reference.requiredFields) if (statesOf(record)[field].status === "unresolved") referenceIssues.push(`Reference ${id} does not establish whether ${field} is observed, absent or not applicable.`);
+    for (const field of declaredGaps(record)) referenceIssues.push(`Reference ${id} explicitly leaves ${field} unresolved or has unsupported field evidence.`);
     for (const field of record.absentFields) if (present(record.data[field])) referenceIssues.push(`Reference ${id} simultaneously contains ${field} and marks it absent.`);
   }
   if (!expected.size) referenceIssues.push("Reference has no identities to evaluate.");
@@ -145,7 +155,7 @@ export function evaluateRuns(
         reasons.push(`Observation ${observation.id} has inconsistent source, identity, run or provider provenance.`); incompatible = true; continue;
       }
       const previous = actual.get(identity.id);
-      if (previous && stable(previous.data) !== stable(observation.data)) { reasons.push(`Conflicting provider observations for ${identity.id}.`); incompatible = true; }
+      if (previous && (stable(previous.data) !== stable(observation.data) || stateSignature(previous) !== stateSignature(observation))) { reasons.push(`Conflicting provider observations for ${identity.id}.`); incompatible = true; }
       if (!previous || observation.detailStatus === "captured") actual.set(identity.id, observation);
     }
     const discrepancies: Discrepancy[] = [];
@@ -157,23 +167,29 @@ export function evaluateRuns(
       else {
         presentIds++;
         if (candidate.detailStatus !== "captured") discrepancies.push({ listingId: id, field: "detailStatus", kind: "pending_detail", expected: "captured", actual: candidate.detailStatus });
-        if (candidate.missingFields.length) discrepancies.push({ listingId: id, field: "missingFields", kind: "pending_detail", expected: [], actual: candidate.missingFields });
+        const gaps = declaredGaps(candidate);
+        if (gaps.length) discrepancies.push({ listingId: id, field: "missingFields", kind: "pending_detail", expected: [], actual: gaps });
         if (!sourceEvidence(candidate, reference.source)) discrepancies.push({ listingId: id, field: "evidence", kind: "missing_evidence", expected: "Attributable listing evidence", actual: candidate.evidence });
       }
       for (const field of dataFields) {
         const expectedValue = baseline.data[field];
         const actualValue = candidate?.data[field];
+        const expectedState = statesOf(baseline)[field].status;
+        const actualState = candidate ? statesOf(candidate)[field].status : "unresolved";
         if (present(expectedValue)) {
           fieldsTotal++;
           if (present(actualValue)) {
-            fieldsPresent++; fieldsReturned++;
-            if (sameValue(field, expectedValue, actualValue)) fieldsExact++;
+            fieldsReturned++;
+            if (actualState === "observed") fieldsPresent++;
+            if (actualState === "observed" && sameValue(field, expectedValue, actualValue)) fieldsExact++;
+            else if (actualState === "unresolved") discrepancies.push({ listingId: id, field, kind: "missing_field", expected: expectedValue, actual: actualValue });
             else discrepancies.push({ listingId: id, field, kind: "different_value", expected: expectedValue, actual: actualValue });
           } else discrepancies.push({ listingId: id, field, kind: "missing_field", expected: expectedValue });
-        } else if (baseline.absentFields.includes(field) && present(actualValue)) {
+        } else if ((expectedState === "absent" || expectedState === "not_applicable") && present(actualValue)) {
           fieldsReturned++;
           discrepancies.push({ listingId: id, field, kind: "different_value", expected: null, actual: actualValue });
         }
+        if (baseline.fieldStates?.[field] && (expectedState === "absent" || expectedState === "not_applicable") && actualState !== expectedState) discrepancies.push({ listingId: id, field: `fieldState.${field}`, kind: "pending_detail", expected: expectedState, actual: actualState });
         if (candidate?.absentFields.includes(field) && present(actualValue)) discrepancies.push({ listingId: id, field, kind: "different_value", expected: "Field marked absent must not contain a value", actual: actualValue });
       }
       const expectedImages = new Set(baseline.data.imageUrls ?? []);
@@ -188,6 +204,7 @@ export function evaluateRuns(
       if (!expected.has(id)) {
         discrepancies.push({ listingId: id, field: "identity", kind: "extra_listing", actual: candidate.url });
         if (candidate.detailStatus !== "captured") discrepancies.push({ listingId: id, field: "detailStatus", kind: "pending_detail", expected: "captured", actual: candidate.detailStatus });
+        if (declaredGaps(candidate).length) discrepancies.push({ listingId: id, field: "missingFields", kind: "pending_detail", expected: [], actual: declaredGaps(candidate) });
       }
     }
     const validReviews = reviews.flatMap((review) => {

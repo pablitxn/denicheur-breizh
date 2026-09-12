@@ -32,4 +32,13 @@ describe("source and storage boundaries",()=>{
     expect(()=>readConfig({COLLECTOR_DATA_DIR:config.dataDirectory.replace("collector-api","api")})).toThrow(/main API/);
     expect(()=>readConfig({COLLECTOR_XAI_EXPIRES_AT:"sometime"})).toThrow();
   });
+  it("keeps v3 preparation immutable and exposes separate v4 preparation and observed evidence",()=>{
+    expect(leboncoinSource.detailPreparationScript).toContain("leboncoin-expand-description-v1");
+    expect(leboncoinSource.detailPreparationScript).not.toContain("criteria_item_energy_rate");
+    expect(leboncoinSource.detailRepairScript).toContain("additionalCriteria");
+    expect(leboncoinSource.detailRepairEvidenceScript).toContain("drop-shadow-sm");
+    const v4=captureRequestSchema.parse({...request,provider:"firecrawl",strategy:"firecrawl-detail-repair-v4",mode:"urls",urls:["https://www.leboncoin.fr/ad/ventes_immobilieres/123"]});
+    expect(leboncoinSource.instructions(v4,{id:"repair",kind:"details",urls:v4.urls,repairFields:["gesClass"]},[])).toContain("exemption in fieldStates");
+    expect(leboncoinSource.instructions(v4,{id:"discovery",kind:"discover",urls:[]},[])).not.toContain("exemption in fieldStates");
+  });
 });

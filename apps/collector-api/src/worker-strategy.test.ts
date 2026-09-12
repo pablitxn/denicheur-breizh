@@ -29,13 +29,13 @@ function fixture(base: CaptureProvider, registry?: ProviderStrategyRegistry) {
 describe("immutable capture strategy and model", () => {
   it("registers the versioned Firecrawl strategies and can recreate the exact saved xAI model without making a request", () => {
     const registry = createProviderStrategyRegistry(readConfig({ COLLECTOR_XAI_MODEL: "new-default-model" }));
-    expect(registry.choices("firecrawl").map(choice => choice.id)).toEqual(["firecrawl-agent-scrape-v1", "firecrawl-agent-native-v2", "firecrawl-agent-expanded-v3"]);
+    expect(registry.choices("firecrawl").map(choice => choice.id)).toEqual(["firecrawl-agent-scrape-v1", "firecrawl-agent-native-v2", "firecrawl-agent-expanded-v3", "firecrawl-detail-repair-v4"]);
     expect(registry.resolve("xai", "xai-web-search-v1", "saved-model").model).toBe("saved-model");
     expect(registry.resolve("firecrawl", "firecrawl-agent-native-v2").strategy).toBe("firecrawl-agent-native-v2");
     expect(() => registry.resolve("xai", "firecrawl-agent-native-v2")).toThrow("selected strategy");
   });
 
-  it.each(["firecrawl-agent-native-v2", "firecrawl-agent-expanded-v3"] as const)("dispatches an explicitly selected %s and persists that selection", async selectedStrategy => {
+  it.each(["firecrawl-agent-native-v2", "firecrawl-agent-expanded-v3", "firecrawl-detail-repair-v4"] as const)("dispatches an explicitly selected %s and persists that selection", async selectedStrategy => {
     const v1 = provider("firecrawl-agent-scrape-v1", "spark-2"), v2 = provider(selectedStrategy, "spark-2");
     const registry: ProviderStrategyRegistry = { resolve: (_id, strategy) => strategy === v2.strategy ? v2 : v1, choices: () => [{ id: v1.strategy, label: "V1" }, { id: v2.strategy, label: "V2" }] };
     const { store, worker } = fixture(v1, registry);

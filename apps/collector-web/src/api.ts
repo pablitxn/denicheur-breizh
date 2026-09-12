@@ -1,4 +1,10 @@
-import type { CaptureObservation, CaptureRequest, CaptureRun, ComparisonRequest, EvaluationReport, EvaluationReview, LabMetadata, Page, ReferenceImport, ReferenceRecord, RunEvent, RunEvaluation } from "@denicheur-breizh/collector-contracts";
+import type { CaptureObservation, CaptureRequest, CaptureRun, ComparisonRequest, DataField, EvaluationReport, EvaluationReview, FieldStates, LabMetadata, Page, ReferenceImport, ReferenceRecord, RepairRequest, RunEvent, RunEvaluation } from "@denicheur-breizh/collector-contracts";
+
+export interface RepairPlan {
+  runId: string; provider: "firecrawl"; strategy: "firecrawl-detail-repair-v4";
+  eligible: boolean; reason?: string; total: number; requiresCapture: number;
+  items: Array<{ listingId: string; url: string; title: string; fields: DataField[]; fieldStates: FieldStates; locallyResolved: DataField[] }>;
+}
 
 export interface EvaluationReportSummary {
   id: string; referenceId: string; referenceName: string; createdAt: string;
@@ -31,6 +37,8 @@ export const api = {
   events: (id: string) => request<{ items: RunEvent[] }>(`/runs/${encodeURIComponent(id)}/events`),
   cancel: (id: string) => post<CaptureRun>(`/runs/${encodeURIComponent(id)}/cancel`),
   resume: (id: string) => post<CaptureRun>(`/runs/${encodeURIComponent(id)}/resume`),
+  repairPlan: (id: string) => request<RepairPlan>(`/runs/${encodeURIComponent(id)}/repair-plan`),
+  repair: (id: string, body: RepairRequest, key: string) => request<CaptureRun>(`/runs/${encodeURIComponent(id)}/repair`, { method: "POST", body: JSON.stringify(body), headers: { "Idempotency-Key": key } }),
   references: () => request<{ items: ReferenceRecord[] }>("/references"),
   importReference: (reference: ReferenceImport) => post<ReferenceRecord>("/references", reference),
   importExtension: (reference: Omit<ReferenceImport, "records"> & { records: unknown[] }) => post<ReferenceRecord>("/references/extension", reference),
