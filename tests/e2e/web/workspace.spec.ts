@@ -28,6 +28,7 @@ test.describe("Denicheur web against the real local API", () => {
     await expect(heading).toBeVisible();
 
     const detail = page.locator("aside").filter({ has: heading });
+    await detail.getByText("Détails de provenance", { exact: true }).click();
     await expect(detail.getByText(listing.externalId, { exact: true })).toBeVisible();
     await expect(detail.getByText(runId, { exact: true })).toBeVisible();
     await expect(detail.getByText("leboncoin", { exact: true })).toBeVisible();
@@ -139,7 +140,11 @@ test.describe("Denicheur web against the real local API", () => {
     await expect(zoomOut).toBeVisible();
     await expect(page.getByText("1 bien filtré n’apparaît pas sur la carte, faute de localisation.", { exact: true })).toBeVisible();
     await expect(page.getByText("1 bien géolocalisé hors Bretagne est masqué sur cette carte.", { exact: true })).toBeVisible();
+    const markerToggle = page.getByRole("button", { name: /^Marqueurs/u });
+    await markerToggle.click();
+    await page.getByRole("tab", { name: "Légende", exact: true }).click();
     await expect(page.getByText("Bretagne administrative · 4 départements", { exact: true })).toBeVisible();
+    await markerToggle.click();
     await expect(page.getByRole("combobox", { name: "Résultats", exact: true })).toHaveCount(0);
 
     const results = page.getByRole("list", { name: "Résultats", exact: true });

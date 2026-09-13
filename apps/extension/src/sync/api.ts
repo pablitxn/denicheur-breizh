@@ -7,6 +7,7 @@ import {
   recipeVersionSchema,
   resolvedEvaluationPlanVersionSchema,
   type RecipeVersion,
+  type SourceRecordInput,
 } from "@denicheur-breizh/contracts";
 import type { LocaleCode } from "@denicheur-breizh/i18n";
 import {
@@ -59,6 +60,25 @@ export class ExtensionApiError extends Error {
 
 export async function configuredApiUrl(): Promise<string> {
   return (await resolveRuntimeApiConfig()).baseUrl;
+}
+
+export async function ingestSourceRecord(
+  record: SourceRecordInput,
+  options: { fetcher?: SyncFetcher; baseUrl?: string } = {},
+): Promise<void> {
+  const config = await resolveRuntimeApiConfig(options.baseUrl);
+  const response = await request(`${config.baseUrl}/v1/source-records`, {
+    method: "POST",
+    headers: withOperatorAuthorization({ "Content-Type": "application/json" }, config),
+    body: JSON.stringify({ records: [record] }),
+    signal: AbortSignal.timeout(15_000),
+  }, options.fetcher);
+  const payload = await readSuccessJson(response);
+  if (!isRecord(payload) || payload.accepted !== 1 ||
+    !isNonNegativeInteger(payload.inserted) || !isNonNegativeInteger(payload.unchanged) ||
+    payload.inserted + payload.unchanged !== 1) {
+    throw new ExtensionApiError("The API returned an invalid source-record archive response.", response.status, "INVALID_API_RESPONSE");
+  }
 }
 
 export async function ingestRunBatch(

@@ -23,7 +23,7 @@ describe("PropertyVisual", () => {
 
     expect(within(gallery).getByRole("img", { name: "Photo 1 sur 3 : Maison du port" }))
       .toHaveAttribute("src", imageUrls[0]);
-    expect(within(gallery).getByText("1 / 3")).toHaveAttribute("aria-live", "polite");
+    expect(within(gallery).queryByText("1 / 3")).not.toBeInTheDocument();
 
     const next = within(gallery).getByRole("button", { name: "Photo suivante de Maison du port" });
     fireEvent.click(next);

@@ -373,11 +373,15 @@ test.describe("Denicheur MV3 native-search runtime", () => {
 
     await web.goto(`${WEB_BASE_URL}/?view=properties`);
     await expect(web.getByRole("heading", { name: "Biens", exact: true })).toBeVisible();
+    await web.getByRole("table").getByRole("button")
+      .filter({ has: web.getByText(title, { exact: true }) })
+      .click();
     await expect(web.getByRole("heading", { name: title, exact: true })).toBeVisible();
     await expect(web.getByRole("link", { name: "Ouvrir l’annonce source" })).toHaveAttribute(
       "href",
       detailUrl,
     );
+    await web.getByText("Détails de provenance", { exact: true }).click();
     await expect(
       web.getByText("Identifiant source", { exact: true }).locator("..").getByText(externalId, { exact: true }),
     ).toBeVisible();

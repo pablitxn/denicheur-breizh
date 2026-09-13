@@ -62,6 +62,8 @@ export interface ExtensionSyncState {
   generation?: number;
   status: "idle" | "pending" | "syncing" | "error";
   queue: SyncQueueEntry[];
+  /** Derived from the independent archive outbox when reading background status. */
+  sourceRecordsPending?: number;
   syncedFingerprints: Record<string, string>;
   lastAttemptAt?: string;
   lastSuccessAt?: string;
@@ -88,6 +90,8 @@ export type ExtensionRuntimeRequest =
 
 export interface ExtensionRuntimeResponse {
   ok: boolean;
+  /** Catalog/evaluation synchronization only; archive errors remain visible in state. */
+  catalogOk?: boolean;
   state: ExtensionSyncState;
   recipe?: IntelligenceRecipe;
   plan?: EvaluationPlan;

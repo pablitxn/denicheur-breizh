@@ -14,6 +14,7 @@ import { clearApiCollectedData } from "./api";
 import { loadExtensionSyncState } from "./storage";
 import type { ExtensionRuntimeResponse } from "./types";
 import type { LocaleCode } from "@denicheur-breizh/i18n";
+import { flushSourceRecordOutbox, readSourceRecordSyncStatus, withSourceRecordSyncStatus } from "./sourceRecordOutbox";
 
 export const ITERATION_RESET_TIMEOUT_MS = 15_000;
 const ITERATION_RESET_CALLBACK_MARGIN_MS = 1_000;
@@ -30,10 +31,13 @@ class IterationResetTimeoutError extends Error {
 let activeSynchronization: Promise<ExtensionRuntimeResponse> | undefined;
 let activeReset: Promise<ExtensionRuntimeResponse> | undefined;
 let activePlanRefresh: Promise<ExtensionRuntimeResponse> | undefined;
+let activeSourceRecordSync: Promise<void> | undefined;
+let sourceRecordSyncError: string | undefined;
 let rerunRequested = false;
 let forceRequested = false;
 
 export function scheduleExtensionSync(force = false): Promise<ExtensionRuntimeResponse> {
+  scheduleSourceRecordSync(force);
   if (activeReset) return activeReset;
   rerunRequested = true;
   forceRequested ||= force;
@@ -43,6 +47,17 @@ export function scheduleExtensionSync(force = false): Promise<ExtensionRuntimeRe
     activeSynchronization = undefined;
   });
   return activeSynchronization;
+}
+
+// The independent archive must never extend catalog, evaluation, or reset deadlines.
+function scheduleSourceRecordSync(force: boolean): void {
+  if (activeSourceRecordSync) return;
+  activeSourceRecordSync = flushSourceRecordOutbox({ force })
+    .then(() => { sourceRecordSyncError = undefined; })
+    .catch((error: unknown) => {
+      sourceRecordSyncError = error instanceof Error ? error.message : "The source-record archive could not be synchronized.";
+    })
+    .finally(() => { activeSourceRecordSync = undefined; });
 }
 
 export function resetExtensionIteration(deadlineAt?: number): Promise<ExtensionRuntimeResponse> {
@@ -86,7 +101,7 @@ export async function queueDefaultPlanEvaluation(request: {
   return {
     ...response,
     ok: current?.status !== "failed" && current?.status !== "cancelled",
-    ...(current?.lastError ? { error: current.lastError } : {}),
+    error: current?.lastError,
   };
 }
 
@@ -102,9 +117,17 @@ async function runDefaultPlanRefresh(): Promise<ExtensionRuntimeResponse> {
 }
 
 export async function readSyncResponse(): Promise<ExtensionRuntimeResponse> {
-  const state = await loadExtensionSyncState();
+  const archive = await readSourceRecordSyncStatus().catch((error: unknown) => ({
+    pending: 0,
+    lastError: error instanceof Error ? error.message : "The source-record archive status could not be read.",
+  }));
+  const catalogState = await loadExtensionSyncState();
+  const state = withSourceRecordSyncStatus(catalogState, sourceRecordSyncError
+    ? { ...archive, lastError: sourceRecordSyncError }
+    : archive);
   return {
     ok: state.status !== "error",
+    catalogOk: catalogState.status !== "error",
     state,
     ...(state.lastError ? { error: state.lastError } : {}),
   };
@@ -120,12 +143,8 @@ async function runSynchronizationLoop(): Promise<ExtensionRuntimeResponse> {
     await reconcileStoredCrawlerState();
     await refreshDefaultPlanCache();
     await flushQueuedIngestion({ force });
-    const state = await flushEvaluationQueue({ force });
-    response = {
-      ok: state.status !== "error",
-      state,
-      ...(state.lastError ? { error: state.lastError } : {}),
-    };
+    await flushEvaluationQueue({ force });
+    response = await readSyncResponse();
   } while (rerunRequested);
 
   return response;
@@ -149,7 +168,9 @@ async function runIterationReset(deadlineAt?: number): Promise<ExtensionRuntimeR
       abortController.signal,
       effectiveDeadlineAt,
     );
-    return await runResetPhase(readSyncResponse, abortController.signal, effectiveDeadlineAt);
+    const response = await runResetPhase(readSyncResponse, abortController.signal, effectiveDeadlineAt);
+    // Cleanup completed; the preserved archive may still have its own pending/error status.
+    return { ...response, ok: true, error: undefined };
   } catch (error) {
     if (resetExpired(abortController.signal, effectiveDeadlineAt)) {
       throw new IterationResetTimeoutError();

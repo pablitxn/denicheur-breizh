@@ -311,6 +311,7 @@ function rewindToMigrationThree(path: string): void {
     const triggers = legacy.prepare("SELECT name FROM sqlite_schema WHERE type = 'trigger'").all();
     for (const trigger of triggers) legacy.exec(`DROP TRIGGER "${String(trigger.name).replaceAll('"', '""')}"`);
     legacy.exec(`
+      DROP TABLE source_records;
       DROP TABLE pagination_snapshot_items;
       DROP TABLE pagination_snapshots;
       DROP TABLE listing_projection_payloads;

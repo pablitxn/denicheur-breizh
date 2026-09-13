@@ -14,6 +14,7 @@ export function WebSettings() {
   const setTheme = useWorkspaceStore((state) => state.setTheme);
   return (
     <ApplicationSettings
+      compact
       labels={SETTINGS_LABELS[locale]}
       locale={locale}
       locales={locales}

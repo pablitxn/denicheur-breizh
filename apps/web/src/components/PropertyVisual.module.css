@@ -26,19 +26,18 @@
   height: var(--h-control);
   padding: 0;
   place-items: center;
-  border: 1px solid color-mix(in oklab, var(--control-border) 82%, transparent);
+  border: 0;
   border-radius: var(--radius-pill);
-  background: color-mix(in oklab, var(--color-surface) 86%, transparent);
-  box-shadow: var(--shadow-popover);
+  background: color-mix(in oklab, var(--color-surface) 12%, transparent);
+  box-shadow: none;
   color: var(--color-text);
   cursor: pointer;
   transform: translateY(-50%);
-  backdrop-filter: var(--blur-panel);
+  transition: opacity var(--dur) var(--ease-out), background var(--dur) var(--ease-out);
 }
 
 .galleryNav:hover {
-  border-color: var(--color-border-strong);
-  background: color-mix(in oklab, var(--color-surface) 94%, transparent);
+  background: color-mix(in oklab, var(--color-surface) 55%, transparent);
 }
 
 .galleryNav:active {
@@ -58,20 +57,14 @@
   right: var(--space-3);
 }
 
-.galleryCounter {
-  position: absolute;
-  right: var(--space-3);
-  bottom: var(--space-3);
-  z-index: 2;
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-pill);
-  background: color-mix(in oklab, var(--color-surface) 88%, transparent);
-  color: var(--color-text);
-  font-family: var(--font-mono);
-  font-size: var(--fs-mono-xs);
-  font-variant-numeric: tabular-nums;
-  pointer-events: none;
-  backdrop-filter: var(--blur-panel);
+@media (hover: hover) and (pointer: fine) {
+  .galleryNav { opacity: 0; }
+  .visual:hover .galleryNav,
+  .visual:focus-within .galleryNav { opacity: 1; }
+}
+
+.galleryNav svg {
+  filter: drop-shadow(0 1px 2px var(--color-surface));
 }
 
 .placeholder {
@@ -174,4 +167,18 @@
     width: var(--space-9);
     height: var(--space-9);
   }
+}
+
+.list {
+  width: 128px;
+  height: 96px;
+  border-radius: var(--radius-3);
+}
+
+.list .previous {
+  left: var(--space-1);
+}
+
+.list .next {
+  right: var(--space-1);
 }

@@ -74,6 +74,30 @@ export function useListing(source?: string, externalId?: string) {
   });
 }
 
+export function useSourceRecords(source: string, externalId: string) {
+  return useInfiniteQuery({
+    queryKey: queryKeys.sourceRecords.history(source, externalId),
+    initialPageParam: undefined as number | undefined,
+    queryFn: ({ signal, pageParam }) => denicheurApi.listSourceRecords(source, externalId, pageParam, signal),
+    getNextPageParam: (last) => last.nextBeforeSequence,
+    select: (data) => data.pages.flatMap((page) => page.items),
+    staleTime: 30_000,
+    enabled: Boolean(source && externalId),
+  });
+}
+
+export function useSourceRecord(id: string) {
+  return useQuery({
+    queryKey: queryKeys.sourceRecords.detail(id),
+    queryFn: ({ signal }) => denicheurApi.getSourceRecord(id, signal),
+    // A capture is immutable; opening it again can reuse the verified response.
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    enabled: Boolean(id),
+  });
+}
+
 export function useRuns() {
   return useInfiniteQuery({
     queryKey: queryKeys.runs.lists(),

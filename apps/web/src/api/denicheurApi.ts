@@ -18,6 +18,8 @@ import {
   runDetailSchema,
   runListingsPageSchema,
   runsPageSchema,
+  sourceRecordSchema,
+  sourceRecordsPageSchema,
   type EvaluationExecutionRecord,
   type EvaluationExecutionResults,
   type EvaluationExecutionsPage,
@@ -34,6 +36,8 @@ import {
   type RunDetail,
   type RunListingsPage,
   type RunsPage,
+  type SourceRecord,
+  type SourceRecordsPage,
 } from "@denicheur-breizh/contracts";
 import type {
   EvaluationExecution,
@@ -117,6 +121,26 @@ async function requestConditionalJson<T>(
 }
 
 export const denicheurApi = {
+  async listSourceRecords(
+    source: string,
+    externalId: string,
+    beforeSequence?: number,
+    signal?: AbortSignal,
+  ): Promise<SourceRecordsPage> {
+    const params = new URLSearchParams({ limit: "20" });
+    if (beforeSequence !== undefined) params.set("beforeSequence", String(beforeSequence));
+    return requestJson(
+      `/v1/listings/${encodeURIComponent(source)}/${encodeURIComponent(externalId)}/source-records?${params}`,
+      sourceRecordsPageSchema,
+      undefined,
+      signal,
+    );
+  },
+
+  async getSourceRecord(id: string, signal?: AbortSignal): Promise<SourceRecord> {
+    return requestJson(`/v1/source-records/${encodeURIComponent(id)}`, sourceRecordSchema, undefined, signal);
+  },
+
   async listingsMetadata(previous?: ConditionalValue<ListingsMetadata>, signal?: AbortSignal): Promise<ConditionalValue<ListingsMetadata>> {
     const response = await requestConditionalJson("/v1/listings/metadata", listingsMetadataSchema, undefined, signal, previous?.etag);
     return response.value === null && previous ? previous : { value: response.value!, etag: response.etag };
@@ -343,6 +367,7 @@ export const denicheurApi = {
 
 function listingSearchParams(filters: ListingFilters): string {
   const params = new URLSearchParams();
+  if (filters.q) params.set("q", filters.q);
   filters.sources?.forEach((source) => params.append("sources", source));
   if (filters.runId) params.set("runId", filters.runId);
   if (filters.status) params.set("status", filters.status);

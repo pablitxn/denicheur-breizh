@@ -25,6 +25,34 @@ afterEach(() => {
 });
 
 describe("denicheurApi", () => {
+  it("loads a bounded source-history page with encoded identity, keyset cursor and cancellation", async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [], nextBeforeSequence: 41 })));
+    vi.stubGlobal("fetch", fetcher);
+    const signal = new AbortController().signal;
+    expect(await denicheurApi.listSourceRecords("leboncoin", "listing /42", 60, signal))
+      .toEqual({ items: [], nextBeforeSequence: 41 });
+    expect(fetcher).toHaveBeenCalledWith(
+      `${API_BASE_URL}/v1/listings/leboncoin/listing%20%2F42/source-records?limit=20&beforeSequence=60`,
+      expect.objectContaining({ signal }),
+    );
+  });
+
+  it("preserves large original source JSON and rejects invalid archive metadata responses", async () => {
+    const capture = {
+      id: "source:one", sequence: 1, source: "leboncoin", externalId: "123456", runId: "run",
+      url: "https://www.leboncoin.fr/ad/ventes_immobilieres/123456", kind: "legacy-run-snapshot",
+      observedAt: now, receivedAt: now, payloadSha256: "a".repeat(64),
+      payloadJson: ` \n${JSON.stringify({ original: "家".repeat(100000), nullable: null })}\n `,
+    };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(capture)))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ items: [{ id: "incomplete" }] })));
+    vi.stubGlobal("fetch", fetcher);
+    expect((await denicheurApi.getSourceRecord(capture.id)).payloadJson).toBe(capture.payloadJson);
+    expect(fetcher.mock.calls[0]?.[0]).toBe(`${API_BASE_URL}/v1/source-records/source%3Aone`);
+    await expect(denicheurApi.listSourceRecords("leboncoin", "123456")).rejects.toMatchObject({ code: "INVALID_API_RESPONSE" });
+  });
+
   it("keeps the complete compact map catalog on a 304 without fetching its other pages again", async () => {
     const fetcher = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ items: [listing({ title: "First" })], nextCursor: "second", total: 2 }), { headers: { ETag: '"catalog-1"' } }))

@@ -14,6 +14,12 @@ import type { ExtensionSyncState } from "../sync/types";
 import type { ThemePreference } from "./theme";
 import { ExtensionSettings } from "./ExtensionSettings";
 import { updateStorageRefreshErrors } from "./storageRefresh";
+import { readSourceRecordSyncStatus, SOURCE_RECORD_OUTBOX_KEY, withSourceRecordSyncStatus } from "../sync/sourceRecordOutbox";
+
+async function loadPopupSyncState(): Promise<ExtensionSyncState> {
+  const [state, archive] = await Promise.all([loadExtensionSyncState(), readSourceRecordSyncStatus()]);
+  return withSourceRecordSyncStatus(state, archive);
+}
 
 interface PopupAppProps {
   initialThemePreference?: ThemePreference;
@@ -40,7 +46,7 @@ export function PopupApp({ initialThemePreference = "system" }: PopupAppProps) {
     setLoadError(undefined);
     setRefreshErrors({});
 
-    void Promise.all([loadCrawlerStateFields(["run", "records"]), loadExtensionSyncState()])
+    void Promise.all([loadCrawlerStateFields(["run", "records"]), loadPopupSyncState()])
       .then(([snapshot, storedSyncState]) => {
         if (!mounted) return;
         if (refreshVersions.run === 0) setRun(snapshot.run);
@@ -58,7 +64,7 @@ export function PopupApp({ initialThemePreference = "system" }: PopupAppProps) {
       if (areaName !== "local") return;
       const changedFields = (["run", "records"] as const)
         .filter((field) => CRAWLER_STORAGE_KEYS[field] in changes);
-      const syncChanged = SYNC_STORAGE_KEY in changes;
+      const syncChanged = SYNC_STORAGE_KEY in changes || SOURCE_RECORD_OUTBOX_KEY in changes;
       if (changedFields.length === 0 && !syncChanged) return;
       for (const field of changedFields) refreshVersions[field] += 1;
       if (syncChanged) refreshVersions.sync += 1;
@@ -66,7 +72,7 @@ export function PopupApp({ initialThemePreference = "system" }: PopupAppProps) {
 
       void Promise.allSettled([
         loadCrawlerStateFields(changedFields),
-        syncChanged ? loadExtensionSyncState() : undefined,
+        syncChanged ? loadPopupSyncState() : undefined,
       ])
         .then(([crawlerResult, syncResult]) => {
           if (!mounted) return;
@@ -146,7 +152,7 @@ export function PopupApp({ initialThemePreference = "system" }: PopupAppProps) {
     run.status === "evaluating";
   const progressMessage = resolveText(run.message, "popup.ready");
   const visibleLoadError = loadError ?? Object.values(refreshErrors)[0];
-  const pendingSyncCount = syncState.queue.length + syncState.evaluationQueue.filter((entry) =>
+  const pendingSyncCount = syncState.queue.length + (syncState.sourceRecordsPending ?? 0) + syncState.evaluationQueue.filter((entry) =>
     entry.status === "queued" || entry.status === "creating" || entry.status === "polling").length;
 
   return (

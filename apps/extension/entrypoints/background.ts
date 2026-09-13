@@ -9,6 +9,7 @@ import {
 } from "../src/sync/controller";
 import { isExtensionRuntimeRequest } from "../src/sync/types";
 import { CRAWLER_STORAGE_KEYS } from "../src/storage/chromeStorage";
+import { SOURCE_RECORD_OUTBOX_KEY } from "../src/sync/sourceRecordOutbox";
 
 export const SYNC_ALARM_NAME = "denicheur-api-sync";
 
@@ -24,7 +25,7 @@ export default defineBackground(() => {
 
   chrome.storage.onChanged.addListener((changes, areaName) => {
     if (areaName !== "local") return;
-    if (!(CRAWLER_STORAGE_KEYS.run in changes) && !(CRAWLER_STORAGE_KEYS.records in changes)) return;
+    if (!(CRAWLER_STORAGE_KEYS.run in changes) && !(CRAWLER_STORAGE_KEYS.records in changes) && !(SOURCE_RECORD_OUTBOX_KEY in changes)) return;
     void scheduleExtensionSync();
   });
 
@@ -47,6 +48,7 @@ export default defineBackground(() => {
       .catch(async (error) => sendResponse({
         ...(await readSyncResponse()),
         ok: false,
+        catalogOk: false,
         error: error instanceof Error ? error.message : String(error),
         ...(typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
           ? { errorCode: error.code }

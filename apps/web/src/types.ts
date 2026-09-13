@@ -153,6 +153,7 @@ export interface StartEvaluationExecutionInput extends SharedEvaluationExecution
 }
 
 export interface ListingFilters {
+  q?: string;
   sources?: string[];
   runId?: string;
   status?: string;

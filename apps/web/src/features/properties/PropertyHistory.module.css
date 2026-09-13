@@ -1,0 +1,28 @@
+.history { display: grid; gap: var(--space-5); min-width: 0; }
+.header h3 { margin: 0; font-size: var(--fs-body-lg); }
+.header p, .message { margin: var(--space-2) 0 0; color: var(--color-text-muted); font-size: var(--fs-body-sm); line-height: 1.5; }
+.list { margin: 0; padding: 0; list-style: none; }
+.capture { position: relative; border-bottom: 1px solid var(--color-border-soft); }
+.captureButton { display: flex; width: 100%; align-items: center; gap: var(--space-3); padding: var(--space-4) var(--space-2); border: 0; border-radius: var(--radius-3); background: transparent; color: var(--color-text); cursor: pointer; font: inherit; text-align: left; }
+.captureButton:hover { background: var(--color-surface); }
+.captureButton:focus-visible, .sourceData summary:focus-visible, .sourceContent a:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.marker { width: var(--space-2); height: var(--space-2); flex-shrink: 0; border-radius: var(--radius-pill); background: var(--cta); }
+.captureHeading { display: grid; flex: 1; min-width: 0; gap: var(--space-1); }
+.captureHeading time { font-weight: 600; font-size: var(--fs-body-sm); }
+.captureHeading span { color: var(--color-text-muted); font-size: var(--fs-body-sm); }
+.captureButton svg { flex-shrink: 0; }
+.details { display: grid; gap: var(--space-4); padding: 0 var(--space-2) var(--space-5) var(--space-7); }
+.legacyNotice { margin: 0; padding: var(--space-3); border-left: 2px solid var(--color-border); color: var(--color-text-muted); font-size: var(--fs-body-sm); line-height: 1.5; }
+.fields { display: grid; gap: var(--space-4); margin: 0; min-width: 0; }
+.fields div { min-width: 0; }
+.fields dt { color: var(--color-text-muted); font-size: var(--fs-body-sm); margin-bottom: var(--space-1); }
+.fields dd { margin: 0; overflow-wrap: anywhere; white-space: pre-wrap; line-height: 1.5; }
+.price { font-weight: 600; font-variant-numeric: tabular-nums; }
+.sourceData { min-width: 0; font-size: var(--fs-body-sm); }
+.sourceData summary { padding: var(--space-2) 0; color: var(--color-text-muted); cursor: pointer; }
+.sourceContent { display: grid; min-width: 0; gap: var(--space-3); padding-top: var(--space-3); }
+.sourceContent a { color: var(--cta); width: fit-content; }
+.sourceContent pre { margin: 0; max-height: 320px; overflow: auto; padding: var(--space-3); border: 1px solid var(--color-border-soft); border-radius: var(--radius-3); background: var(--color-surface); color: var(--color-text); white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--fs-body-sm); }
+.error { display: grid; justify-items: start; gap: var(--space-3); }
+.error p { margin: 0; color: var(--color-text-muted); font-size: var(--fs-body-sm); }
+@media (max-width: 480px) { .details { padding-left: var(--space-2); } }

@@ -23,10 +23,23 @@ import {
   type RunnerTabGateway,
 } from "./scrapeRunner";
 import type { RunnerSnapshot } from "./runnerSnapshot";
+import { SourceRecordPersistenceError } from "../sync/sourceRecordOutbox";
+import { EMPTY_SYNC_STATE } from "../sync/storage";
 
 const storageMocks = vi.hoisted(() => ({
   loadCrawlerState: vi.fn(),
   saveCrawlerState: vi.fn(),
+}));
+const sourceRecordMocks = vi.hoisted(() => ({ enqueueSourceExtractions: vi.fn() }));
+const evaluationMocks = vi.hoisted(() => ({ requestImmediateSync: vi.fn(), evaluateDetailedRecordsInBatches: vi.fn() }));
+vi.mock("../sync/runtime", () => ({ requestImmediateSync: evaluationMocks.requestImmediateSync }));
+vi.mock("../intelligence/filterApi", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../intelligence/filterApi")>(),
+  evaluateDetailedRecordsInBatches: evaluationMocks.evaluateDetailedRecordsInBatches,
+}));
+vi.mock("../sync/sourceRecordOutbox", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../sync/sourceRecordOutbox")>(),
+  enqueueSourceExtractions: sourceRecordMocks.enqueueSourceExtractions,
 }));
 
 vi.mock("../storage/chromeStorage", () => storageMocks);
@@ -57,6 +70,9 @@ const SOURCE_LOCALITY_EVIDENCE = {
 };
 
 beforeEach(() => {
+  evaluationMocks.requestImmediateSync.mockReset();
+  evaluationMocks.evaluateDetailedRecordsInBatches.mockReset();
+  sourceRecordMocks.enqueueSourceExtractions.mockReset().mockResolvedValue(undefined);
   storageMocks.loadCrawlerState.mockReset().mockResolvedValue({ records: [] });
   storageMocks.saveCrawlerState.mockReset().mockResolvedValue(undefined);
 });
@@ -579,6 +595,43 @@ async function flushMicrotasks(iterations = 4): Promise<void> {
 }
 
 describe("scrape runner native browser orchestration", () => {
+  it("archives accepted summary and detail outputs before replacing projections or closing the detail", async () => {
+    const summary = { ...listing("3007106001"), coordinateEvidence: SOURCE_LOCALITY_EVIDENCE };
+    const extracted = detail(summary, { title: undefined, description: "  Original detail text  ", features: ["Jardin", "Jardin"] });
+    const gateway = new FakeTabGateway(happyResponseFactory([summary], { detailFor: () => extracted }));
+    const collector = snapshotCollector();
+    const runner = createRunner(collector, gateway, new DeterministicClock(gateway.events));
+    sourceRecordMocks.enqueueSourceExtractions.mockImplementation(async (captures) => {
+      if (captures[0]?.kind === "extension-detail") {
+        expect(gateway.removed).not.toContain(HOME_TAB_ID + 1);
+        expect(collector.latest().records[0]?.status).toBe("listing");
+      }
+    });
+
+    await runner.run(searchFilters({ collectDetailPages: true }));
+
+    expect(sourceRecordMocks.enqueueSourceExtractions.mock.calls.map(([captures]) => captures)).toEqual([
+      [expect.objectContaining({ kind: "extension-search-result", externalId: summary.id, payload: summary })],
+      [expect.objectContaining({ kind: "extension-detail", externalId: summary.id, payload: extracted })],
+    ]);
+    expect(sourceRecordMocks.enqueueSourceExtractions.mock.calls[0][0][0].payload).not.toHaveProperty("coordinates");
+    expect(collector.latest().run.status).toBe("completed");
+  });
+
+  it("stops collection and keeps the detail open when its original cannot be persisted", async () => {
+    const summary = listing("3007106001");
+    const gateway = new FakeTabGateway(happyResponseFactory([summary]));
+    const collector = snapshotCollector();
+    sourceRecordMocks.enqueueSourceExtractions.mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new SourceRecordPersistenceError("Original extraction storage failed"));
+
+    await createRunner(collector, gateway, new DeterministicClock()).run(searchFilters({ collectDetailPages: true }));
+
+    expect(collector.latest().run.status).toBe("failed");
+    expect(collector.latest().records[0]?.status).toBe("listing");
+    expect(gateway.removed).not.toContain(HOME_TAB_ID + 1);
+    expect(gateway.updates.at(-1)).toEqual({ tabId: HOME_TAB_ID + 1, options: { active: true } });
+  });
   it("does not create a search tab when cancelled while resolving the dashboard tab", async () => {
     const gateway = new FakeTabGateway(happyResponseFactory([listing("3007106001")]));
     const collector = snapshotCollector();
@@ -753,6 +806,8 @@ describe("scrape runner native browser orchestration", () => {
     expect(collector.latest().records).toHaveLength(70);
     expect(new Set(collector.latest().records.map((record) => record.id)).size).toBe(70);
     expect(gateway.navigations).toEqual(pageUrls);
+    expect(sourceRecordMocks.enqueueSourceExtractions.mock.calls.map(([captures]) => captures.map((capture: { payload: ListingSummary }) => capture.payload)))
+      .toEqual(pages);
     expect(gateway.messages.filter(({ message }) =>
       message.type === "LBC_PREPARE_NEXT_RESULTS_PAGE"
     )).toHaveLength(2);
@@ -1804,6 +1859,26 @@ function evaluation(listingId: string): ListingEvaluation {
 }
 
 describe("scrape runner intelligence phase", () => {
+  it.each([true, false])("gates the default evaluator on catalog success (%s), independently of archive errors", async (catalogOk) => {
+    const summary = listing("3007106001");
+    const gateway = new FakeTabGateway(happyResponseFactory([summary]));
+    const collector = snapshotCollector();
+    const runner = new ScrapeRunner(collector.observer, undefined, {
+      tabs: gateway, clock: new DeterministicClock(gateway.events), random: () => 0.5,
+    });
+    evaluationMocks.requestImmediateSync.mockResolvedValue({
+      ok: false, catalogOk,
+      state: { ...EMPTY_SYNC_STATE, status: "error", lastError: "Original capture remains queued offline" },
+    });
+    evaluationMocks.evaluateDetailedRecordsInBatches.mockResolvedValue({ evaluations: [evaluation(summary.id)], failures: [] });
+
+    await runner.run(searchFilters(), recipe);
+
+    expect(evaluationMocks.requestImmediateSync).toHaveBeenCalledOnce();
+    expect(evaluationMocks.evaluateDetailedRecordsInBatches).toHaveBeenCalledTimes(catalogOk ? 1 : 0);
+    expect(collector.latest().run.intelligenceStatus).toBe(catalogOk ? "completed" : "failed");
+  });
+
   it("evaluates only detailed run records and persists the merged result", async () => {
     const activeRun = run();
     const detailed = record("listing-1", "detailed");

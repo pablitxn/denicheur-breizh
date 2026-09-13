@@ -31,10 +31,11 @@ if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(`Usage: pnpm db:clean
        pnpm db:clean:extension
 
-db:clean clears extension iteration data, pending synchronization state, and
-the API SQLite rendered by the web app. db:clean:extension clears only stored
-extension listings and the last run. Both preserve filters, recipes, locale,
-and theme. Google Chrome must have the current unpacked Denicheur Breizh build
+db:clean clears extension iteration data, catalog synchronization state, and
+the API catalog rendered by the web app. db:clean:extension clears only stored
+extension listings and the last run. Both preserve original captures, their
+pending upload queue, filters, recipes, locale, and theme.
+Google Chrome must have the current unpacked Denicheur Breizh build
 loaded.`);
   process.exit(0);
 }
@@ -100,7 +101,7 @@ try {
   console.log(CLEAR_ALL
     ? "Datos de iteración limpios: 0 anuncios en la extensión y en el API; corrida reiniciada."
     : "Base local de la extensión limpia: 0 anuncios y corrida reiniciada.");
-  console.log("Filtros, receta, idioma y tema fueron conservados.\n");
+  console.log("Capturas originales y su cola pendiente, filtros, receta, idioma y tema fueron conservados.\n");
   console.log("Perfil de prueba repetible:");
   for (const filter of REPEATABLE_FILTERS) console.log(`  - ${filter}`);
 } catch (error) {

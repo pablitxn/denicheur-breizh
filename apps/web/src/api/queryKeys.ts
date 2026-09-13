@@ -14,6 +14,12 @@ export const queryKeys = {
     detail: (source: string, externalId: string) =>
       [...queryKeys.listings.details(), source, externalId] as const,
   },
+  sourceRecords: {
+    all: ["source-records"] as const,
+    history: (source: string, externalId: string) =>
+      [...queryKeys.sourceRecords.all, "history", source, externalId] as const,
+    detail: (id: string) => [...queryKeys.sourceRecords.all, "detail", id] as const,
+  },
   runs: {
     all: ["runs"] as const,
     lists: () => [...queryKeys.runs.all, "list"] as const,

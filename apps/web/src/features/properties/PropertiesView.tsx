@@ -1,18 +1,20 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
-import { useQueryClient } from "@tanstack/react-query";
-import { ArrowDown, ArrowUp, ExternalLink, Grid2X2, List, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowDown, ArrowUp, Grid2X2, List, X } from "lucide-react";
 import { Button, Chip, EmptyState, Meter, SectionLabel, Select } from "@denicheur-breizh/design-system";
 import { useListing, useListings, useListingsMetadata } from "../../api/hooks";
-import { isExpiredCursor } from "../../api/denicheurApi";
+import { denicheurApi, isExpiredCursor } from "../../api/denicheurApi";
 import { queryKeys } from "../../api/queryKeys";
 import { PropertyVisual } from "../../components/PropertyVisual";
 import { useAppIntl } from "../../intl/IntlContext";
 import type { LocaleCode } from "../../intl/locales";
 import type { ListingDecision, ListingFilters, PaginatedListings, PropertyListing } from "../../types";
-import { formatDecimal, formatInteger, formatPrice, formatRooms } from "../../utils/format";
-import { enumUrlCodec, stringArrayUrlCodec, stringUrlCodec, useUrlState } from "../../utils/useUrlState";
+import { formatDecimal, formatInteger, formatPrice } from "../../utils/format";
+import { booleanUrlCodec, enumUrlCodec, stringArrayUrlCodec, stringUrlCodec, useUrlState } from "../../utils/useUrlState";
 import { useMediaQuery } from "../shared/useMediaQuery";
 import styles from "./PropertiesView.module.css";
+import { PropertyDossier } from "./PropertyDossier";
+import { PropertiesControls, emptyExtraFilters, extraFiltersCodec } from "./PropertiesControls";
 
 type ViewMode = "table" | "cards";
 type SortKey = "title" | "price" | "surface" | "score" | "source" | "updated";
@@ -35,14 +37,17 @@ export function PropertiesView() {
   const [viewMode, setViewMode] = useUrlState<ViewMode>("pmode", isMobile ? "cards" : "table", enumUrlCodec(["table", "cards"] as const));
   const [sortKey, setSortKey] = useUrlState<SortKey>("psort", "updated", enumUrlCodec(sortKeys));
   const [sortDirection, setSortDirection] = useUrlState<"asc" | "desc">("pdir", "desc", enumUrlCodec(["asc", "desc"] as const));
+  const [expanded, setExpanded] = useUrlState("pwide", false, { ...booleanUrlCodec, isDefault: (value) => !value });
   const [selectedKey, setSelectedKey] = useUrlState("pid", "", stringUrlCodec);
   const [activeSources, setActiveSources] = useUrlState("psources", emptySources, stringArrayUrlCodec());
-  const signature = JSON.stringify([activeSources, sortKey, sortDirection]);
+  const [search, setSearch] = useUrlState("pq", "", stringUrlCodec);
+  const [extraFilters, setExtraFilters] = useUrlState("pfilters", emptyExtraFilters, extraFiltersCodec);
+  const signature = JSON.stringify([activeSources, sortKey, sortDirection, search, extraFilters]);
   const [pagination, setPagination] = useState<{ signature: string; cursors: Array<string | undefined>; index: number; revision?: string }>({ signature, cursors: [undefined], index: 0 });
   const currentPage = pagination.signature === signature ? pagination.index : 0;
   const cursor = pagination.signature === signature ? pagination.cursors[currentPage] : undefined;
   const metadataQuery = useListingsMetadata();
-  const listingFilters: ListingFilters = { limit: pageSize, sources: activeSources, sort: serverSort[sortKey], order: sortDirection, cursor };
+  const listingFilters: ListingFilters = { ...extraFilters, q: search || undefined, limit: pageSize, sources: activeSources, sort: serverSort[sortKey], order: sortDirection, cursor };
   const listingsQuery = useListings(listingFilters);
   const lastPage = useRef<{ data: PaginatedListings; index: number } | undefined>(undefined);
   useEffect(() => {
@@ -74,10 +79,17 @@ export function PropertiesView() {
   const selected = detailQuery.data ?? selectedSummary;
 
   const detailOpen = Boolean(selected || (detailSource && detailId));
+  useEffect(() => {
+    if (detailOpen && !selected) detailRef.current?.focus({ preventScroll: true });
+  }, [detailOpen, selectedKey, Boolean(selected)]);
 
   const closeDetail = () => {
     setSelectedKey("");
-    selectionTriggerRef.current?.focus({ preventScroll: true });
+    window.requestAnimationFrame(() => {
+      const trigger = selectionTriggerRef.current;
+      if (trigger?.isConnected) trigger.focus();
+      else document.getElementById("properties-view-title")?.focus();
+    });
   };
 
   const selectListing = (key: string) => {
@@ -99,10 +111,6 @@ export function PropertiesView() {
     }
   };
 
-  const toggleSource = (source: string) => {
-    setActiveSources((current) => current.includes(source) ? current.filter((item) => item !== source) : [...current, source]);
-  };
-
   const restart = () => {
     void queryClient.invalidateQueries({ queryKey: queryKeys.listings.list({ ...listingFilters, cursor: undefined }), exact: true, refetchType: "all" });
     setPagination({ signature, cursors: [undefined], index: 0, revision });
@@ -117,18 +125,9 @@ export function PropertiesView() {
   return (
     <section className={styles.view} aria-labelledby="properties-view-title">
       <header className={styles.toolbar}>
-        <div className={styles.toolbarTitle}>
-          <h1 id="properties-view-title">{t("properties.title")}</h1>
-          <span aria-live="polite">{t("properties.count", { count: pageData?.total ?? 0 })}</span>
-        </div>
-        <div className={styles.providerFilters} role="group" aria-label={t("properties.filters")}>
-          <Chip active={activeSources.length === 0} onClick={() => setActiveSources([])}>{t("catalog.allSources")}</Chip>
-          {sources.map(({ source, count }) => (
-            <Chip key={source} active={activeSources.includes(source)} onClick={() => toggleSource(source)}>
-              {source} <span className={styles.sourceCount}>{formatInteger(count, locale)}</span>
-            </Chip>
-          ))}
-        </div>
+        <h1 tabIndex={-1} id="properties-view-title" className={styles.visuallyHidden}>{t("properties.title")}</h1>
+        <PropertiesControls total={pageData?.total ?? 0} sources={sources} activeSources={activeSources} filters={extraFilters} search={search}
+          onFilters={(nextSources, filters) => { setActiveSources(nextSources); setExtraFilters(filters); }} onSearch={setSearch} />
         <div className={styles.toolbarRight} role="group" aria-label={t("properties.viewModes")}>
           {viewMode === "cards" && <Select aria-label={t("catalog.sort")} value={`${sortKey}:${sortDirection}`} onChange={(event) => {
             const [key, direction] = event.target.value.split(":");
@@ -147,16 +146,7 @@ export function PropertiesView() {
         </div>
       </header>
 
-      <nav className={styles.pageBar} aria-label={t("catalog.pagination")}>
-        <span role="status">{listingsQuery.isPlaceholderData ? t("properties.loading") : t("catalog.range", { start: sortedListings.length ? displayedPage * pageSize + 1 : 0, end: displayedPage * pageSize + sortedListings.length, total: pageData?.total ?? 0 })}</span>
-        <div className={styles.pageActions}>
-          <Button size="sm" variant="ghost" disabled={listingsQuery.isFetching} onClick={restart}>{t(hasNewResults ? "catalog.newResults" : "catalog.refresh")}</Button>
-          <Button size="sm" disabled={currentPage === 0 || listingsQuery.isFetching} onClick={() => setPagination((page) => ({ ...page, index: Math.max(0, page.index - 1) }))}>{t("catalog.previous")}</Button>
-          <Button size="sm" disabled={!listingsQuery.data?.nextCursor || listingsQuery.isFetching} onClick={nextPage}>{t("catalog.next")}</Button>
-        </div>
-      </nav>
-
-      <div className={[styles.body, detailOpen ? styles.bodyWithDetail : ""].join(" ")}>
+      <div className={[styles.body, detailOpen ? styles.bodyWithDetail : "", detailOpen && expanded ? styles.bodyExpanded : ""].join(" ")}>
         <div className={styles.results} aria-busy={listingsQuery.isPlaceholderData}>
           {metadataQuery.error && <RetryNotice message={t("catalog.metadataError")} retrying={metadataQuery.isFetching} onRetry={() => void metadataQuery.refetch()} />}
           {listingsQuery.error && (pageData ? (
@@ -183,7 +173,7 @@ export function PropertiesView() {
                   className={[styles.propertyCard, listing.key === selected?.key ? styles.propertyCardActive : ""].join(" ")}
                 >
                   <div className={styles.visualWrap}>
-                    <PropertyVisual property={listing} navigation />
+                    <ListingGallery listing={listing} />
                     <span className={styles.cardProvider}>{listing.source}</span>
                   </div>
                   <div className={styles.cardBody}>
@@ -207,9 +197,18 @@ export function PropertiesView() {
               ))}
             </div>
           )}
+          <nav className={styles.pageBar} aria-label={t("catalog.pagination")}>
+            <span role="status">{listingsQuery.isPlaceholderData ? t("properties.loading") : t("catalog.range", { start: sortedListings.length ? displayedPage * pageSize + 1 : 0, end: displayedPage * pageSize + sortedListings.length, total: pageData?.total ?? 0 })}</span>
+            <div className={styles.pageActions}>
+              <Button size="sm" variant="ghost" disabled={listingsQuery.isFetching} onClick={restart}>{t(hasNewResults ? "catalog.newResults" : "catalog.refresh")}</Button>
+              <Button size="sm" disabled={currentPage === 0 || listingsQuery.isFetching} onClick={() => setPagination((page) => ({ ...page, index: Math.max(0, page.index - 1) }))}>{t("catalog.previous")}</Button>
+              <Button size="sm" disabled={!listingsQuery.data?.nextCursor || listingsQuery.isFetching} onClick={nextPage}>{t("catalog.next")}</Button>
+            </div>
+          </nav>
         </div>
-        {selected && <ListingDetail detailRef={detailRef} listing={selected} loading={detailQuery.isFetching} error={Boolean(detailQuery.error)} onRetry={() => void detailQuery.refetch()} onClose={closeDetail} />}
-        {!selected && detailSource && detailId && <aside ref={detailRef} className={styles.detail} aria-busy={detailQuery.isFetching}>
+        {selected && <PropertyDossier key={selected.key} expanded={expanded} onToggleExpanded={() => setExpanded((value) => !value)} detailRef={detailRef} listing={selected} loading={detailQuery.isFetching} error={Boolean(detailQuery.error)} onRetry={() => void detailQuery.refetch()} onClose={closeDetail} />}
+        {!selected && detailSource && detailId && <aside ref={detailRef} className={styles.detail} tabIndex={-1} aria-label={t("dossier.title")} aria-busy={detailQuery.isFetching}
+          onKeyDown={(event) => { if (event.key === "Escape") { event.preventDefault(); closeDetail(); } }}>
           <DetailPanelHeader onClose={closeDetail} />
           {detailQuery.error
             ? <RetryNotice message={t("properties.detailError")} retrying={detailQuery.isFetching} onRetry={() => void detailQuery.refetch()} />
@@ -277,10 +276,13 @@ function ListingTable({ listings, selectedKey, locale, sortKey, sortDirection, o
         <tbody>{listings.map((listing) => (
           <tr key={listing.key} className={listing.key === selectedKey ? styles.selectedRow : ""}>
             <td>
-              <button type="button" className={styles.titleCell} onClick={() => onSelect(listing.key)} aria-pressed={listing.key === selectedKey}>
-                <PropertyVisual property={listing} size="sm" />
-                <div><strong>{listing.title ?? t("common.unavailable")}</strong><span>{listing.externalId} · {listing.location ?? t("common.unavailable")}</span></div>
-              </button>
+              <div className={styles.propertyCell}>
+                <ListingGallery listing={listing} size="list" />
+                <button type="button" className={styles.titleCell} onClick={() => onSelect(listing.key)} aria-pressed={listing.key === selectedKey}>
+                  <strong>{listing.title ?? t("common.unavailable")}</strong>
+                  <span>{listing.location ?? t("common.unavailable")}</span>
+                </button>
+              </div>
             </td>
             <td className={styles.numeric}>{formatOptionalPrice(listing.priceEuros, locale, t("common.unavailable"))}</td>
             <td className={styles.numeric}>{formatOptionalSurface(listing.surfaceM2, locale, t("common.unavailable"))}</td>
@@ -294,6 +296,36 @@ function ListingTable({ listings, selectedKey, locale, sortKey, sortDirection, o
   );
 }
 
+function ListingGallery({ listing, size = "md" }: { listing: PropertyListing; size?: "list" | "md" }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(false);
+  const { t } = useAppIntl();
+  useEffect(() => {
+    const element = containerRef.current;
+    if (!element || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(([entry]) => {
+      if (entry?.isIntersecting) {
+        setVisible(true);
+        observer.disconnect();
+      }
+    }, { rootMargin: "100px" });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  // Catalog pages contain only the cover. Load the full gallery for visible properties,
+  // sharing the detail cache without polling every row.
+  const gallery = useQuery({
+    queryKey: queryKeys.listings.detail(listing.source, listing.externalId),
+    queryFn: ({ signal }) => denicheurApi.getProperty(listing.source, listing.externalId, signal),
+    enabled: visible,
+    staleTime: 60_000,
+  });
+  return <div ref={containerRef} className={styles.listingGallery}>
+    <PropertyVisual property={gallery.data ?? listing} size={size} navigation />
+    {visible && gallery.isError && !gallery.data && <Button size="sm" disabled={gallery.isFetching} onClick={() => void gallery.refetch()}>{t("common.retry")}</Button>}
+  </div>;
+}
+
 function DetailPanelHeader({ onClose }: { onClose: () => void }) {
   const { t } = useAppIntl();
   return (
@@ -303,81 +335,6 @@ function DetailPanelHeader({ onClose }: { onClose: () => void }) {
         <X size={18} aria-hidden="true" />
       </Button>
     </div>
-  );
-}
-
-function ListingDetail({ listing, loading, error, onRetry, onClose, detailRef }: { listing: PropertyListing; loading: boolean; error: boolean; onRetry: () => void; onClose: () => void; detailRef: RefObject<HTMLElement | null> }) {
-  const { locale, t } = useAppIntl();
-  const evaluation = listing.evaluation;
-  return (
-    <aside ref={detailRef} className={styles.detail} aria-busy={loading}>
-      <DetailPanelHeader onClose={onClose} />
-      <PropertyVisual key={listing.key} property={listing} size="lg" navigation />
-      <div className={styles.detailBody}>
-        {error && <RetryNotice message={t("properties.detailError")} retrying={loading} onRetry={onRetry} />}
-        <div className={styles.detailHeader}>
-          <div>
-            <strong>{formatOptionalPrice(listing.priceEuros, locale, t("common.unavailable"))}</strong>
-            <h2>{listing.title ?? t("common.unavailable")}</h2>
-            <p>{listing.location ?? t("common.unavailable")}</p>
-          </div>
-          <Chip>{listing.source}</Chip>
-        </div>
-        <div className={styles.detailFacts}>
-          <span>{formatOptionalSurface(listing.surfaceM2, locale, t("common.unavailable"))}</span>
-          <span>{listing.rooms === undefined ? t("common.unavailable") : formatRooms(listing.rooms, locale)}</span>
-          <span>{t("property.dpe")} {listing.energyClass ?? t("common.unavailable")}</span>
-          <span>{t("properties.ges")} {listing.gesClass ?? t("common.unavailable")}</span>
-        </div>
-        <a className={styles.sourceLink} href={listing.url} target="_blank" rel="noreferrer noopener">
-          {t("properties.openSource")} <ExternalLink size={14} aria-hidden="true" />
-        </a>
-
-        <section className={styles.detailSection}>
-          <SectionLabel>{t("properties.description")}</SectionLabel>
-          <p className={styles.description}>{listing.description ?? t("common.unavailable")}</p>
-        </section>
-
-        <section className={styles.detailSection}>
-          <SectionLabel>{t("properties.capture")}</SectionLabel>
-          <dl className={styles.definitionList}>
-            <div><dt>{t("properties.externalId")}</dt><dd>{listing.externalId}</dd></div>
-            <div><dt>{t("properties.run")}</dt><dd>{listing.latestRun?.id ?? listing.runs[0]?.id ?? t("common.unavailable")}</dd></div>
-            <div><dt>{t("common.status")}</dt><dd>{listing.status ?? t("common.unavailable")}</dd></div>
-            <div><dt>{t("properties.seller")}</dt><dd>{listing.sellerName ?? listing.sellerType ?? t("common.unavailable")}</dd></div>
-            {listing.coordinates && (
-              <>
-                <div><dt>{t("map.positionTitle")}</dt><dd>{t(`map.locationKind.${listing.coordinates.locationKind}`)}</dd></div>
-                <div><dt>{t("map.coordinateProvenance")}</dt><dd>{listing.coordinates.provenance}</dd></div>
-                <div><dt>{t("map.coordinateObservedAt")}</dt><dd>{formatOptionalDate(listing.coordinates.verifiedAt, locale, t("common.unavailable"))}</dd></div>
-              </>
-            )}
-          </dl>
-        </section>
-
-        <section className={styles.detailSection}>
-          <SectionLabel>{t("properties.evaluation")}</SectionLabel>
-          {evaluation ? (
-            <>
-              <DecisionSummary evaluation={evaluation} locale={locale} />
-              <p className={styles.description}>{evaluation.summary}</p>
-              <div className={styles.breakdown}>
-                {evaluation.criteria.map((criterion) => (
-                  <article key={criterion.criterionId} className={styles.criterionRow}>
-                    <div><strong>{criterion.criterionId}</strong><DecisionChip decision={criterion.verdict} /></div>
-                    <p>{criterion.reason}</p>
-                    {criterion.evidence.length > 0 && <ul>{criterion.evidence.map((item) => <li key={item}>{item}</li>)}</ul>}
-                  </article>
-                ))}
-              </div>
-              {evaluation.missingData.length > 0 && <p className={styles.missingData}>{t("properties.missingData")}: {evaluation.missingData.join(", ")}</p>}
-            </>
-          ) : <p>{t("properties.notEvaluated")}</p>}
-        </section>
-
-        {listing.features.length > 0 && <div className={styles.featureList}>{listing.features.map((feature) => <Chip key={feature}>{feature}</Chip>)}</div>}
-      </div>
-    </aside>
   );
 }
 

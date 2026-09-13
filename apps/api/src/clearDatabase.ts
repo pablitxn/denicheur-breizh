@@ -43,10 +43,10 @@ async function main(): Promise<void> {
   if (!parsed.success) throw new Error("El API devolvió una respuesta de limpieza inválida.");
   const { deleted } = parsed.data;
   console.log(
-    `SQLite del API limpia: ${deleted.listings} anuncios, ${deleted.runs} corridas, ` +
+    `Catálogo del API limpio: ${deleted.listings} anuncios, ${deleted.runs} corridas, ` +
     `${deleted.runListings} observaciones y ${deleted.evaluations} evaluaciones eliminadas.`,
   );
-  console.log("Versiones de recetas y migraciones fueron conservadas.");
+  console.log("Capturas originales, versiones de recetas y migraciones fueron conservadas.");
 }
 
 main().catch((error: unknown) => {

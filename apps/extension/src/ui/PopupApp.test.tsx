@@ -6,6 +6,7 @@ import { CRAWLER_STORAGE_KEYS, IDLE_RUN } from "../storage/chromeStorage";
 import { requestImmediateSync } from "../sync/runtime";
 import { EMPTY_SYNC_STATE, SYNC_STORAGE_KEY } from "../sync/storage";
 import { PopupApp } from "./PopupApp";
+import { SOURCE_RECORD_OUTBOX_KEY } from "../sync/sourceRecordOutbox";
 
 vi.mock("./ExtensionSettings", () => ({ ExtensionSettings: () => null }));
 vi.mock("../sync/runtime", () => ({ requestImmediateSync: vi.fn() }));
@@ -85,6 +86,19 @@ async function changeStorage(changes: Record<string, chrome.storage.StorageChang
 }
 
 describe("popup feedback and live state", () => {
+  it("shows an archive transfer failure even when the projection queue is empty", async () => {
+    await renderPopup();
+    storage[SOURCE_RECORD_OUTBOX_KEY] = { version: 1, entries: [{
+      record: {
+        id: "capture-popup-1", source: "leboncoin", externalId: "3007106066", runId: "run-1",
+        url: "https://www.leboncoin.fr/ad/ventes_immobilieres/3007106066",
+        observedAt: "2026-09-12T15:00:00.000Z", kind: "extension-detail", payloadJson: "{}",
+      },
+      attempts: 1, nextAttemptAt: 1, lastError: "Original capture remains queued offline",
+    }] };
+    await changeStorage({ [SOURCE_RECORD_OUTBOX_KEY]: { newValue: storage[SOURCE_RECORD_OUTBOX_KEY] } });
+    expect(container.textContent).toContain("Original capture remains queued offline");
+  });
   it("does not claim synchronization before the first successfully transferred batch", async () => {
     await renderPopup();
     expect(container.textContent).toContain("No completed sync yet");
@@ -151,7 +165,7 @@ describe("popup feedback and live state", () => {
     get.mockClear();
 
     await changeStorage({ [SYNC_STORAGE_KEY]: { newValue: EMPTY_SYNC_STATE } });
-    expect(get.mock.calls.map(([keys]) => keys)).toEqual([[SYNC_STORAGE_KEY]]);
+    expect(get.mock.calls.map(([keys]) => keys)).toEqual([[SYNC_STORAGE_KEY], [SOURCE_RECORD_OUTBOX_KEY]]);
     get.mockClear();
 
     await changeStorage({ [CRAWLER_STORAGE_KEYS.filters]: { newValue: {} } });

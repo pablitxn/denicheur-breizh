@@ -23,11 +23,10 @@ import {
   evaluationExecutionResultsSchema,
   evaluationExecutionsPageSchema,
   evaluationPlanVersionSchema,
-  MAX_LISTING_FEATURES,
-  MAX_LISTING_IMAGE_URLS,
   listingDetailSchema,
   listingEvaluationRecordSchema,
   listingIngestionSchema,
+  sourceRecordsRequestSchema,
   listingRecordSchema,
   listingMapSummarySchema,
   type ListingsMapQuery,
@@ -74,11 +73,13 @@ import {
   type RunListingsQuery,
   type RunIngestion,
   type RunRecord,
+  type SourceRecordInput,
+  type SourceRecordsQuery,
   type RunsPage,
   type RunsQuery,
-  type VerifiedCoordinates,
 } from "./contracts.js";
 import { ApiError } from "./errors.js";
+import { normalizeListing, mergeOrderedListings } from "./listingNormalization.js";
 import { addUsage, exceedsUsage, subtractUsage } from "./evaluationBudget.js";
 import type {
   GlobalProviderBudgetStore,
@@ -93,6 +94,7 @@ interface Migration {
 import { EVALUATION_COUNTER_MIGRATION, EXECUTION_COUNTERS_JSON_SQL } from "./evaluationCounterSql.js";
 import { PaginationSnapshots, PAGINATION_SNAPSHOT_MIGRATION, collectionEtag, type PaginationSnapshotPolicy, type SnapshotPayload } from "./paginationSnapshots.js";
 import { LATEST_EVALUATION_ORDER, LISTING_EVALUATION_JOIN, LISTING_PAYLOAD_SQL, LISTING_MAP_PAYLOAD_SQL, EXECUTION_PAYLOAD_SQL } from "./listingReadSql.js";
+import { SourceRecordArchive, SOURCE_RECORD_ARCHIVE_MIGRATION, registerSourceRecordFunctions, ingestionSourceRecord } from "./sourceRecordArchive.js";
 
 export const DATABASE_MIGRATIONS: readonly Migration[] = [
   {
@@ -477,6 +479,7 @@ export const DATABASE_MIGRATIONS: readonly Migration[] = [
   },
   { version: 10, sql: PAGINATION_SNAPSHOT_MIGRATION },
   { version: 11, sql: EVALUATION_COUNTER_MIGRATION },
+  { version: 12, sql: SOURCE_RECORD_ARCHIVE_MIGRATION },
 ];
 
 interface StoredListingRow extends Record<string, unknown> {
@@ -799,6 +802,7 @@ export class DenicheurRepository implements GlobalProviderBudgetStore {
   private readonly now: () => Date;
   private readonly mediaAdmission: MediaAdmissionPolicy;
   private readonly snapshots: PaginationSnapshots;
+  private readonly sourceRecords: SourceRecordArchive;
   private listingMetadataCache?: ListingsMetadata;
 
   constructor(options: RepositoryOptions) {
@@ -809,9 +813,12 @@ export class DenicheurRepository implements GlobalProviderBudgetStore {
     this.now = options.now ?? (() => new Date());
     this.mediaAdmission = { ...DEFAULT_MEDIA_ADMISSION_POLICY, ...options.mediaAdmission };
     try {
+      this.database.function("search_fold", { deterministic: true }, (value) => foldSearchText(String(value ?? "")));
+      registerSourceRecordFunctions(this.database);
       this.database.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;");
       assertMediaAdmissionPolicy(this.mediaAdmission);
       this.migrate();
+      this.sourceRecords = new SourceRecordArchive(this.database, this.now);
       this.snapshots = new PaginationSnapshots(this.database, this.now, options.paginationSnapshots);
       this.snapshots.prune(true);
       if (!this.isCollectedDataCleanupActive()) this.reconcileLegacyMedia();
@@ -1312,13 +1319,36 @@ export class DenicheurRepository implements GlobalProviderBudgetStore {
     );
   }
 
-  ingest(request: IngestionRequest): IngestionResponse {
+  archiveSourceRecords(records: readonly SourceRecordInput[]) {
+    return this.transaction(() => {
+      this.assertCollectedDataCleanupInactive();
+      return this.sourceRecords.append(sourceRecordsRequestSchema.parse({ records }).records);
+    });
+  }
+
+  getSourceRecord(id: string) {
+    return this.sourceRecords.get(id);
+  }
+
+  listSourceRecords(identity: ListingIdentity, query: SourceRecordsQuery) {
+    return this.sourceRecords.list(identity, query);
+  }
+
+  ingest(originalRequest: IngestionRequest): IngestionResponse {
+    const request = {
+      run: runIngestionSchema.parse(originalRequest.run),
+      listings: originalRequest.listings.map((listing) => listingIngestionSchema.parse(listing)),
+    };
     return this.transaction(() => {
       this.assertCollectedDataCleanupInactive();
       const mediaBaseline = this.mediaGlobalUsage();
       this.assertRunMediaAdmissionBudget(request);
       this.upsertRun(request.run);
       this.recordRunMediaAdmissions(request);
+      if (request.listings.length) {
+        this.sourceRecords.append(request.listings.map((listing, index) =>
+          ingestionSourceRecord(request.run.id, originalRequest.listings[index]!, listing)));
+      }
       let inserted = 0;
       let updated = 0;
       let unchanged = 0;
@@ -3351,76 +3381,6 @@ function isolateCompletedMediaStorage(
   };
 }
 
-function normalizeListing(listing: ListingIngestion): ListingIngestion {
-  const imageUrls = uniqueStrings([
-    ...(listing.imageUrl ? [listing.imageUrl] : []),
-    ...(listing.imageUrls ?? []),
-  ]).slice(0, MAX_LISTING_IMAGE_URLS);
-  return listingIngestionSchema.parse({
-    ...listing,
-    ...(imageUrls.length ? { imageUrl: imageUrls[0], imageUrls } : {}),
-    ...(listing.features
-      ? { features: uniqueStrings(listing.features).slice(0, MAX_LISTING_FEATURES) }
-      : {}),
-  });
-}
-
-function mergeOrderedListings(olderValue: ListingIngestion, newerValue: ListingIngestion): ListingIngestion {
-  const older = normalizeListing(olderValue);
-  const newer = normalizeListing(newerValue);
-  const rank = { failed: 0, listing: 1, detailed: 2 } as const;
-  const raw: Record<string, unknown> = { ...older, ...newer };
-  const imageUrls = uniqueStrings([...(newer.imageUrls ?? []), ...(older.imageUrls ?? [])])
-    .slice(0, MAX_LISTING_IMAGE_URLS);
-  const features = uniqueStrings([...(older.features ?? []), ...(newer.features ?? [])])
-    .slice(0, MAX_LISTING_FEATURES);
-
-  raw.status = rank[newer.status] > rank[older.status] ? newer.status : older.status;
-  raw.scrapedAt = maxIso(older.scrapedAt, newer.scrapedAt);
-  raw.description = longerText(older.description, newer.description);
-  raw.rawTextSample = longerText(older.rawTextSample, newer.rawTextSample);
-  const coordinates = selectPreferredCoordinates(older.coordinates, newer.coordinates);
-  if (coordinates) raw.coordinates = coordinates;
-  else delete raw.coordinates;
-  if (features.length) raw.features = features;
-  if (imageUrls.length) {
-    raw.imageUrl = newer.imageUrl ?? older.imageUrl ?? imageUrls[0];
-    raw.imageUrls = imageUrls;
-  }
-  return listingIngestionSchema.parse(raw);
-}
-
-const COORDINATE_LOCATION_KIND_RANK: Readonly<Record<VerifiedCoordinates["locationKind"], number>> = {
-  "source-property": 3,
-  "source-locality": 2,
-  "locality-centroid": 1,
-  "postal-code-centroid": 1,
-};
-
-function selectPreferredCoordinates(
-  first: VerifiedCoordinates | undefined,
-  second: VerifiedCoordinates | undefined,
-): VerifiedCoordinates | undefined {
-  if (!first) return second;
-  if (!second) return first;
-
-  const rankDifference = COORDINATE_LOCATION_KIND_RANK[first.locationKind] -
-    COORDINATE_LOCATION_KIND_RANK[second.locationKind];
-  if (rankDifference !== 0) return rankDifference > 0 ? first : second;
-
-  if (
-    first.locationKind === second.locationKind &&
-    first.latitude === second.latitude &&
-    first.longitude === second.longitude &&
-    first.provenance === second.provenance
-  ) return first;
-
-  const verifiedAtDifference = Date.parse(first.verifiedAt) - Date.parse(second.verifiedAt);
-  if (verifiedAtDifference !== 0) return verifiedAtDifference > 0 ? first : second;
-
-  return JSON.stringify(first).localeCompare(JSON.stringify(second)) >= 0 ? first : second;
-}
-
 function mergeRun(existing: RunIngestion, incoming: RunIngestion): RunIngestion {
   const terminal = new Set(["blocked-captcha", "blocked-activity", "completed", "cancelled", "failed", "legacy-import"]);
   const raw: Record<string, unknown> = { ...existing, ...incoming };
@@ -3501,6 +3461,10 @@ function rowToStoredExecutionStep(row: StoredEvaluationExecutionStepRow): Stored
   return { ...base, status: "pending" };
 }
 
+function foldSearchText(value: string): string {
+  return value.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+}
+
 function listingWhere(query: ListingsQuery): { where: string; parameters: SQLInputValue[] } {
   const clauses: string[] = [];
   const parameters: SQLInputValue[] = [];
@@ -3508,6 +3472,11 @@ function listingWhere(query: ListingsQuery): { where: string; parameters: SQLInp
     clauses.push(clause);
     parameters.push(value);
   };
+  if (query.q?.trim()) {
+    for (const term of foldSearchText(query.q).trim().split(/\s+/u)) {
+      add("instr(search_fold(COALESCE(json_extract(l.data_json, '$.title'), '') || ' ' || COALESCE(json_extract(l.data_json, '$.location'), '')), ?) > 0", term);
+    }
+  }
   if (query.source) add("l.source = ?", query.source);
   if (query.sources?.length) {
     clauses.push(`l.source IN (${query.sources.map(() => "?").join(", ")})`);
@@ -3581,12 +3550,6 @@ function decodeRunListingsCursor(cursor: string | undefined): RunListingsCursor 
 
 function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values)];
-}
-
-function longerText(first: string | undefined, second: string | undefined): string | undefined {
-  if (!first) return second;
-  if (!second) return first;
-  return second.length > first.length ? second : first;
 }
 
 function maxIso(first: string | undefined, second: string | undefined): string | undefined {

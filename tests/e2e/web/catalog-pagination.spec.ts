@@ -16,6 +16,9 @@ test("keeps catalog pages stable during ingestion and bounds table and map rende
   const rows = page.locator("tbody tr");
   await expect(rows).toHaveCount(50);
   await expect(rows.first()).toContainText(fixtures[0]!.title!);
+  await rows.first().getByRole("button")
+    .filter({ has: page.getByText(fixtures[0]!.title!, { exact: true }) })
+    .click();
   await expect(page.getByRole("heading", { level: 2, name: fixtures[0]!.title!, exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Suivant", exact: true }).click();
   await expect(rows).toHaveCount(50);
@@ -28,6 +31,7 @@ test("keeps catalog pages stable during ingestion and bounds table and map rende
   await expect(rows.first()).toContainText(`00000 ${token} -inserted`);
   await expect(page.getByRole("button", { name: "Précédent", exact: true })).toBeDisabled();
   await page.screenshot({ path: testInfo.outputPath("catalog-paged-desktop.png"), fullPage: true });
+  await page.getByRole("button", { name: "Fermer le détail", exact: true }).click();
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "Cartes", exact: true }).click();

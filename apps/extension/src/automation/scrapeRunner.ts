@@ -47,6 +47,7 @@ import type {
 import { loadCrawlerState, saveCrawlerState } from "../storage/chromeStorage";
 import { RunnerSnapshotCache, type RunnerSnapshot } from "./runnerSnapshot";
 import { requestImmediateSync } from "../sync/runtime";
+import { enqueueSourceExtractions, SourceRecordPersistenceError } from "../sync/sourceRecordOutbox";
 
 type RunnerObserver = (snapshot: RunnerSnapshot) => void;
 export type ListingEvaluator = (
@@ -391,6 +392,15 @@ export class ScrapeRunner {
           await this.observeLoadedPage();
 
           const detail = await this.collectListingDetail(detailTabId, run, records, safeFilters);
+          await enqueueSourceExtractions([{
+            source: listing.source,
+            externalId: detail.id ?? listing.id,
+            runId: run.id,
+            url: detail.url ?? listing.url,
+            observedAt: new Date(this.clock.now()).toISOString(),
+            kind: "extension-detail",
+            payload: detail,
+          }]);
           records = mergeRecords(records, [recordFromDetail(listing, detail, run.id)]);
           run.collected = records.filter((record) => record.searchRunId === run.id && record.status === "detailed").length;
           run.message = message("run.collectedDetailsProgress", {
@@ -406,7 +416,7 @@ export class ScrapeRunner {
             throw error;
           }
 
-          if (error instanceof SiteChallengeStopError) {
+          if (error instanceof SiteChallengeStopError || error instanceof SourceRecordPersistenceError) {
             throw error;
           }
 
@@ -925,6 +935,15 @@ export class ScrapeRunner {
         filters,
         MAX_LISTINGS_PER_PAGE,
       );
+      await enqueueSourceExtractions(pageListings.map((listing) => ({
+        source: listing.source,
+        externalId: listing.id,
+        runId: run.id,
+        url: listing.url,
+        observedAt: new Date(this.clock.now()).toISOString(),
+        kind: "extension-search-result" as const,
+        payload: listing,
+      })));
       listings = mergeListingPages(listings, pageListings, run.target);
       nextRecords = mergeRecords(
         nextRecords,
@@ -1815,7 +1834,7 @@ function defaultEvaluator(
   ) => void | Promise<void>,
 ): Promise<ListingEvaluationOutcome> {
   return requestImmediateSync().then((response) => {
-    if (!response.ok) {
+    if (!(response.catalogOk ?? response.ok)) {
       return createEvaluationFailureOutcome(records, new FilterApiError(
         "Listings could not be synchronized before evaluation.",
         undefined,

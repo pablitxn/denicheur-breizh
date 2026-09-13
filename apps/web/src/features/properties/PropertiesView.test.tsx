@@ -12,11 +12,42 @@ const clients: QueryClient[] = [];
 afterEach(() => {
   clients.splice(0).forEach((client) => client.clear());
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   window.localStorage.clear();
   window.history.replaceState({}, "", "/");
 });
 
 describe("PropertiesView", () => {
+  it("returns keyboard focus to the selected row after closing the dossier", async () => {
+    installApi([listing("Maison du port")]);
+    renderProperties();
+    const trigger = await screen.findByRole("button", { name: /^Maison du port/u });
+    trigger.focus();
+    fireEvent.click(trigger);
+    const dossier = await screen.findByRole("complementary", { name: "Fiche du bien" });
+    await waitFor(() => expect(dossier).toHaveFocus());
+    fireEvent.keyDown(dossier, { key: "Escape" });
+    await waitFor(() => expect(trigger).toHaveFocus());
+    expect(screen.queryByRole("complementary", { name: "Fiche du bien" })).not.toBeInTheDocument();
+  });
+
+  it("keeps an unavailable linked property keyboard-accessible and restores focus to the catalog", async () => {
+    const { detail } = installApi([listing("Other property")]);
+    detail.mockRejectedValue(new Error("Unavailable"));
+    renderProperties();
+    await screen.findByRole("table");
+    act(() => {
+      window.history.replaceState({}, "", "/?view=properties&pid=leboncoin%3Amissing");
+      window.dispatchEvent(new PopStateEvent("popstate"));
+    });
+    const panel = await screen.findByRole("complementary", { name: "Fiche du bien" });
+    await waitFor(() => expect(panel).toHaveFocus());
+    await within(panel).findByRole("alert");
+    fireEvent.keyDown(panel, { key: "Escape" });
+    await waitFor(() => expect(screen.getByRole("heading", { name: "Biens", level: 1 })).toHaveFocus());
+    expect(new URLSearchParams(window.location.search).has("pid")).toBe(false);
+  });
+
   it("requests global server sorting and preserves the returned order", async () => {
     const { list } = installApi([listing("Unknown"), listing("Low"), listing("High")]);
     renderProperties();
@@ -37,6 +68,7 @@ describe("PropertiesView", () => {
       ? { items: [second], total: 5000, nextCursor: "third" }
       : { items: [first], total: 5000, nextCursor: "second" });
     renderProperties();
+    fireEvent.click(await screen.findByRole("button", { name: /^First/u }));
     await screen.findByRole("heading", { name: "First" });
     expect(list).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "Suivant" }));
@@ -56,7 +88,9 @@ describe("PropertiesView", () => {
   it("keeps all-catalog source facets and persists source filters and card sorting", async () => {
     const { list } = installApi([listing("First")]);
     renderProperties("cards");
+    fireEvent.click(screen.getByRole("button", { name: "Filtres" }));
     fireEvent.click(await screen.findByRole("button", { name: /^leboncoin 4\s500$/u }));
+    fireEvent.click(screen.getByRole("button", { name: "Appliquer" }));
     await waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ sources: ["leboncoin"] }), expect.any(AbortSignal)));
     expect(new URLSearchParams(window.location.search).get("psources")).toBe("leboncoin");
     fireEvent.change(screen.getByRole("combobox", { name: "Trier les biens" }), { target: { value: "surface:desc" } });
@@ -68,6 +102,7 @@ describe("PropertiesView", () => {
     const { detail } = installApi([home]);
     detail.mockRejectedValueOnce(new Error("Service unavailable"));
     renderProperties();
+    fireEvent.click(await screen.findByRole("button", { name: /^Maison du port/u }));
 
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Les informations affichées peuvent être incomplètes ou anciennes.");
@@ -83,6 +118,7 @@ describe("PropertiesView", () => {
     const home = listing("Maison du port");
     const { list } = installApi([home]);
     const client = renderProperties(mode);
+    fireEvent.click(await screen.findByRole("button", { name: mode === "table" ? /^Maison du port/u : "Afficher le détail de Maison du port" }));
     await screen.findByRole("heading", { name: "Maison du port" });
     list.mockRejectedValueOnce(new Error("Service unavailable"));
 
@@ -93,7 +129,7 @@ describe("PropertiesView", () => {
     const alert = await screen.findByRole("alert");
     expect(alert).toHaveTextContent("Les dernières données chargées restent affichées.");
     const selection = screen.getByRole("button", {
-      name: mode === "table" ? /Maison du portMaison du port/u : "Afficher le détail de Maison du port",
+      name: mode === "table" ? /Maison du port/u : "Afficher le détail de Maison du port",
     });
     expect(selection).toBeEnabled();
     expect(screen.getByRole("heading", { name: "Maison du port" })).toBeInTheDocument();
@@ -101,6 +137,57 @@ describe("PropertiesView", () => {
     fireEvent.click(within(alert).getByRole("button", { name: "Réessayer" }));
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
     expect(list).toHaveBeenCalledTimes(3);
+  });
+
+  it("loads a visible row's gallery and changes photos without opening the property", async () => {
+    let reveal: (() => void) | undefined;
+    vi.stubGlobal("IntersectionObserver", class {
+      constructor(callback: (entries: Array<{ isIntersecting: boolean }>) => void) {
+        reveal = () => callback([{ isIntersecting: true }]);
+      }
+      observe() {}
+      disconnect() {}
+    });
+    const home = listing("Maison du port", {
+      externalId: "12345",
+      location: "Plouhinec · Saint-Dreyer",
+      imageUrls: ["https://example.com/cover.jpg"],
+    });
+    const { detail } = installApi([home]);
+    detail.mockResolvedValue({ ...home, imageUrls: [...home.imageUrls, "https://example.com/garden.jpg"] });
+    renderProperties();
+    const table = await screen.findByRole("table");
+    expect(detail).not.toHaveBeenCalled();
+    act(() => reveal?.());
+    const next = await within(table).findByRole("button", { name: "Photo suivante de Maison du port" });
+    fireEvent.click(next);
+    expect(within(table).getByRole("img")).toHaveAttribute("src", "https://example.com/garden.jpg");
+    expect(screen.queryByRole("heading", { name: home.title })).not.toBeInTheDocument();
+    expect(within(table).getByText(home.location!)).toBeInTheDocument();
+    expect(within(table).queryByText(/12345/u)).not.toBeInTheDocument();
+    fireEvent.keyDown(next, { key: "ArrowLeft" });
+    expect(within(table).getByRole("img")).toHaveAttribute("src", "https://example.com/cover.jpg");
+  });
+
+  it("combines search with added filters and resets pagination", async () => {
+    const { list } = installApi([listing("Maison")]);
+    list.mockResolvedValue({ items: [listing("Maison")], total: 100, nextCursor: "next" });
+    renderProperties();
+    await screen.findByRole("table");
+    fireEvent.click(screen.getByRole("button", { name: "Suivant" }));
+    await waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: "next" }), expect.any(AbortSignal)));
+    fireEvent.click(screen.getByRole("button", { name: "Rechercher" }));
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "tregunc" } });
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Rechercher" }));
+    await waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ q: "tregunc", cursor: undefined }), expect.any(AbortSignal)));
+    fireEvent.click(screen.getByRole("button", { name: "Filtres" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Ajouter un filtre" }), { target: { value: "priceMax" } });
+    fireEvent.change(screen.getByRole("spinbutton", { name: "Prix maximum (€)" }), { target: { value: "400000" } });
+    fireEvent.click(screen.getByRole("button", { name: "Appliquer" }));
+    await waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ q: "tregunc", priceMax: 400000 }), expect.any(AbortSignal)));
+    expect(new URLSearchParams(window.location.search).get("pq")).toBe("tregunc");
+    fireEvent.click(screen.getByRole("button", { name: "Effacer la recherche : tregunc" }));
+    await waitFor(() => expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ q: undefined, priceMax: 400000 }), expect.any(AbortSignal)));
   });
 
   it("shows a retry state when the initial list request fails", async () => {

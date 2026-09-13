@@ -6,7 +6,7 @@ import styles from "./PropertyVisual.module.css";
 
 interface PropertyVisualProps {
   property: Pick<PropertyListing, "key" | "title" | "externalId" | "imageUrls" | "imageAssets">;
-  size?: "sm" | "md" | "lg";
+  size?: "sm" | "list" | "md" | "lg";
   navigation?: boolean;
 }
 
@@ -25,6 +25,7 @@ interface ResolvedDisplayImage {
 
 const responsiveImageSizes: Readonly<Record<Required<PropertyVisualProps>["size"], string>> = {
   sm: "58px",
+  list: "128px",
   md: "(max-width: 760px) calc(100vw - 32px), 420px",
   lg: "(max-width: 1120px) calc(100vw - 32px), 640px",
 };
@@ -159,11 +160,7 @@ function PropertyVisualContent({ property, size, navigation }: Required<Property
         </>
       )}
 
-      {navigation && images.length > 1 && hasVisibleImage && (
-        <span className={styles.galleryCounter} aria-live="polite">
-          {imageNumberFormatter.format(activeImageIndex + 1)} / {imageNumberFormatter.format(images.length)}
-        </span>
-      )}
+
     </div>
   );
 }
@@ -205,7 +202,7 @@ function displayImage(
     ...(asset.thumbnailUrl ? [asset.thumbnailUrl] : []),
     ...(asset.galleryUrl ? [asset.galleryUrl] : []),
   ]));
-  const preferredReplicaUrl = size === "sm"
+  const preferredReplicaUrl = (size === "sm" || size === "list")
     ? asset.thumbnailUrl ?? asset.galleryUrl
     : asset.galleryUrl ?? asset.thumbnailUrl;
   const replicaSrcSet = [

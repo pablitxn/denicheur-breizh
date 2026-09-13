@@ -269,11 +269,16 @@ async function expectNoUnexpectedHorizontalOverflow(page: Page, context: string)
         const style = getComputedStyle(element);
         const clipsHorizontally = style.overflowX === "hidden" || style.overflowX === "clip";
         const intentionallyEllipsized = style.textOverflow === "ellipsis";
+        const intentionallyVisuallyHidden = style.position === "absolute"
+          && style.clipPath !== "none"
+          && rect.width <= 2
+          && rect.height <= 2;
         const isFormControl = element.matches("input, textarea, select");
         const clipsOnlyDecorativeContent = element.children.length > 0
           && [...element.children].every((child) => child.matches('[aria-hidden="true"]'));
         if (
           clipsHorizontally
+          && !intentionallyVisuallyHidden
           && !isFormControl
           && !intentionallyEllipsized
           && !clipsOnlyDecorativeContent
@@ -311,6 +316,10 @@ async function expectNoClippedText(page: Page, context: string): Promise<void> {
         const rect = element.getBoundingClientRect();
         const text = (element.textContent ?? "").trim().replace(/\s+/gu, " ");
         const intentionallyEllipsized = style.textOverflow === "ellipsis";
+        const intentionallyVisuallyHidden = style.position === "absolute"
+          && style.clipPath !== "none"
+          && rect.width <= 2
+          && rect.height <= 2;
         const canScrollVertically = style.overflowY === "auto" || style.overflowY === "scroll";
 
         if (
@@ -320,6 +329,7 @@ async function expectNoClippedText(page: Page, context: string): Promise<void> {
           && style.visibility !== "hidden"
           && rect.width > 0
           && rect.height > 0
+          && !intentionallyVisuallyHidden
           && !intentionallyEllipsized
           && !canScrollVertically
           && element.scrollHeight > element.clientHeight + tolerance

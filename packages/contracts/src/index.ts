@@ -117,6 +117,64 @@ export const listingIngestionSchema = z
   })
   .strict();
 
+// Archive the extractor's serialized output, without applying listing transforms.
+// Keeping this separate permits future extractors to preserve fields not yet modeled.
+export const sourceRecordKindSchema = z.enum([
+  "extension-search-result", "extension-detail", "api-ingestion", "legacy-run-snapshot",
+]);
+export const MAX_SOURCE_RECORD_PAYLOAD_CHARS = 262_144;
+const sourceRecordPayloadSchema = z.string().min(2).refine((value) => {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed);
+  } catch { return false; }
+}, "Source record payload must be a JSON object.");
+
+const sourceRecordContentSchema = z.object({
+  id: identifierSchema,
+  source: listingSourceSchema,
+  externalId: identifierSchema,
+  runId: identifierSchema,
+  url: httpsUrlSchema,
+  observedAt: isoDateTimeSchema,
+  kind: sourceRecordKindSchema,
+  extractorVersion: z.string().trim().min(1).max(120).optional(),
+  payloadJson: sourceRecordPayloadSchema,
+}).strict();
+
+// Admission limits must not make previously accepted or migrated evidence unreadable.
+export const sourceRecordInputSchema = sourceRecordContentSchema.extend({
+  payloadJson: sourceRecordPayloadSchema.max(MAX_SOURCE_RECORD_PAYLOAD_CHARS),
+});
+
+export const sourceRecordsRequestSchema = z.object({
+  records: z.array(sourceRecordInputSchema).min(1).max(MAX_LISTINGS_PER_REQUEST),
+}).strict();
+export const sourceRecordsResponseSchema = z.object({
+  accepted: z.number().int().nonnegative(),
+  inserted: z.number().int().nonnegative(),
+  unchanged: z.number().int().nonnegative(),
+}).strict();
+export const sourceRecordSchema = sourceRecordContentSchema.extend({
+  sequence: z.number().int().positive(),
+  receivedAt: isoDateTimeSchema,
+  payloadSha256: z.string().regex(/^[a-f0-9]{64}$/),
+});
+export const sourceRecordSummarySchema = sourceRecordSchema.omit({ payloadJson: true });
+export const sourceRecordsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  beforeSequence: z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER).optional(),
+}).strict();
+export const sourceRecordsPageSchema = z.object({
+  items: z.array(sourceRecordSummarySchema),
+  nextBeforeSequence: z.number().int().positive().optional(),
+}).strict();
+export type SourceRecordInput = z.infer<typeof sourceRecordInputSchema>;
+export type SourceRecord = z.infer<typeof sourceRecordSchema>;
+export type SourceRecordsQuery = z.infer<typeof sourceRecordsQuerySchema>;
+export type SourceRecordsPage = z.infer<typeof sourceRecordsPageSchema>;
+export type SourceRecordsResponse = z.infer<typeof sourceRecordsResponseSchema>;
+
 export const runStatusSchema = z.enum([
   "idle",
   "opening-search",
@@ -779,6 +837,7 @@ const paginationQueryFields = {
 export const listingsQuerySchema = z
   .object({
     ...paginationQueryFields,
+    q: z.string().trim().max(200).optional(),
     source: listingSourceSchema.optional(),
     sources: z.union([listingSourceSchema, z.array(listingSourceSchema).min(1).max(20)])
       .transform((value) => typeof value === "string" ? [value] : [...new Set(value)]).optional(),

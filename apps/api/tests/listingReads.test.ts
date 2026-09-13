@@ -113,6 +113,27 @@ describe("listing page reads", () => {
     }
   });
 
+  it("searches titles and locations across pages with literal, accent-insensitive terms", () => {
+    const repository = new DenicheurRepository({ path: ":memory:" });
+    try {
+      repository.ingest({ run: { id: "search", source: "leboncoin", status: "completed" }, listings: [
+        { ...listing("1"), title: "Maison bleue", location: "Trégunc · Centre", priceEuros: 200000 },
+        { ...listing("2"), title: "Maison blanche", location: "Trégunc · Port", priceEuros: 350000 },
+        { ...listing("3"), title: "Maison 100% rénovée", location: "Brest", priceEuros: 150000 },
+      ] });
+      const query = { ...PAGE_QUERY, limit: 1, q: "MAISON tregunc" };
+      const first = repository.listListings(query);
+      expect(first.total).toBe(2);
+      expect(first.nextCursor).toBeTruthy();
+      const second = repository.listListings({ ...query, cursor: first.nextCursor! });
+      expect(second.items[0]?.externalId).not.toBe(first.items[0]?.externalId);
+      expect(repository.listListings({ ...query, priceMax: 250000 }).total).toBe(1);
+      expect(repository.listListings({ ...PAGE_QUERY, q: "port" }).items[0]?.externalId).toBe("2");
+      expect(repository.listListings({ ...PAGE_QUERY, q: "%" }).items.map((item) => item.externalId)).toEqual(["3"]);
+      expect(repository.listListings({ ...PAGE_QUERY, q: "' OR 1=1 --" }).total).toBe(0);
+    } finally { repository.close(); }
+  });
+
   it("returns empty pages without related-data lookups", () => {
     const repository = new DenicheurRepository({ path: ":memory:" });
     const prepare = vi.spyOn(DatabaseSync.prototype, "prepare");

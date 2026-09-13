@@ -133,6 +133,11 @@
   flex-wrap: wrap;
 }
 
+.toolbar :global(.settings-trigger) {
+  width: var(--h-target-coarse);
+  padding: 0;
+}
+
 @media (max-width: 1100px) {
   .shell {
     grid-template-rows: auto minmax(0, 1fr);

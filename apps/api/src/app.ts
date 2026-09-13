@@ -18,6 +18,8 @@ import {
   type HealthDetailsResponse,
   idempotencyKeySchema,
   ingestionRequestSchema,
+  sourceRecordsRequestSchema,
+  sourceRecordsQuerySchema,
   listingIdentitySchema,
   listingsQuerySchema,
   listingsMapQuerySchema,
@@ -111,6 +113,9 @@ export function createApp({
   );
   app.use(requireOperatorForPrivateMethods(config.operatorToken));
   app.use(express.text({ limit: config.requestBodyLimit, type: "application/sdp" }));
+  // A serialized extractor payload can expand when nested in its JSON envelope.
+  // The extension sends one record at a time; all other API limits stay unchanged.
+  app.post("/v1/source-records", express.json({ limit: "1mb", type: ["application/json", "application/*+json"] }));
   app.use(express.json({ limit: config.requestBodyLimit, type: ["application/json", "application/*+json"] }));
 
   const readHealthDetails = (): HealthDetailsResponse => {
@@ -192,13 +197,34 @@ export function createApp({
     if (input.run.id !== runId) {
       throw new ApiError(409, "RUN_ID_MISMATCH", "The route and request body run ids must match.");
     }
-    const result = repository.ingest(input);
+    // Validation above gates admission; the archive also needs the pre-transform JSON.
+    const result = repository.ingest(request.body);
     media.kick();
     response.json(result);
   });
 
   app.get("/v1/runs", (request, response) => {
     response.json(repository.listRuns(parseOrThrow(runsQuerySchema.safeParse(request.query))));
+  });
+
+  app.post("/v1/source-records", (request, response) => {
+    const input = parseOrThrow(sourceRecordsRequestSchema.safeParse(request.body));
+    response.json(repository.archiveSourceRecords(input.records));
+  });
+
+  app.get("/v1/source-records/:recordId", (request, response) => {
+    const id = parseOrThrow(pathIdentifierSchema.safeParse(request.params.recordId));
+    const record = repository.getSourceRecord(id);
+    if (!record) throw new ApiError(404, "SOURCE_RECORD_NOT_FOUND", "The requested source record does not exist.");
+    response.json(record);
+  });
+
+  app.get("/v1/listings/:source/:externalId/source-records", (request, response) => {
+    const identity = parseOrThrow(listingIdentitySchema.safeParse({
+      source: request.params.source, externalId: request.params.externalId,
+    }));
+    const query = parseOrThrow(sourceRecordsQuerySchema.safeParse(request.query));
+    response.json(repository.listSourceRecords(identity, query));
   });
 
   app.get("/v1/runs/:runId", (request, response) => {
