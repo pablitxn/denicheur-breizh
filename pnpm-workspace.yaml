@@ -20,14 +20,49 @@ trustPolicy: no-downgrade
 trustPolicyExclude:
   - "semver@6.3.1"
 
+# Exact stable releases selected for the coordinated 2026-09-26 upgrade.
+# Keep the default release-age gate for future versions; these exceptions
+# can be removed once the youngest release is 48 hours old (2026-09-28).
+minimumReleaseAgeExclude:
+  - "@aws-sdk/client-s3@3.1141.0"
+  # The package-manager bootstrap validates every platform package in its lock.
+  - "@pnpm/exe.android-arm64@12.7.0"
+  - "@pnpm/exe.android-x64@12.7.0"
+  - "@pnpm/exe.darwin-arm64@12.7.0"
+  - "@pnpm/exe.darwin-x64@12.7.0"
+  - "@pnpm/exe.freebsd-x64@12.7.0"
+  - "@pnpm/exe.linux-arm64-musl@12.7.0"
+  - "@pnpm/exe.linux-arm64@12.7.0"
+  - "@pnpm/exe.linux-ppc64@12.7.0"
+  - "@pnpm/exe.linux-riscv64@12.7.0"
+  - "@pnpm/exe.linux-s390x@12.7.0"
+  - "@pnpm/exe.linux-x64-musl@12.7.0"
+  - "@pnpm/exe.linux-x64@12.7.0"
+  - "@pnpm/exe.win32-arm64@12.7.0"
+  - "@pnpm/exe.win32-x64@12.7.0"
+  - "@tanstack/query-core@5.104.0"
+  - "@tanstack/query-devtools@5.104.0"
+  - "@tanstack/react-query-devtools@5.104.0"
+  - "@tanstack/react-query@5.104.0"
+  - "@turbo/darwin-64@2.11.4"
+  - "@turbo/darwin-arm64@2.11.4"
+  - "@turbo/linux-64@2.11.4"
+  - "@turbo/linux-arm64@2.11.4"
+  - "@turbo/windows-64@2.11.4"
+  - "@turbo/windows-arm64@2.11.4"
+  - "@types/node@26.6.3"
+  - "@vitest/coverage-v8@5.0.2"
+  - "@vitest/mocker@5.0.2"
+  - "@vitest/spy@5.0.2"
+  - "maplibre-gl@6.11.2"
+  - "pnpm@12.7.0"
+  - "turbo@2.11.4"
+  - "vite@8.3.1"
+  - "vitest@5.0.2"
+
 overrides:
-  # WXT resolves Vite 7; plugin-react 6 requires Vite 8's transform API.
-  "@wxt-dev/module-react>@vitejs/plugin-react": "5.2.0"
-  "@webext-core/isolated-element": "1.1.4"
-  "ip-address": "10.3.1"
-  "node-notifier>uuid": "11.1.1"
-  "web-ext-run>tmp": "0.2.7"
-  "fx-runner>shell-quote": "1.8.4"
+  "ip-address": "10.7.2"
+  "fx-runner>shell-quote": "1.10.0"
 
 allowBuilds:
   esbuild: false

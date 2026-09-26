@@ -14,6 +14,8 @@ const RECIPE = {
 };
 
 describe("listing page reads", () => {
+  // Coverage instruments a full page of maximum-size galleries; the query-count
+  // assertions below, rather than fixture setup time, enforce the performance bound.
   it("hydrates a full page and maximum galleries with bounded SQL calls and preserves detail data", () => {
     const repository = new DenicheurRepository({
       path: ":memory:",
@@ -80,7 +82,7 @@ describe("listing page reads", () => {
     } finally {
       repository.close();
     }
-  });
+  }, 15_000);
 
   it.each([
     ["timestamp", { runId: "run-a", evaluatedAt: "2026-09-06T11:00:00.000Z" }, { runId: "run-z" }],

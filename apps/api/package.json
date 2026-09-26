@@ -15,25 +15,25 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "3.1089.0",
+    "@aws-sdk/client-s3": "3.1141.0",
     "@denicheur-breizh/contracts": "workspace:*",
     "@denicheur-breizh/i18n": "workspace:*",
     "cors": "^2.8.6",
     "express": "^5.2.1",
-    "express-rate-limit": "^8.5.2",
-    "helmet": "^8.1.0",
-    "openai": "^6.46.0",
-    "sharp": "0.35.3",
-    "zod": "^4.4.3"
+    "express-rate-limit": "^8.7.0",
+    "helmet": "^8.3.0",
+    "openai": "^7.23.0",
+    "sharp": "0.35.4",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",
-    "@types/node": "^24.13.3",
-    "@types/supertest": "^6.0.3",
-    "supertest": "^7.2.2",
-    "tsx": "^4.21.0",
-    "typescript": "~5.9.3",
-    "vitest": "^4.1.10"
+    "@types/node": "^26.6.3",
+    "@types/supertest": "^7.2.1",
+    "supertest": "^7.3.0",
+    "tsx": "^4.23.15",
+    "typescript": "~7.0.2",
+    "vitest": "^5.0.2"
   }
 }

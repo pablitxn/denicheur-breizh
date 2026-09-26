@@ -11,9 +11,9 @@ import {
 } from "./verify-image-provenance.mjs";
 
 const COSIGN_JOB_IMAGE =
-  "cgr.dev/chainguard/cosign:latest-dev@sha256:41d066f46a66ce6292c343560e9688cc51e4330052f10d5d139cd1679b1dda7b";
+  "cgr.dev/chainguard/cosign:latest-dev@sha256:a790a4f273f25d95e3a1df67a48b792f92a75ca230f31d2cea95371401fe40e1";
 const NODE_JOB_IMAGE =
-  "node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03";
+  "node:26.10.0-bookworm-slim@sha256:662933cf47f013bc8e4beb31a6116448427a82057ba7c42c97e4c5ba766504c2";
 const CANONICAL_REGISTRY_HOST = "registry.orchid-labs.xyz:32443";
 const REVIEWED_STAGES = ["validate", "build", "attest", "verify", "provenance"];
 const REVIEWED_JOBS = new Map([
@@ -263,7 +263,7 @@ export function validateCiSupplyChain({
   );
   requireMatch(
     ci,
-    /corepack prepare pnpm@11\.17\.0 --activate/,
+    /npm install --global pnpm@12\.7\.0/,
     "CI must use the workspace pnpm version",
   );
   requireMatch(
@@ -662,7 +662,7 @@ function runSelfTest(sources) {
     ci: `${sources.ci}\ndeploy-production:\n  stage: deploy\n  image: ${NODE_JOB_IMAGE}\n  script: echo deploy\n`,
   })));
   expectRejected("deploy uses an unpinned tool image", () => validateCiSupplyChain(mutate({
-    ci: `${sources.ci}\ndeploy-production:\n  stage: deploy\n  image: node:24-bookworm-slim\n  needs:\n    - job: verify-image-provenance\n      artifacts: true\n  script: echo deploy\n`,
+    ci: `${sources.ci}\ndeploy-production:\n  stage: deploy\n  image: node:26.10.0-bookworm-slim\n  needs:\n    - job: verify-image-provenance\n      artifacts: true\n  script: echo deploy\n`,
   })));
   expectRejected("included jobs evade static inspection", () => validateCiSupplyChain(mutate({
     ci: `${sources.ci}\ninclude:\n  - local: .gitlab/deploy.yml\n`,

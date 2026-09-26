@@ -3,9 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "packageManager": "pnpm@11.17.0",
+  "packageManager": "pnpm@12.7.0",
   "engines": {
-    "node": ">=24 <27"
+    "node": ">=26.0.0 <27"
   },
   "scripts": {
     "dev": "turbo run dev --filter=@denicheur-breizh/api --filter=@denicheur-breizh/web",
@@ -37,11 +37,11 @@
     "audit:prod": "pnpm audit --prod --audit-level=high"
   },
   "devDependencies": {
-    "@playwright/test": "^1.61.1",
-    "@types/chrome": "^0.1.43",
-    "@types/node": "^24.13.3",
-    "@vitest/coverage-v8": "^4.1.10",
-    "turbo": "^2.10.4",
-    "typescript": "~5.9.3"
+    "@playwright/test": "^1.63.0",
+    "@types/chrome": "^0.3.0",
+    "@types/node": "^26.6.3",
+    "@vitest/coverage-v8": "^5.0.2",
+    "turbo": "^2.11.4",
+    "typescript": "~7.0.2"
   }
 }

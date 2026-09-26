@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveApiBaseUrl } from "./apiBaseUrl";
+
+afterEach(() => vi.unstubAllEnvs());
 
 describe("resolveApiBaseUrl", () => {
   it("keeps the direct loopback API for local Vite development", () => {
@@ -9,6 +11,11 @@ describe("resolveApiBaseUrl", () => {
   it("defaults production bundles to the same-origin gateway", () => {
     expect(resolveApiBaseUrl(undefined, { development: false })).toBe("/api");
     expect(resolveApiBaseUrl(" /api/ ", { development: false })).toBe("/api");
+  });
+
+  it("cannot enable the development fallback in a production environment", () => {
+    vi.stubEnv("DEV", false);
+    expect(resolveApiBaseUrl(undefined, { development: true })).toBe("/api");
   });
 
   it("preserves the explicit loopback URL used by the isolated E2E bundle", () => {

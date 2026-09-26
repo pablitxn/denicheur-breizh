@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 
 const repositoryRoot = fileURLToPath(new URL("../../../", import.meta.url));
 const image = process.env.WEB_GATEWAY_TEST_IMAGE?.trim() || "denicheur-breizh-web:gateway-test";
-const nodeImage = "node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03";
+const nodeImage = "node:26.10.0-bookworm-slim@sha256:662933cf47f013bc8e4beb31a6116448427a82057ba7c42c97e4c5ba766504c2";
 const testToken = "container-test-token-000000000000000000000000";
 const gatewayTestToken = "Gateway-Test-Token_000000000000000000000000";
 const temporaryDirectory = mkdtempSync(join(tmpdir(), "denicheur-web-gateway-"));
@@ -88,7 +88,7 @@ if ([testToken, gatewayTestToken].some((secret) => valid.stdout.includes(secret)
 
 docker([
   "run", "--rm", "--entrypoint", "sh", image, "-eu", "-c",
-  "! grep -R -F -e WEB_OPERATOR_TOKEN -e OPERATOR_TOKEN -e WEB_GATEWAY_AUTH_TOKEN -e http://127.0.0.1:4310 -e http://127.0.0.1:14310 /usr/share/nginx/html && grep -R -F -q /api /usr/share/nginx/html",
+  "! grep -R -F -l -e WEB_OPERATOR_TOKEN -e OPERATOR_TOKEN -e WEB_GATEWAY_AUTH_TOKEN -e http://127.0.0.1:4310 -e http://127.0.0.1:14310 /usr/share/nginx/html && grep -R -F -q /api /usr/share/nginx/html",
 ]);
 
 const resourceSuffix = `${process.pid}-${Date.now()}`;

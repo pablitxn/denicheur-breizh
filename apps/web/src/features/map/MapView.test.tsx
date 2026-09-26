@@ -13,6 +13,7 @@ vi.mock("../../api/hooks", () => ({
 }));
 
 vi.mock("maplibre-gl", () => ({
+  setWorkerUrl: vi.fn(),
   Map: class {
     constructor({ container }: { container: HTMLElement }) {
       mapRuntime.create();

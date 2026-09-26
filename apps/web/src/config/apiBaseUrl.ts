@@ -1,4 +1,3 @@
-const LOCAL_API_BASE_URL = "http://127.0.0.1:4310";
 const PRODUCTION_API_BASE_URL = "/api";
 
 interface ApiBaseUrlOptions {
@@ -10,7 +9,12 @@ export function resolveApiBaseUrl(
   { development }: ApiBaseUrlOptions,
 ): string {
   const configured = configuredValue?.trim();
-  if (!configured) return development ? LOCAL_API_BASE_URL : PRODUCTION_API_BASE_URL;
+  if (!configured) {
+    // Keep the loopback literal behind Vite's build-time guard so it is removed
+    // from production output without relying on function argument propagation.
+    if (import.meta.env.DEV && development) return "http://127.0.0.1:4310";
+    return PRODUCTION_API_BASE_URL;
+  }
 
   const normalized = configured.replace(/\/+$/, "");
   if (normalized.startsWith("/")) {

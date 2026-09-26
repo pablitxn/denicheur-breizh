@@ -6,7 +6,6 @@
     "strict": true, "noUnusedLocals": true, "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true, "module": "ESNext", "moduleResolution": "Bundler",
     "isolatedModules": true, "noEmit": true, "jsx": "react-jsx", "resolveJsonModule": true,
-    "baseUrl": ".",
     "paths": {
       "@denicheur-breizh/collector-contracts": ["../../packages/collector-contracts/src/index.ts"],
       "@denicheur-breizh/design-system": ["../../packages/design-system/src/index.tsx"],

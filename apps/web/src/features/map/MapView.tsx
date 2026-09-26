@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { GeoJSONSource, Map as MapLibreMap, Marker as MapLibreMarker } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
+import mapWorkerUrl from "maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url";
 import { Button, Chip, EmptyState, SectionLabel, Select } from "@denicheur-breizh/design-system";
 import { ChevronDown, ExternalLink, House, Landmark, Layers, MapPin, Trees, X } from "lucide-react";
 import { useListing, useMapListings } from "../../api/hooks";
@@ -172,6 +173,8 @@ export function MapView() {
       if (!mapEl.current || mapRef.current) return;
       const maplibregl = await import("maplibre-gl");
       if (disposed || !mapEl.current) return;
+      // Bundle the MapLibre 6 worker and its shared imports into a self-contained asset.
+      maplibregl.setWorkerUrl(mapWorkerUrl);
       const map = new maplibregl.Map({
         container: mapEl.current,
         style: {

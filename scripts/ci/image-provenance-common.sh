@@ -3,7 +3,7 @@
 # Shared fail-closed validation for the Cosign signing and verification jobs.
 # Keep this POSIX-sh compatible: the GitLab job runs in a minimal image.
 
-KANIKO_BUILDER_IMAGE='gcr.io/kaniko-project/executor:v1.23.2-debug@sha256:c3109d5926a997b100c4343944e06c6b30a6804b2f9abe0994d3de6ef92b028e'
+KANIKO_BUILDER_IMAGE='ghcr.io/osscontainertools/kaniko:v1.28.5-debug@sha256:d6d74217dc077acfd3094992e917c357080a2d3fdd1042a49e34e29a7e57c572'
 SLSA_BUILD_TYPE='https://gitlab.orchid-labs.xyz/research-and-development/denicheur-breizh/-/slsa/build-types/kaniko/v1'
 
 provenance_fail() {

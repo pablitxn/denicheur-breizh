@@ -83,7 +83,7 @@ check-workspace:
     # The runner grants one CPU, so do not let Turbo contend API, web and
     # extension tasks against each other inside the same pod.
     TURBO_CONCURRENCY: "1"
-  image: node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
+  image: node:26.10.0-bookworm-slim@sha256:662933cf47f013bc8e4beb31a6116448427a82057ba7c42c97e4c5ba766504c2
   rules: *validation-rules
   cache:
     key:
@@ -93,8 +93,7 @@ check-workspace:
       - .pnpm-store
   before_script:
     - test -z "${COSIGN_PRIVATE_KEY_FILE:-}" && test -z "${COSIGN_PASSWORD:-}"
-    - corepack enable
-    - corepack prepare pnpm@11.17.0 --activate
+    - npm install --global pnpm@12.7.0
     - pnpm config set store-dir "${CI_PROJECT_DIR}/${PNPM_STORE_DIR}"
     - pnpm install --frozen-lockfile
   script:
@@ -111,7 +110,7 @@ check-workspace:
     # 5Gi quota when a 3584Mi predecessor is terminating.
     KUBERNETES_MEMORY_LIMIT: "1280Mi"
   image:
-    name: gcr.io/kaniko-project/executor:v1.23.2-debug@sha256:c3109d5926a997b100c4343944e06c6b30a6804b2f9abe0994d3de6ef92b028e
+    name: ghcr.io/osscontainertools/kaniko:v1.28.5-debug@sha256:d6d74217dc077acfd3094992e917c357080a2d3fdd1042a49e34e29a7e57c572
     entrypoint: [""]
   needs:
     - check-workspace
@@ -230,7 +229,7 @@ build-web-image:
 .cosign-job:
   resource_group: denicheur-breizh-ci
   image:
-    name: cgr.dev/chainguard/cosign:latest-dev@sha256:41d066f46a66ce6292c343560e9688cc51e4330052f10d5d139cd1679b1dda7b
+    name: cgr.dev/chainguard/cosign:latest-dev@sha256:a790a4f273f25d95e3a1df67a48b792f92a75ca230f31d2cea95371401fe40e1
     entrypoint: [""]
   rules: *image-build-rules
 
@@ -288,7 +287,7 @@ verify-image-cryptography:
 verify-image-provenance:
   stage: provenance
   resource_group: denicheur-breizh-ci
-  image: node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03
+  image: node:26.10.0-bookworm-slim@sha256:662933cf47f013bc8e4beb31a6116448427a82057ba7c42c97e4c5ba766504c2
   needs:
     - job: verify-image-cryptography
       artifacts: true

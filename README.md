@@ -12,10 +12,10 @@
 
 <p align="center">
   <img alt="Local-first architecture" src="https://img.shields.io/badge/architecture-local--first-c9b3e6?style=flat-square&labelColor=1c1628">
-  <img alt="Node 24 to 26" src="https://img.shields.io/badge/node-24%E2%80%9326-5fa04e?style=flat-square&logo=nodedotjs&logoColor=white">
-  <img alt="pnpm 11.17.0" src="https://img.shields.io/badge/pnpm-11.17.0-f69220?style=flat-square&logo=pnpm&logoColor=white">
+  <img alt="Node 26" src="https://img.shields.io/badge/node-26-5fa04e?style=flat-square&logo=nodedotjs&logoColor=white">
+  <img alt="pnpm 12.7.0" src="https://img.shields.io/badge/pnpm-12.7.0-f69220?style=flat-square&logo=pnpm&logoColor=white">
   <img alt="Chrome Manifest V3" src="https://img.shields.io/badge/Chrome-MV3-4285f4?style=flat-square&logo=googlechrome&logoColor=white">
-  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-5.9-3178c6?style=flat-square&logo=typescript&logoColor=white">
+  <img alt="TypeScript" src="https://img.shields.io/badge/TypeScript-7.0-3178c6?style=flat-square&logo=typescript&logoColor=white">
 </p>
 
 <p align="center">
@@ -97,15 +97,18 @@ The xAI / Firecrawl laboratory has its own frontend (`5175`), API (`4315`), SQLi
 
 | Tool | Version |
 |---|---|
-| Node.js | `>=24 <27` |
-| pnpm | `11.17.0` |
+| Node.js | `>=26 <27` (26.10.0 in `.nvmrc` and containers) |
+| pnpm | `12.7.0` |
 | Google Chrome | `116+` for the extension |
 
-Install the workspace:
+Install the pinned package manager (Node.js 26 no longer bundles Corepack), then the workspace:
 
 ```bash
+npm install --global pnpm@12.7.0
 pnpm install
 ```
+
+See the [September 2026 dependency upgrade](docs/dependency-upgrade-2026-09.md) for migration details, validation results and the remaining MinIO limitation.
 
 Start the API and web workspace:
 

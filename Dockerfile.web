@@ -1,14 +1,13 @@
-# syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
+# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 
-FROM node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS build
+FROM node:26.10.0-bookworm-slim@sha256:662933cf47f013bc8e4beb31a6116448427a82057ba7c42c97e4c5ba766504c2 AS build
 
 ENV PNPM_HOME=/pnpm
 ENV PATH=${PNPM_HOME}:${PATH}
 
 WORKDIR /workspace
 
-RUN corepack enable \
-  && corepack prepare pnpm@11.17.0 --activate \
+RUN npm install --global pnpm@12.7.0 \
   && pnpm config set store-dir /pnpm/store \
   && pnpm config set fetch-timeout 600000 \
   && pnpm config set fetch-retries 5 \
@@ -17,9 +16,12 @@ RUN corepack enable \
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json ./
 COPY apps/api/package.json ./apps/api/package.json
+COPY apps/collector-api/package.json ./apps/collector-api/package.json
+COPY apps/collector-web/package.json ./apps/collector-web/package.json
 COPY apps/extension/package.json ./apps/extension/package.json
 COPY apps/web/package.json ./apps/web/package.json
 COPY packages/contracts/package.json ./packages/contracts/package.json
+COPY packages/collector-contracts/package.json ./packages/collector-contracts/package.json
 COPY packages/design-system/package.json ./packages/design-system/package.json
 COPY packages/i18n/package.json ./packages/i18n/package.json
 
@@ -30,6 +32,9 @@ RUN pnpm install --frozen-lockfile \
   --os=linux \
   --cpu=x64 \
   --libc=glibc
+
+# Keep pnpm 12 pre-run verification aligned with the installation target.
+ENV pnpm_config_supported_architectures='{"os":["linux"],"cpu":["x64"],"libc":["glibc"]}'
 
 COPY . .
 
@@ -42,7 +47,7 @@ RUN test "${VITE_API_BASE_URL}" = "/api" \
   || { echo "Production web images require VITE_API_BASE_URL=/api." >&2; exit 1; } \
   && pnpm --filter @denicheur-breizh/web... run build
 
-FROM nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de AS production
+FROM nginx:1.31.6-alpine@sha256:d10753d9289b8e3f884386351f73554ce72b631378949deddd75e83ee296c427 AS production
 
 ARG OCI_REVISION=dev
 LABEL org.opencontainers.image.title="denicheur-breizh-web" \
